@@ -1,0 +1,4 @@
+# Header, length, variable payload, trailer
+aa 03 41 42 43 ff
+aa 01 44 ff
+aa 02 45 46 ff

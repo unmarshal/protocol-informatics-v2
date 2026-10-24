@@ -1,0 +1,8 @@
+[package]
+name = "protocol-informatics-v2"
+version = "0.1.0"
+edition = "2024"
+description = "Evidence-oriented protocol and data format inference"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
