@@ -449,3 +449,76 @@ fn replays_v1_log_and_appends_v2_events() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn clusters_icmp_roles_before_alignment_and_exposes_members() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&["init", root_text, "Group request and reply formats"]);
+    let experiment = cli(&["experiment", root_text, "Inspect roles", "-", "Two shapes"]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&["trial", root_text, experiment_id, "sweep", "sequence"]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/icmp_echo.pcapng");
+    cli(&["import", root_text, trial_id, "pcapng-icmp", path(&fixture)]);
+    let grouped = cli(&["cluster", root_text, trial_id, "respect"]);
+    let clusters = grouped["clusters"].as_array().unwrap();
+    assert_eq!(clusters.len(), 2);
+    assert!(clusters.iter().all(|cluster| cluster["member_count"] == 12));
+    let type_values: std::collections::BTreeSet<_> = clusters
+        .iter()
+        .map(|cluster| {
+            cluster["stable_header_bytes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|byte| byte["offset"] == 0)
+                .unwrap()["value"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(type_values, [0, 8].into());
+    assert!(
+        clusters
+            .iter()
+            .all(|cluster| cluster["split_rules"][0]["kind"] == "direction")
+    );
+    assert_eq!(
+        cli(&["cluster", root_text, trial_id, "respect"])["clusters"][0]["id"],
+        clusters[0]["id"]
+    );
+    let first_id = clusters[0]["id"].as_str().unwrap();
+    let analysis = cli(&["analyze-cluster", root_text, first_id, trial_id, "respect"]);
+    assert_eq!(analysis["event"]["analysis"]["scope"]["kind"], "cluster");
+    assert_eq!(
+        analysis["event"]["analysis"]["scope"]["cluster_id"],
+        first_id
+    );
+    assert_eq!(
+        analysis["event"]["analysis"]["method_version"],
+        "best_of_positional_and_star_v1"
+    );
+    assert_eq!(
+        analysis["event"]["analysis"]["observation_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        12
+    );
+    let ignored = cli(&["cluster", root_text, trial_id, "ignore"]);
+    assert_eq!(ignored["clusters"].as_array().unwrap().len(), 1);
+    let report = root.join("report.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("Candidate format groups"));
+    assert!(html.contains(first_id));
+    cli(&["import", root_text, trial_id, "pcapng-icmp", path(&fixture)]);
+    let stale = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["analyze-cluster", root_text, first_id, trial_id, "respect"])
+        .output()
+        .unwrap();
+    assert!(!stale.status.success());
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("unknown cluster"));
+    fs::remove_dir_all(root).unwrap();
+}

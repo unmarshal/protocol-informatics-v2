@@ -16,6 +16,17 @@ pub fn render(state: &State) -> String {
     let mut view = serde_json::to_value(state).expect("state is serializable");
     view["field_inferences"] =
         serde_json::to_value(inferences).expect("inferences are serializable");
+    match crate::clustering::cluster_observations(state, None, true) {
+        Ok(report) => {
+            view["cluster_report"] =
+                serde_json::to_value(report).expect("cluster report is serializable");
+            view["cluster_error"] = serde_json::Value::Null;
+        }
+        Err(error) => {
+            view["cluster_report"] = serde_json::Value::Null;
+            view["cluster_error"] = serde_json::Value::String(error);
+        }
+    }
     let data = serde_json::to_string(&view)
         .expect("state is serializable")
         .replace('<', "\\u003c")
@@ -43,6 +54,7 @@ h1 { margin:0; font-size:1.6rem } h2 { font-size:1.1rem; margin:0 0 12px }
 .stack { display:grid; gap:16px; align-content:start }
 input,select { background:#0e1622; color:#e9eef5; border:1px solid #4a607a; border-radius:6px; padding:8px; width:100% }
 .filters { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:12px }
+.search { margin-bottom:12px }
 .row { border-top:1px solid #344257; padding:9px 0; cursor:pointer }
 .row:hover,.row.selected { background:#233951 }
 .row button { all:unset; cursor:pointer; display:block; width:100% }
@@ -63,11 +75,13 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
   <div class="stack">
     <section class="panel"><h2>Hypotheses</h2><div id="hypotheses"></div></section>
     <section class="panel"><h2>Experiments and trials</h2><div id="experiments"></div></section>
+    <section class="panel"><h2>Candidate format groups</h2><div id="clusters"></div></section>
     <section class="panel"><h2>Candidate fields</h2><div id="fieldCandidates"></div></section>
+    <section class="panel"><h2>Analyses</h2><div id="analyses"></div></section>
     <section class="panel"><h2>Decisions</h2><div id="decisions"></div></section>
   </div>
   <div class="stack">
-    <section class="panel"><h2>Observations</h2><div class="filters"><select id="trialFilter"><option value="">All trials</option></select><input id="search" placeholder="ID, tag, direction, or hex bytes"></div><div id="observations"></div></section>
+    <section class="panel"><h2>Observations</h2><div class="filters"><select id="trialFilter"><option value="">All trials</option></select><select id="clusterFilter"><option value="">All groups</option></select></div><input id="search" class="search" placeholder="ID, tag, direction, or hex bytes"><div id="observations"></div></section>
     <section class="panel"><h2>Byte inspector</h2><div id="detail" class="muted">Select an observation to inspect its bytes and source.</div></section>
     <section class="panel"><h2>Compare observations</h2><div class="filters"><select id="leftCompare"><option value="">First observation</option></select><select id="rightCompare"><option value="">Second observation</option></select></div><div id="comparison" class="muted">Choose two observations to highlight changed bytes.</div></section>
   </div>
@@ -78,6 +92,7 @@ const byId = id => document.getElementById(id);
 const node = (tag, text, className) => { const el=document.createElement(tag); el.textContent=text; if(className) el.className=className; return el; };
 const captureById = new Map(state.captures.map(x=>[x.id,x]));
 const trialById = new Map(state.trials.map(x=>[x.id,x]));
+const clusterById = new Map((state.cluster_report?.clusters||[]).map(x=>[x.id,x]));
 const tagsFor = id => state.tags.filter(x=>x.observation_id===id);
 const valuesFor = id => state.known_values.filter(x=>x.observation_id===id);
 const fieldOverlays = state.field_inferences.flatMap(inference => {
@@ -109,6 +124,26 @@ for(const experiment of state.experiments) {
   }
   byId('experiments').append(row);
 }
+if(state.cluster_report) {
+  for(const cluster of state.cluster_report.clusters) {
+    const row=node('div','', 'row');
+    row.append(node('strong',cluster.id+' · '+cluster.member_count+' observation(s)'),node('div','Representative '+cluster.representative_observation_id+' · lengths '+cluster.minimum_length+'–'+cluster.maximum_length,'small muted'));
+    const rules=cluster.split_rules.map(rule=>rule.kind==='direction'?'direction '+(rule.value||'unknown'):'byte['+rule.offset+']=0x'+rule.value.toString(16).padStart(2,'0')).join(' · ');
+    row.append(node('div',rules||'No distinguishing rule','small'));
+    row.append(node('div','Stable header bytes: '+(cluster.stable_header_bytes.map(item=>item.offset+':'+item.value.toString(16).padStart(2,'0')).join(' ')||'none'),'small muted'));
+    const option=node('option',cluster.id+' · '+cluster.member_count); option.value=cluster.id; byId('clusterFilter').append(option);
+    const button=node('button','Show observations','small'); button.onclick=()=>{byId('clusterFilter').value=cluster.id;renderObservations();}; row.append(button);
+    byId('clusters').append(row);
+  }
+} else byId('clusters').append(node('div',state.cluster_error||'No groups available.','small muted'));
+for(const analysis of state.analyses) {
+  const row=node('div','', 'row');
+  const scope=analysis.scope?.kind==='cluster'?'group '+analysis.scope.cluster_id:analysis.scope?.kind==='trial'?'trial '+analysis.scope.trial_id:analysis.scope?.kind||'legacy selection';
+  row.append(node('strong',analysis.id),node('div',scope+' · '+analysis.observation_ids.length+' observations · '+analysis.aligned_width+' columns','small'));
+  row.append(node('div',analysis.method_version||'method version not recorded','small muted'));
+  byId('analyses').append(row);
+}
+if(!state.analyses.length) byId('analyses').append(node('div','No analyses recorded.','small muted'));
 for(const decision of state.decisions) { const row=node('div','', 'row'); row.append(node('strong',decision.id),node('div',decision.text)); byId('decisions').append(row); }
 for(const trial of state.trials) { const option=node('option',trial.id+' · '+trial.role); option.value=trial.id; byId('trialFilter').append(option); }
 for(const observation of state.observations) {
@@ -155,13 +190,13 @@ function showDetail(observation) {
   detail.append(node('div','Green outline marks a unique candidate that matched held-out values; it still needs protocol-level confirmation.','small muted legend'));
 }
 function renderObservations() {
-  const selected=byId('trialFilter').value, search=byId('search').value.toLowerCase();
+  const selected=byId('trialFilter').value, cluster=clusterById.get(byId('clusterFilter').value), search=byId('search').value.toLowerCase();
   const list=byId('observations'); list.replaceChildren();
-  const matches=state.observations.filter(o=>{ const c=captureById.get(o.capture_id); const labels=tagsFor(o.id).map(t=>t.label+' '+t.phase).join(' ')+valuesFor(o.id).map(v=>v.variable+'='+v.value).join(' '); return (!selected||c.trial_id===selected) && (o.id+' '+o.bytes_hex+' '+(o.direction||'')+' '+labels).toLowerCase().includes(search); });
+  const matches=state.observations.filter(o=>{ const c=captureById.get(o.capture_id); const labels=tagsFor(o.id).map(t=>t.label+' '+t.phase).join(' ')+valuesFor(o.id).map(v=>v.variable+'='+v.value).join(' '); return (!selected||c.trial_id===selected) && (!cluster||cluster.member_observation_ids.includes(o.id)) && (o.id+' '+o.bytes_hex+' '+(o.direction||'')+' '+labels).toLowerCase().includes(search); });
   list.append(node('div',matches.length+' of '+state.observations.length+' observations','small muted'));
   for(const o of matches) { const row=node('div','', 'row'); const button=node('button',o.id+' · '+o.bytes_hex.match(/../g).join(' ').slice(0,100)); button.onclick=()=>showDetail(o); row.append(button,node('div',(o.direction||'')+' '+tagsFor(o.id).map(t=>'['+t.phase+': '+t.label+']').join(' '),'small muted')); list.append(row); }
 }
-byId('trialFilter').onchange=renderObservations; byId('search').oninput=renderObservations; renderObservations();
+byId('trialFilter').onchange=renderObservations; byId('clusterFilter').onchange=renderObservations; byId('search').oninput=renderObservations; renderObservations();
 if(state.observations.length) showDetail(state.observations[0]);
 </script>
 </body>

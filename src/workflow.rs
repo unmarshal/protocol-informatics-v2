@@ -91,11 +91,29 @@ pub struct Action {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AnalysisScope {
+    All,
+    Trial {
+        trial_id: String,
+    },
+    Cluster {
+        cluster_id: String,
+        trial_id: Option<String>,
+        direction_mode: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisRecord {
     pub id: String,
     pub observation_ids: Vec<String>,
     pub artifact: String,
     pub aligned_width: usize,
+    #[serde(default)]
+    pub scope: Option<AnalysisScope>,
+    #[serde(default)]
+    pub method_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

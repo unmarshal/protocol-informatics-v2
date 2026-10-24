@@ -1,9 +1,10 @@
 //! Evidence-oriented analysis of unknown byte-oriented message formats.
 //!
-//! The first slice accepts already extracted messages. Capture decoding, message
-//! clustering, field hypotheses, and active experiments belong in later layers.
+//! Capture decoding, experiment records, conservative grouping, and exact
+//! controlled-value field inference build on the byte alignment core.
 
 mod alignment;
+pub mod clustering;
 pub mod inference;
 mod input;
 pub mod pcap;

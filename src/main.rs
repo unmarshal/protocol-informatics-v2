@@ -7,8 +7,8 @@ use std::process::ExitCode;
 use std::process::Stdio;
 
 use protocol_informatics_v2::workflow::{
-    self, Action, AnalysisRecord, Decision, Event, Experiment, Hypothesis, KnownValue, Tag, Trial,
-    ValueSet,
+    self, Action, AnalysisRecord, AnalysisScope, Decision, Event, Experiment, Hypothesis,
+    KnownValue, Observation, Tag, Trial, ValueSet,
 };
 use protocol_informatics_v2::{CpuAligner, analyze_best, parse_hex_samples};
 use serde::Serialize;
@@ -53,6 +53,8 @@ fn print_help() {
     println!("  value <dir> <obs-id> <variable> <unsigned> <discovery|validation>");
     println!("  infer-value <dir> <variable>         find exact unsigned field candidates");
     println!("  analyze-investigation <dir> [trial-id]");
+    println!("  cluster <dir> [trial-id|-] [respect|ignore]");
+    println!("  analyze-cluster <dir> <cluster-id> [trial-id|-] [respect|ignore]");
     println!("  decide <dir> <decision> [evidence-ids]");
     println!("  resume <dir> | changes <dir> <revision> | report <dir> <html-file>");
     println!("  observations <dir> [trial-id|-] [offset] [limit<=100]");
@@ -133,6 +135,46 @@ fn parse_unsigned(text: &str) -> Result<u64, String> {
         text.parse()
     };
     parsed.map_err(|_| "value must be an unsigned decimal or 0x-prefixed integer".into())
+}
+
+fn direction_mode(text: Option<&String>) -> Result<bool, String> {
+    match text.map(String::as_str).unwrap_or("respect") {
+        "respect" => Ok(true),
+        "ignore" => Ok(false),
+        _ => Err("direction mode must be respect or ignore".into()),
+    }
+}
+
+fn record_analysis(
+    root: &Path,
+    selected: &[&Observation],
+    scope: AnalysisScope,
+) -> Result<(), String> {
+    if selected.is_empty() {
+        return Err("no observations selected".into());
+    }
+    let samples: Vec<Vec<u8>> = selected
+        .iter()
+        .map(|observation| workflow::from_hex(&observation.bytes_hex))
+        .collect::<Result<_, _>>()?;
+    let analysis = analyze_best(&samples, &CpuAligner).map_err(|error| error.to_string())?;
+    let json = analysis.to_json();
+    let (_, artifact) = workflow::store_artifact(root, json.as_bytes(), "json")?;
+    let record = AnalysisRecord {
+        id: workflow::next_id(root, "analysis")?,
+        observation_ids: selected
+            .iter()
+            .map(|observation| observation.id.clone())
+            .collect(),
+        artifact,
+        aligned_width: analysis.columns.len(),
+        scope: Some(scope),
+        method_version: Some("best_of_positional_and_star_v1".into()),
+    };
+    print_json(&workflow::append(
+        root,
+        Event::AnalysisRecorded { analysis: record },
+    )?)
 }
 
 fn run_investigation_command(args: &[String]) -> Result<(), String> {
@@ -305,30 +347,63 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                     })
                 })
                 .collect();
-            if selected.is_empty() {
-                return Err("no observations selected".into());
+            let scope = args
+                .get(2)
+                .map_or(AnalysisScope::All, |trial_id| AnalysisScope::Trial {
+                    trial_id: trial_id.clone(),
+                });
+            record_analysis(root, &selected, scope)
+        }
+        "cluster" => {
+            if args.len() > 4 {
+                return Err("expected optional trial ID and direction mode".into());
             }
-            let samples: Vec<Vec<u8>> = selected
-                .iter()
-                .map(|observation| workflow::from_hex(&observation.bytes_hex))
-                .collect::<Result<_, _>>()?;
-            let analysis =
-                analyze_best(&samples, &CpuAligner).map_err(|error| error.to_string())?;
-            let json = analysis.to_json();
-            let (_, artifact) = workflow::store_artifact(root, json.as_bytes(), "json")?;
-            let record = AnalysisRecord {
-                id: workflow::next_id(root, "analysis")?,
-                observation_ids: selected
-                    .iter()
-                    .map(|observation| observation.id.clone())
-                    .collect(),
-                artifact,
-                aligned_width: analysis.columns.len(),
-            };
-            print_json(&workflow::append(
-                root,
-                Event::AnalysisRecorded { analysis: record },
+            let state = workflow::load(root)?;
+            let trial = args.get(2).filter(|id| *id != "-").map(String::as_str);
+            print_json(&protocol_informatics_v2::clustering::cluster_observations(
+                &state,
+                trial,
+                direction_mode(args.get(3))?,
             )?)
+        }
+        "analyze-cluster" => {
+            if args.len() < 3 || args.len() > 5 {
+                return Err("expected cluster ID, optional trial ID, and direction mode".into());
+            }
+            let state = workflow::load(root)?;
+            let trial = args.get(3).filter(|id| *id != "-").map(String::as_str);
+            let report = protocol_informatics_v2::clustering::cluster_observations(
+                &state,
+                trial,
+                direction_mode(args.get(4))?,
+            )?;
+            let cluster = report
+                .clusters
+                .iter()
+                .find(|cluster| cluster.id == args[2])
+                .ok_or_else(|| {
+                    format!("unknown cluster {} at revision {}", args[2], state.revision)
+                })?;
+            let members: std::collections::BTreeSet<_> =
+                cluster.member_observation_ids.iter().collect();
+            let selected: Vec<_> = state
+                .observations
+                .iter()
+                .filter(|observation| members.contains(&observation.id))
+                .collect();
+            record_analysis(
+                root,
+                &selected,
+                AnalysisScope::Cluster {
+                    cluster_id: cluster.id.clone(),
+                    trial_id: trial.map(str::to_owned),
+                    direction_mode: if direction_mode(args.get(4))? {
+                        "respect".into()
+                    } else {
+                        "ignore".into()
+                    },
+                },
+            )
         }
         "decide" => {
             if args.len() < 3 || args.len() > 4 {
