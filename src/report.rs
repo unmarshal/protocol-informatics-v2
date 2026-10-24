@@ -81,6 +81,47 @@ pub fn render(state: &State) -> String {
         }
     }
     view["exchange_reports"] = serde_json::Value::Array(exchange_reports);
+    let mut exchange_validations = Vec::new();
+    for discovery in state.captures.iter().take(8) {
+        let Some(discovery_trial) = state
+            .trials
+            .iter()
+            .find(|trial| trial.id == discovery.trial_id)
+        else {
+            continue;
+        };
+        if discovery_trial.role != "discovery" {
+            continue;
+        }
+        for validation in state.captures.iter().take(8) {
+            let Some(validation_trial) = state
+                .trials
+                .iter()
+                .find(|trial| trial.id == validation.trial_id)
+            else {
+                continue;
+            };
+            if validation_trial.role != "validation"
+                || discovery_trial.experiment_id != validation_trial.experiment_id
+                || discovery.format != validation.format
+            {
+                continue;
+            }
+            if let Ok(result) =
+                crate::exchanges::validate_exchanges(state, &discovery.id, &validation.id, None)
+            {
+                exchange_validations.push(result);
+            }
+            if exchange_validations.len() >= 8 {
+                break;
+            }
+        }
+        if exchange_validations.len() >= 8 {
+            break;
+        }
+    }
+    view["exchange_validations"] =
+        serde_json::to_value(exchange_validations).expect("exchange validations are serializable");
     let mut framing_inferences = Vec::new();
     let mut framing_previews = Vec::new();
     let mut tlv_inferences = Vec::new();
@@ -224,6 +265,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
     <section class="panel"><h2>Tagged action windows</h2><div id="tagWindows"></div></section>
     <section class="panel"><h2>Capture scope tags</h2><div id="captureTags"></div></section>
     <section class="panel"><h2>Candidate exchanges</h2><div id="exchanges"></div></section>
+    <section class="panel"><h2>Held-out exchange bytes</h2><div id="exchangeValidation"></div></section>
     <section class="panel"><h2>Candidate format groups</h2><div id="clusters"></div></section>
     <section class="panel"><h2>Held-out grouping</h2><div id="clusterValidation"></div></section>
     <section class="panel"><h2>Candidate fields</h2><div id="fieldCandidates"></div></section>
@@ -407,6 +449,24 @@ for(const item of state.exchange_reports||[]) {
   byId('exchanges').append(row);
 }
 if(!(state.exchange_reports||[]).length) byId('exchanges').append(node('div','No captures available for exchange pairing.','small muted'));
+for(const result of state.exchange_validations||[]) {
+  const row=node('div','', 'row');
+  row.append(node('strong',result.discovery_capture_id+' → '+result.validation_capture_id),node('div',result.supported_offset_count+' supported · '+result.contradicted_offset_count+' contradicted · '+result.untested_offset_count+' untested candidate byte(s)','small'),node('div',result.discovery_pair_count+' discovery pair(s) · '+result.validation_pair_count+' held-out pair(s) · '+result.validation_ambiguous_count+' ambiguous · '+result.unmatched_validation_pair_count+' pair(s) outside candidate directions','small muted'));
+  const priority={contradicted:0,untested:1,supported:2};
+  const visible=result.checks.slice().sort((a,b)=>(priority[a.status]-priority[b.status])||a.offset-b.offset).slice(0,12);
+  for(const check of visible) {
+    row.append(node('div','byte '+check.offset+' · '+check.status+' · '+check.matching_pair_count+'/'+check.tested_pair_count+' paired messages equal · '+check.earlier_direction,'small'));
+    for(const failed of check.counterexamples.slice(0,2)) {
+      const button=node('button',failed.earlier_observation_id+' → '+failed.later_observation_id+' · '+failed.reason+' ('+failed.earlier_byte+' vs '+failed.later_byte+')','small');
+      button.onclick=()=>{byId('leftCompare').value=failed.earlier_observation_id;byId('rightCompare').value=failed.later_observation_id;renderComparison();byId('comparison').scrollIntoView({behavior:'smooth',block:'nearest'});};
+      row.append(button);
+    }
+  }
+  if(result.checks.length>visible.length) row.append(node('div','Use validate-exchanges for the remaining candidate bytes.','small muted'));
+  row.append(node('div','Byte equality is provisional evidence; a checksum can also match.','small muted'));
+  byId('exchangeValidation').append(row);
+}
+if(!(state.exchange_validations||[]).length) byId('exchangeValidation').append(node('div','Separate discovery and validation captures in one experiment to test paired byte equality.','small muted'));
 if(state.cluster_report) {
   const sample=state.cluster_report;
   byId('clusters').append(node('div','Analyzed '+sample.observation_count+' of '+sample.selected_observation_count+' selected observations · '+sample.sampling_method+(sample.sampling_strata_count?' · '+sample.sampling_strata_count+' strata':''),'small muted'));

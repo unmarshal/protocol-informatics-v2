@@ -3701,3 +3701,100 @@ fn agent_can_page_provisional_exchanges_across_icmp_and_udp() {
     assert_eq!(cli(&["verify", root_text])["observations"], 1036);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn agent_can_validate_exchange_bytes_on_distinct_trials_and_inspect_counterexamples() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&["init", root_text, "Which paired bytes persist?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Test candidate ICMP exchange bytes",
+        "-",
+        "Sequence bytes agree across distinct captures",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let discovery = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "discovery",
+        "sequence 0 to 511",
+    ]);
+    let discovery_trial = discovery["event"]["trial"]["id"].as_str().unwrap();
+    let validation = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "validation",
+        "sequence 512 to 1023",
+    ]);
+    let validation_trial = validation["event"]["trial"]["id"].as_str().unwrap();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let discovery_capture = cli(&[
+        "import",
+        root_text,
+        discovery_trial,
+        "pcap-icmp",
+        path(&fixtures.join("icmp_sweep_512.pcap")),
+    ]);
+    let discovery_id = discovery_capture["event"]["capture"]["id"]
+        .as_str()
+        .unwrap();
+    let validation_capture = cli(&[
+        "import",
+        root_text,
+        validation_trial,
+        "pcap-icmp",
+        path(&fixtures.join("icmp_sweep_512_holdout.pcap")),
+    ]);
+    let validation_id = validation_capture["event"]["capture"]["id"]
+        .as_str()
+        .unwrap();
+    let supported = cli(&["validate-exchanges", root_text, discovery_id, validation_id]);
+    assert_eq!(supported["discovery_pair_count"], 512);
+    assert_eq!(supported["validation_pair_count"], 512);
+    assert_eq!(supported["candidate_offset_count"], 3);
+    assert_eq!(supported["supported_offset_count"], 3);
+    assert_eq!(supported["contradicted_offset_count"], 0);
+    assert_eq!(supported["checks"][0]["tested_pair_count"], 512);
+
+    let changed = cli(&[
+        "import",
+        root_text,
+        validation_trial,
+        "pcap-icmp",
+        path(&fixtures.join("icmp_mismatched_reply.pcap")),
+    ]);
+    let changed_id = changed["event"]["capture"]["id"].as_str().unwrap();
+    let result = cli(&["validate-exchanges", root_text, discovery_id, changed_id]);
+    assert_eq!(result["validation_pair_count"], 3);
+    assert_eq!(result["supported_offset_count"], 1);
+    assert_eq!(result["contradicted_offset_count"], 2);
+    let checks = result["checks"].as_array().unwrap();
+    let sequence_low_byte = checks.iter().find(|check| check["offset"] == 7).unwrap();
+    assert_eq!(sequence_low_byte["status"], "contradicted");
+    assert_eq!(sequence_low_byte["matching_pair_count"], 2);
+    assert_eq!(sequence_low_byte["contradicting_pair_count"], 1);
+    assert_eq!(sequence_low_byte["counterexamples"][0]["earlier_byte"], 2);
+    assert_eq!(sequence_low_byte["counterexamples"][0]["later_byte"], 3);
+    assert_eq!(
+        sequence_low_byte["counterexamples"][0]["reason"],
+        "bytes_differ"
+    );
+
+    let same_trial = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["validate-exchanges", root_text, validation_id, changed_id])
+        .output()
+        .unwrap();
+    assert!(!same_trial.status.success());
+    assert!(String::from_utf8_lossy(&same_trial.stderr).contains("distinct trials"));
+    let report = root.join("held-out-exchanges.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("Held-out exchange bytes"));
+    assert!(html.contains("exchange_validations"));
+    assert!(html.contains("held_out_varying_equal_bytes_v1"));
+    fs::remove_dir_all(root).unwrap();
+}

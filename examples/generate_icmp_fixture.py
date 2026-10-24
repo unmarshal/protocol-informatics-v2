@@ -131,14 +131,25 @@ def main() -> None:
         + "\n"
     )
     holdout = bytearray(header)
+    mismatched_reply = bytearray(header)
     for index, sequence in enumerate((3, 258, 4097)):
         payload = bytes([0xA0 + index, 0xB0, 0xC0 + index]) + bytes(range(index))
         for icmp_type in (8, 0):
             frame = packet(icmp_type, 0x3456, sequence, payload)
+            changed_frame = packet(
+                icmp_type, 0x3456,
+                sequence + (1 if index == 1 and icmp_type == 0 else 0), payload,
+            )
             timestamp_us = index * 1_000_000 + (0 if icmp_type == 8 else 50_000)
             holdout.extend(struct.pack("<IIII", 1_710_000_000 + timestamp_us // 1_000_000,
                                       timestamp_us % 1_000_000, len(frame), len(frame)) + frame)
+            mismatched_reply.extend(
+                struct.pack("<IIII", 1_710_000_000 + timestamp_us // 1_000_000,
+                            timestamp_us % 1_000_000, len(changed_frame), len(changed_frame))
+                + changed_frame
+            )
     (HERE / "icmp_holdout.pcap").write_bytes(holdout)
+    (HERE / "icmp_mismatched_reply.pcap").write_bytes(mismatched_reply)
     truth = {"capture_format": "pcap", "alternate_capture_format": "pcapng",
              "linktype": 1, "packet_count": len(cases),
              "holdout_capture": "icmp_holdout.pcap",

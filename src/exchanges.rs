@@ -112,6 +112,64 @@ pub struct ExchangeReport {
     pub minimum_pairs_for_varying_equal: usize,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ExchangeCounterexample {
+    pub earlier_observation_id: String,
+    pub later_observation_id: String,
+    pub reason: &'static str,
+    pub earlier_byte: Option<u8>,
+    pub later_byte: Option<u8>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExchangeOffsetCheck {
+    pub earlier_direction: String,
+    pub offset: usize,
+    pub status: &'static str,
+    pub tested_pair_count: usize,
+    pub matching_pair_count: usize,
+    pub contradicting_pair_count: usize,
+    pub counterexamples: Vec<ExchangeCounterexample>,
+    pub counterexamples_omitted: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExchangeValidation {
+    pub revision: u64,
+    pub method: &'static str,
+    pub provisional: bool,
+    pub experiment_id: String,
+    pub discovery_trial_id: String,
+    pub validation_trial_id: String,
+    pub discovery_capture_id: String,
+    pub validation_capture_id: String,
+    pub max_lag_ms: u64,
+    pub discovery_pair_count: usize,
+    pub discovery_ambiguous_count: usize,
+    pub validation_pair_count: usize,
+    pub validation_ambiguous_count: usize,
+    pub unmatched_validation_pair_count: usize,
+    pub candidate_offset_count: usize,
+    pub supported_offset_count: usize,
+    pub contradicted_offset_count: usize,
+    pub untested_offset_count: usize,
+    pub checks: Vec<ExchangeOffsetCheck>,
+    pub maximum_compared_prefix_bytes: usize,
+    pub minimum_pairs_for_varying_equal: usize,
+}
+
+struct Pairing<'a> {
+    capture_format: &'a str,
+    observations: Vec<&'a Observation>,
+    pairs: Vec<(usize, usize)>,
+    paired: Vec<bool>,
+    ambiguous_preview: Vec<AmbiguousExchange>,
+    ambiguous_count: usize,
+    untimed_count: usize,
+    unavailable_direction_count: usize,
+    self_reversing_flow_count: usize,
+}
+
 fn prefix_bytes(observation: &Observation) -> Result<Vec<u8>, String> {
     let end = observation
         .bytes_hex
@@ -187,24 +245,18 @@ fn orientation_summaries(
     Ok((summaries, total_groups.saturating_sub(MAX_ORIENTATIONS)))
 }
 
-pub fn pair_exchanges(
-    state: &State,
+fn build_pairing<'a>(
+    state: &'a State,
     capture_id: &str,
-    max_lag_ms: Option<u64>,
-    offset: usize,
-    limit: usize,
-) -> Result<ExchangeReport, String> {
+    max_lag_ms: u64,
+) -> Result<Pairing<'a>, String> {
     let capture = state
         .captures
         .iter()
         .find(|capture| capture.id == capture_id)
         .ok_or_else(|| format!("unknown capture {capture_id}"))?;
-    let max_lag_ms = max_lag_ms.unwrap_or(DEFAULT_MAX_LAG_MS);
     if max_lag_ms == 0 || max_lag_ms > MAX_LAG_MS {
         return Err(format!("max lag must be 1 to {MAX_LAG_MS} milliseconds"));
-    }
-    if limit == 0 || limit > MAX_PAGE_SIZE {
-        return Err(format!("pair page limit must be 1 to {MAX_PAGE_SIZE}"));
     }
     let observations: Vec<_> = state
         .observations
@@ -293,6 +345,42 @@ pub fn pair_exchanges(
         }
         pending.entry(flow).or_default().push_back(index);
     }
+    Ok(Pairing {
+        capture_format: &capture.format,
+        observations,
+        pairs,
+        paired,
+        ambiguous_preview,
+        ambiguous_count,
+        untimed_count,
+        unavailable_direction_count,
+        self_reversing_flow_count,
+    })
+}
+
+pub fn pair_exchanges(
+    state: &State,
+    capture_id: &str,
+    max_lag_ms: Option<u64>,
+    offset: usize,
+    limit: usize,
+) -> Result<ExchangeReport, String> {
+    if limit == 0 || limit > MAX_PAGE_SIZE {
+        return Err(format!("pair page limit must be 1 to {MAX_PAGE_SIZE}"));
+    }
+    let max_lag_ms = max_lag_ms.unwrap_or(DEFAULT_MAX_LAG_MS);
+    let pairing = build_pairing(state, capture_id, max_lag_ms)?;
+    let Pairing {
+        capture_format,
+        observations,
+        pairs,
+        paired,
+        ambiguous_preview,
+        ambiguous_count,
+        untimed_count,
+        unavailable_direction_count,
+        self_reversing_flow_count,
+    } = pairing;
     let pair_count = pairs.len();
     if offset > pair_count {
         return Err("pair offset exceeds pair count".into());
@@ -330,7 +418,7 @@ pub fn pair_exchanges(
         method: "unique_reciprocal_predecessor_v1",
         provisional: true,
         capture_id: capture_id.into(),
-        capture_format: capture.format.clone(),
+        capture_format: capture_format.into(),
         observation_count: observations.len(),
         maximum_observations: MAX_OBSERVATIONS,
         max_lag_ms,
@@ -351,6 +439,170 @@ pub fn pair_exchanges(
         unpaired_ids_omitted: unpaired.len().saturating_sub(MAX_PREVIEW),
         orientation_summaries,
         orientation_summaries_omitted,
+        maximum_compared_prefix_bytes: MAX_COMPARE_PREFIX_BYTES,
+        minimum_pairs_for_varying_equal: MIN_VARYING_EQUAL_PAIRS,
+    })
+}
+
+/// Test byte-equality candidates learned from one capture on a distinct trial.
+/// The result is evidence about paired bytes, not a semantic echo-field claim.
+pub fn validate_exchanges(
+    state: &State,
+    discovery_capture_id: &str,
+    validation_capture_id: &str,
+    max_lag_ms: Option<u64>,
+) -> Result<ExchangeValidation, String> {
+    let discovery_capture = state
+        .captures
+        .iter()
+        .find(|capture| capture.id == discovery_capture_id)
+        .ok_or_else(|| format!("unknown capture {discovery_capture_id}"))?;
+    let validation_capture = state
+        .captures
+        .iter()
+        .find(|capture| capture.id == validation_capture_id)
+        .ok_or_else(|| format!("unknown capture {validation_capture_id}"))?;
+    let discovery_trial = state
+        .trials
+        .iter()
+        .find(|trial| trial.id == discovery_capture.trial_id)
+        .ok_or_else(|| format!("unknown trial {}", discovery_capture.trial_id))?;
+    let validation_trial = state
+        .trials
+        .iter()
+        .find(|trial| trial.id == validation_capture.trial_id)
+        .ok_or_else(|| format!("unknown trial {}", validation_capture.trial_id))?;
+    if discovery_trial.id == validation_trial.id
+        || discovery_trial.experiment_id != validation_trial.experiment_id
+    {
+        return Err(
+            "discovery and validation captures must belong to distinct trials of one experiment"
+                .into(),
+        );
+    }
+    if discovery_capture.format != validation_capture.format {
+        return Err("discovery and validation captures must use the same format".into());
+    }
+    if !discovery_capture.sha256.is_empty() && discovery_capture.sha256 == validation_capture.sha256
+    {
+        return Err("discovery and validation captures contain identical source bytes".into());
+    }
+    let max_lag_ms = max_lag_ms.unwrap_or(DEFAULT_MAX_LAG_MS);
+    let discovery = build_pairing(state, discovery_capture_id, max_lag_ms)?;
+    let validation = build_pairing(state, validation_capture_id, max_lag_ms)?;
+    let (summaries, omitted) = orientation_summaries(&discovery.observations, &discovery.pairs)?;
+    if omitted > 0 {
+        return Err(format!(
+            "discovery has more than {MAX_ORIENTATIONS} exchange orientations"
+        ));
+    }
+    let validation_bytes = validation
+        .observations
+        .iter()
+        .map(|observation| prefix_bytes(observation))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut validation_groups = BTreeMap::<String, Vec<(usize, usize)>>::new();
+    for &(earlier, later) in &validation.pairs {
+        validation_groups
+            .entry(
+                validation.observations[earlier]
+                    .direction
+                    .clone()
+                    .unwrap_or_default(),
+            )
+            .or_default()
+            .push((earlier, later));
+    }
+    let mut checks = Vec::new();
+    let mut candidate_directions = BTreeSet::new();
+    for summary in summaries {
+        if summary.varying_equal_ranges.is_empty() {
+            continue;
+        }
+        candidate_directions.insert(summary.earlier_direction.clone());
+        let group = validation_groups.get(&summary.earlier_direction);
+        for range in summary.varying_equal_ranges {
+            for offset in range.start..range.end {
+                let mut matching_pair_count = 0;
+                let mut contradicting_pair_count = 0;
+                let mut counterexamples = Vec::new();
+                for &(earlier, later) in group.into_iter().flatten() {
+                    let earlier_byte = validation_bytes[earlier].get(offset).copied();
+                    let later_byte = validation_bytes[later].get(offset).copied();
+                    if earlier_byte.is_some() && earlier_byte == later_byte {
+                        matching_pair_count += 1;
+                    } else {
+                        contradicting_pair_count += 1;
+                        if counterexamples.len() < 5 {
+                            counterexamples.push(ExchangeCounterexample {
+                                earlier_observation_id: validation.observations[earlier].id.clone(),
+                                later_observation_id: validation.observations[later].id.clone(),
+                                reason: if earlier_byte.is_none() || later_byte.is_none() {
+                                    "byte_absent"
+                                } else {
+                                    "bytes_differ"
+                                },
+                                earlier_byte,
+                                later_byte,
+                            });
+                        }
+                    }
+                }
+                let tested_pair_count = matching_pair_count + contradicting_pair_count;
+                checks.push(ExchangeOffsetCheck {
+                    earlier_direction: summary.earlier_direction.clone(),
+                    offset,
+                    status: if tested_pair_count == 0 {
+                        "untested"
+                    } else if contradicting_pair_count > 0 {
+                        "contradicted"
+                    } else {
+                        "supported"
+                    },
+                    tested_pair_count,
+                    matching_pair_count,
+                    contradicting_pair_count,
+                    counterexamples_omitted: contradicting_pair_count
+                        .saturating_sub(counterexamples.len()),
+                    counterexamples,
+                });
+            }
+        }
+    }
+    let unmatched_validation_pair_count = validation_groups
+        .iter()
+        .filter(|(direction, _)| !candidate_directions.contains(*direction))
+        .map(|(_, group)| group.len())
+        .sum();
+    Ok(ExchangeValidation {
+        revision: state.revision,
+        method: "held_out_varying_equal_bytes_v1",
+        provisional: true,
+        experiment_id: discovery_trial.experiment_id.clone(),
+        discovery_trial_id: discovery_trial.id.clone(),
+        validation_trial_id: validation_trial.id.clone(),
+        discovery_capture_id: discovery_capture_id.into(),
+        validation_capture_id: validation_capture_id.into(),
+        max_lag_ms,
+        discovery_pair_count: discovery.pairs.len(),
+        discovery_ambiguous_count: discovery.ambiguous_count,
+        validation_pair_count: validation.pairs.len(),
+        validation_ambiguous_count: validation.ambiguous_count,
+        unmatched_validation_pair_count,
+        candidate_offset_count: checks.len(),
+        supported_offset_count: checks
+            .iter()
+            .filter(|check| check.status == "supported")
+            .count(),
+        contradicted_offset_count: checks
+            .iter()
+            .filter(|check| check.status == "contradicted")
+            .count(),
+        untested_offset_count: checks
+            .iter()
+            .filter(|check| check.status == "untested")
+            .count(),
+        checks,
         maximum_compared_prefix_bytes: MAX_COMPARE_PREFIX_BYTES,
         minimum_pairs_for_varying_equal: MIN_VARYING_EQUAL_PAIRS,
     })

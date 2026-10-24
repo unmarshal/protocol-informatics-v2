@@ -103,6 +103,7 @@ fn print_help() {
     println!("  cluster <dir> [trial-id|-] [respect|ignore]");
     println!("  validate-clusters <dir> <discovery-trial> <validation-trial> [respect|ignore]");
     println!("  pair-exchanges <dir> <capture-id> [max-lag-ms] [offset] [limit<=100]");
+    println!("  validate-exchanges <dir> <discovery-capture> <validation-capture> [max-lag-ms]");
     println!("  analyze-cluster <dir> <cluster-id> [trial-id|-] [respect|ignore]");
     println!("  decide <dir> <decision> [evidence-ids]");
     println!("  summary <dir>                      bounded corpus overview for agents");
@@ -1529,6 +1530,25 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             let state = workflow::load(root)?;
             print_json(&protocol_informatics_v2::exchanges::pair_exchanges(
                 &state, &args[2], max_lag_ms, offset, limit,
+            )?)
+        }
+        "validate-exchanges" => {
+            if args.len() < 4 || args.len() > 5 {
+                return Err(
+                    "expected discovery capture, validation capture, and optional max lag".into(),
+                );
+            }
+            let max_lag_ms = args
+                .get(4)
+                .map(|value| {
+                    value.parse::<u64>().map_err(|_| {
+                        "max lag must be an unsigned number of milliseconds".to_string()
+                    })
+                })
+                .transpose()?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::exchanges::validate_exchanges(
+                &state, &args[2], &args[3], max_lag_ms,
             )?)
         }
         "analyze-cluster" => {
