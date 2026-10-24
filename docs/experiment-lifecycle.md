@@ -1,0 +1,54 @@
+# Experiment and capture lifecycle
+
+Status: design proposal, October 2026. No live capture or experiment commands are implemented yet.
+
+## Model
+
+An **experiment** tests a question. It owns competing hypotheses, predicted observations, and one or more **trials**. A trial records one controlled condition, such as a baseline payload and a changed payload. Each trial can own one or more **captures** and an ordered **action log**. Captures are immutable raw artifacts; derived observations and tags point back to exact source offsets.
+
+This separation matters: an experiment can be repeated, a capture can contain unrelated traffic, and a trial can generate many request and response messages. Tagging an entire capture as a result would blur those distinctions.
+
+| Record | Key fields |
+| --- | --- |
+| Experiment | ID, question, candidate hypothesis IDs, predicted outcomes, creator, status |
+| Trial | ID, experiment ID, baseline/variant role, changed factors, environment, action driver, status |
+| Capture | ID, trial ID, backend, target/interface, filter, start/stop times, raw artifact hash, capture statistics, status |
+| Action event | ID, trial ID, action type, parameters or input artifact, wall and monotonic timestamps, result |
+| Observation tag | observation ID, trial/action/phase link, label, author, timestamp, confidence, supporting evidence |
+
+Phase labels include `baseline`, `stimulus`, `response`, and `background`. The agent can leave traffic unassigned until correlation is supported. Tags are versioned annotations, not edits to packet bytes. An action event may link a sent request to later responses even when the unknown protocol has no transaction identifier.
+
+## Agent workflow
+
+1. **Plan:** create an experiment with a falsifiable question, competing predictions, a target, capture scope, bounds, and a baseline/variant trial plan.
+2. **Prepare:** validate the capture backend and target; record the tool version, interface, filter, clock information, and action driver. Start with a baseline trial when possible.
+3. **Capture:** start the capture and receive a stable capture ID. Record precise action markers as the trial driver sends input or changes one controlled factor. Stop by explicit call or the planned duration/size/packet limit.
+4. **Ingest:** hash and retain the original capture, extract streams and candidate messages, record packet loss and framing uncertainty, and link observations to capture spans.
+5. **Tag:** associate observed messages with trial phases and action events using time windows, direction, and any inferred correlation fields. Show uncertain and unassigned observations explicitly.
+6. **Evaluate:** compare observations with the predictions, including counterexamples, then rank the next discriminating experiment.
+
+The capture adapter and action driver are separate. A first network adapter can wrap `dumpcap` and keep its default pcapng output; the experiment metadata belongs in sidecar records so the model also works for imported captures, serial traces, IPC logs, and files. `dumpcap` supports capture filters and stop conditions for duration, size, and packet count: https://www.wireshark.org/docs/man-pages/dumpcap.html
+
+## Agent operations
+
+| Operation | Result |
+| --- | --- |
+| `create_experiment` | validated plan and experiment ID |
+| `create_trial` | trial ID and controlled factors |
+| `start_capture` | capture ID, backend status, start time, limits |
+| `mark_action` | event ID and timestamp for a stimulus or environmental change |
+| `stop_capture` | raw artifact ID, hash, end time, capture statistics |
+| `import_capture` | artifact ID for an existing trace or file |
+| `tag_observations` | versioned links to trial phase or action event |
+| `compare_trials` | changed factors, matched observations, predicted and actual outcomes |
+| `evaluate_experiment` | evidence for each hypothesis and unresolved observations |
+
+Start and stop calls accept idempotency keys so retries do not create duplicate captures. Long-running captures return handles and status updates. Failed or interrupted captures remain inspectable with their partial artifact and failure reason.
+
+## Human view
+
+Show the experiment as a timeline: capture intervals, marked actions, message bursts, inferred request/response links, and phase tags. Let an analyst compare baseline and variant trials side by side, inspect exact bytes behind each claimed difference, and correct an assignment. The same corrected tag becomes available to the agent as versioned evidence.
+
+## First implementation slice
+
+Implement experiment, trial, capture, action, and tag records before live capture. Support `create_experiment`, `create_trial`, `import_capture`, `mark_action`, and `tag_observations` for existing hex or pcapng input. Then add a bounded local `dumpcap` adapter and a controlled trial runner. This exercises the provenance model before adding process management and live collection.

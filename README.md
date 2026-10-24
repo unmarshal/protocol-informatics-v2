@@ -4,7 +4,7 @@ A new Rust implementation of the ideas behind [Marshall Beddoe's Protocol Inform
 
 This repository is an **early working baseline**, not a complete protocol reverse-engineering system. It contains new Rust code; it does not import the original LGPL implementation.
 
-The proposed agent and human interfaces are described in [docs/interface-design.md](docs/interface-design.md).
+The proposed agent and human interfaces are described in [docs/interface-design.md](docs/interface-design.md). The [experiment lifecycle](docs/experiment-lifecycle.md) specifies how agents plan trials, run captures, and tag resulting data.
 
 ## Try it
 
@@ -34,7 +34,7 @@ The `PairwiseAligner` trait lets us compare alignment methods against the same c
 
 ## Next milestones
 
-1. Add capture ingestion and TCP stream reassembly so messages can be extracted with direction, session, and timing metadata.
+1. Add capture ingestion and TCP stream reassembly so messages can be extracted with direction, session, timing, and experiment provenance.
 2. Cluster message types before alignment and add affine-gap or profile alignment for variable fields.
 3. Infer and score testable hypotheses such as lengths, counters, checksums, delimiters, and request/response correlations.
 4. Expose bounded, provenance-rich queries and hypothesis tests to agents; build a linked human viewer from the same data model. Generate parsers and dissectors only after validating against held-out traffic.

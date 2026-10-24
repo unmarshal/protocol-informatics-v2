@@ -25,6 +25,8 @@ captures / files / controlled experiments
 - **Hypothesis:** a typed claim about a boundary, field, relation, message type, or state transition. Store confidence, status, supporting evidence, counterexamples, and competing hypotheses.
 - **Experiment:** the input changed, predicted outcomes for competing hypotheses, actual observation IDs, and result.
 
+An experiment can contain multiple baseline and variant trials, each with its own capture and action timeline. See [experiment-lifecycle.md](experiment-lifecycle.md) for the record model and agent operations.
+
 Use small JSONL manifests for portable interchange and content-addressed binary blobs for payloads. Raw bytes remain lossless. Derived records are versioned separately; large corpora can add an indexed store without changing their meaning. All byte spans use half-open `[start, end)` offsets and name the source coordinate system.
 
 ## Agent navigation
@@ -40,6 +42,7 @@ Start with a structured JSON CLI. An agent tool server can expose the same opera
 | `list_hypotheses` / `explain_hypothesis` | claim, score, evidence, counterexamples, alternatives |
 | `test_hypothesis` | deterministic checks on selected observations and held-out data |
 | `trace_session` | ordered message types, request/response links, state candidates |
+| `list_experiments` / `explain_experiment` | plan, trials, capture status, action markers, tags, predictions, and observed outcomes |
 
 An agent should be able to move from a summary to a cluster, one observation, a byte span, and the evidence for a claim without requesting an entire capture. The analysis tools return measurements; an agent can propose a hypothesis or experiment as a versioned record. Accepting, rejecting, or editing a hypothesis is an explicit operation recorded in an event log.
 
@@ -50,7 +53,7 @@ Build a local viewer over the same IDs and queries. The first version should hav
 1. **Corpus and session map:** distributions of message length and direction, session timelines, and import/framing uncertainty.
 2. **Cluster explorer:** representatives, outliers, distinguishing bytes, and side-by-side comparisons. Split or merge suggestions show their effect before acceptance.
 3. **Byte inspector:** synchronized hex, ASCII, bits, candidate field overlays, decoded interpretations, and aligned peers. Selecting a field highlights the exact source bytes in every view.
-4. **Hypothesis workbench:** supporting examples, counterexamples, score history, competing explanations, and the next suggested experiment.
+4. **Hypothesis and experiment workbench:** supporting examples, counterexamples, score history, competing explanations, trial controls, captured data, and the next suggested experiment.
 
 The viewer must allow a person to adjust a boundary or type, split or merge a cluster, and immediately see which claims change. Every automated suggestion needs a path back to raw bytes. A 2025 study of experienced protocol reverse engineers found a flexible, hypothesis-driven workflow and a need to validate automation interactively: https://www.eecs.tufts.edu/~dvotipka/files/papers/MatteiPRE2025.pdf
 
