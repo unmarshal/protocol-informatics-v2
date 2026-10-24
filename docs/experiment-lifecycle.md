@@ -25,7 +25,8 @@ Phase labels include `baseline`, `stimulus`, `response`, and `background`. The a
 3. **Capture:** start the capture and receive a stable capture ID. Record precise action markers as the trial driver sends input or changes one controlled factor. Stop by explicit call or the planned duration/size/packet limit.
 4. **Ingest:** hash and retain the original capture, extract streams and candidate messages, record packet loss and framing uncertainty, and link observations to capture spans.
 5. **Tag:** associate observed messages with trial phases and action events using time windows, direction, and any inferred correlation fields. Show uncertain and unassigned observations explicitly.
-6. **Evaluate:** compare observations with the predictions, including counterexamples, then rank the next discriminating experiment.
+6. **Evaluate:** compare observations with the predictions, including counterexamples, and update the investigation's hypothesis scores.
+7. **Decide and repeat:** record which uncertainty remains, choose another trial or branch the investigation, and checkpoint the new revision. The next cycle can reuse earlier captures and tests without rerunning them.
 
 The capture adapter and action driver are separate. A first network adapter can wrap `dumpcap` and keep its default pcapng output; the experiment metadata belongs in sidecar records so the model also works for imported captures, serial traces, IPC logs, and files. `dumpcap` supports capture filters and stop conditions for duration, size, and packet count: https://www.wireshark.org/docs/man-pages/dumpcap.html
 
@@ -42,6 +43,7 @@ The capture adapter and action driver are separate. A first network adapter can 
 | `tag_observations` | versioned links to trial phase or action event |
 | `compare_trials` | changed factors, matched observations, predicted and actual outcomes |
 | `evaluate_experiment` | evidence for each hypothesis and unresolved observations |
+| `record_decision` | selected next action and a link to the new investigation revision |
 
 Start and stop calls accept idempotency keys so retries do not create duplicate captures. Long-running captures return handles and status updates. Failed or interrupted captures remain inspectable with their partial artifact and failure reason.
 

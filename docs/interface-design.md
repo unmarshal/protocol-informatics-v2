@@ -4,16 +4,14 @@ Status: proposal, October 2026. The current CLI only analyzes hex-encoded sample
 
 ## Principle
 
-The Rust analysis engine produces one versioned, queryable evidence model. A CLI, an agent tool server, and a local human viewer use that model. Every visible highlight or agent explanation points to the same observation IDs and byte spans. Interface state never becomes a hidden source of truth.
+The Rust analysis engine produces one versioned, queryable evidence model. A CLI, an agent tool server, and a local human viewer use that model. Every visible highlight or agent explanation points to the same observation IDs and byte spans. Interface state never becomes a hidden source of truth. An [investigation](iterative-workflow.md) connects successive analyses, experiments, and decisions so the workflow can be resumed or branched.
 
 ```text
-captures / files / controlled experiments
-                 ↓
-      immutable observations
-                 ↓
-    derived analyses + hypotheses
-              ↙      ↘
-       agent tools    human viewer
+inspect evidence → propose hypotheses → plan trial → capture/import
+       ↑                                           ↓
+revise or branch ← compare predictions ← analyze and tag
+
+           agent tools ↔ shared records ↔ human viewer
 ```
 
 ## Durable records
@@ -24,6 +22,7 @@ captures / files / controlled experiments
 - **Cluster:** member IDs, medoid or representative, outliers, defining features, and stability estimate.
 - **Hypothesis:** a typed claim about a boundary, field, relation, message type, or state transition. Store confidence, status, supporting evidence, counterexamples, and competing hypotheses.
 - **Experiment:** the input changed, predicted outcomes for competing hypotheses, actual observation IDs, and result.
+- **Investigation revision:** a checkpoint of the current question, evidence, hypothesis frontier, open tasks, and decisions. Each revision links to its parent and the events that produced it.
 
 An experiment can contain multiple baseline and variant trials, each with its own capture and action timeline. See [experiment-lifecycle.md](experiment-lifecycle.md) for the record model and agent operations.
 
@@ -43,8 +42,10 @@ Start with a structured JSON CLI. An agent tool server can expose the same opera
 | `test_hypothesis` | deterministic checks on selected observations and held-out data |
 | `trace_session` | ordered message types, request/response links, state candidates |
 | `list_experiments` / `explain_experiment` | plan, trials, capture status, action markers, tags, predictions, and observed outcomes |
+| `resume_investigation` / `changes_since` | current checkpoint, open questions, new evidence, changed scores, and unfinished actions |
+| `record_decision` | chosen next action, supporting evidence, expected outcome, and resulting revision |
 
-An agent should be able to move from a summary to a cluster, one observation, a byte span, and the evidence for a claim without requesting an entire capture. The analysis tools return measurements; an agent can propose a hypothesis or experiment as a versioned record. Accepting, rejecting, or editing a hypothesis is an explicit operation recorded in an event log.
+An agent should be able to move from a summary to a cluster, one observation, a byte span, and the evidence for a claim without requesting an entire capture. The analysis tools return measurements; an agent can propose a hypothesis or experiment as a versioned record. Accepting, rejecting, or editing a hypothesis is an explicit operation recorded in an event log. The agent resumes from the durable investigation revision, not from an unstructured chat transcript.
 
 ## Human viewer
 
@@ -53,7 +54,7 @@ Build a local viewer over the same IDs and queries. The first version should hav
 1. **Corpus and session map:** distributions of message length and direction, session timelines, and import/framing uncertainty.
 2. **Cluster explorer:** representatives, outliers, distinguishing bytes, and side-by-side comparisons. Split or merge suggestions show their effect before acceptance.
 3. **Byte inspector:** synchronized hex, ASCII, bits, candidate field overlays, decoded interpretations, and aligned peers. Selecting a field highlights the exact source bytes in every view.
-4. **Hypothesis and experiment workbench:** supporting examples, counterexamples, score history, competing explanations, trial controls, captured data, and the next suggested experiment.
+4. **Hypothesis and experiment workbench:** supporting examples, counterexamples, score history, competing explanations, trial controls, captured data, and the next suggested experiment. Show what changed after each trial and why the next action was selected.
 
 The viewer must allow a person to adjust a boundary or type, split or merge a cluster, and immediately see which claims change. Every automated suggestion needs a path back to raw bytes. A 2025 study of experienced protocol reverse engineers found a flexible, hypothesis-driven workflow and a need to validate automation interactively: https://www.eecs.tufts.edu/~dvotipka/files/papers/MatteiPRE2025.pdf
 

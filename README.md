@@ -4,7 +4,7 @@ A new Rust implementation of the ideas behind [Marshall Beddoe's Protocol Inform
 
 This repository is an **early working baseline**, not a complete protocol reverse-engineering system. It contains new Rust code; it does not import the original LGPL implementation.
 
-The proposed agent and human interfaces are described in [docs/interface-design.md](docs/interface-design.md). The [experiment lifecycle](docs/experiment-lifecycle.md) specifies how agents plan trials, run captures, and tag resulting data.
+The proposed [iterative investigation workflow](docs/iterative-workflow.md) connects evidence, hypotheses, experiments, and revised conclusions. The [agent and human interfaces](docs/interface-design.md) and [experiment lifecycle](docs/experiment-lifecycle.md) describe how to navigate that workflow, run captures, and tag resulting data.
 
 ## Try it
 
@@ -34,11 +34,12 @@ The `PairwiseAligner` trait lets us compare alignment methods against the same c
 
 ## Next milestones
 
-1. Add capture ingestion and TCP stream reassembly so messages can be extracted with direction, session, timing, and experiment provenance.
-2. Cluster message types before alignment and add affine-gap or profile alignment for variable fields.
-3. Infer and score testable hypotheses such as lengths, counters, checksums, delimiters, and request/response correlations.
-4. Expose bounded, provenance-rich queries and hypothesis tests to agents; build a linked human viewer from the same data model. Generate parsers and dissectors only after validating against held-out traffic.
-5. Build a representative benchmark corpus and profile the CPU implementation. Consider acceleration only where measured workloads justify it.
+1. Add a durable investigation record with observations, hypotheses, experiment plans, decisions, and resumable revisions.
+2. Add capture ingestion and TCP stream reassembly so messages can be extracted with direction, session, timing, and experiment provenance.
+3. Cluster message types before alignment and add affine-gap or profile alignment for variable fields.
+4. Infer and score testable hypotheses such as lengths, counters, checksums, delimiters, and request/response correlations.
+5. Expose bounded, provenance-rich queries and hypothesis tests to agents; build a linked human viewer from the same data model. Generate parsers and dissectors only after validating against held-out traffic.
+6. Build a representative benchmark corpus and profile the CPU implementation. Consider acceleration only where measured workloads justify it.
 
 ## Licensing
 
