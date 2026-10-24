@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -19,6 +19,7 @@ use crate::varint::{VarintConfig, probe_varint};
 
 const SCHEMA_VERSION: u32 = 10;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
+const MAX_RECOVERY_TAIL_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hypothesis {
@@ -1081,8 +1082,15 @@ pub fn load(root: &Path) -> Result<State, String> {
 }
 
 fn load_from_file(file: &mut fs::File) -> Result<State, String> {
+    require_newline_terminated(file)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| error.to_string())?;
+    replay_lines(BufReader::new(file))
+}
+
+fn replay_lines(reader: impl BufRead) -> Result<State, String> {
     let mut state = State::empty();
-    for (index, line) in BufReader::new(file).lines().enumerate() {
+    for (index, line) in reader.lines().enumerate() {
         let line = line.map_err(|error| error.to_string())?;
         let record: EventRecord = serde_json::from_str(&line)
             .map_err(|error| format!("event line {}: {error}", index + 1))?;
@@ -1094,9 +1102,193 @@ fn load_from_file(file: &mut fs::File) -> Result<State, String> {
     Ok(state)
 }
 
+fn require_newline_terminated(file: &mut fs::File) -> Result<(), String> {
+    let length = file.metadata().map_err(|error| error.to_string())?.len();
+    if length == 0 {
+        return Err("investigation is empty".into());
+    }
+    file.seek(SeekFrom::End(-1))
+        .map_err(|error| error.to_string())?;
+    let mut last = [0];
+    file.read_exact(&mut last)
+        .map_err(|error| error.to_string())?;
+    if last[0] != b'\n' {
+        return Err("event log has an unterminated final line; inspect recover-tail".into());
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TailRecoveryAction {
+    Clean,
+    AppendNewline,
+    TruncatePartialTail,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TailRecoveryReport {
+    pub action: TailRecoveryAction,
+    pub applied: bool,
+    pub event_log_bytes_before: u64,
+    pub event_log_bytes_after: u64,
+    pub last_valid_revision: u64,
+    pub recovered_revision: u64,
+    pub tail_bytes: usize,
+    pub tail_sha256: Option<String>,
+    pub backup_path: Option<String>,
+}
+
+pub fn recover_tail(root: &Path, apply: bool) -> Result<TailRecoveryReport, String> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(event_path(root))
+        .map_err(|error| error.to_string())?;
+    file.lock().map_err(|error| error.to_string())?;
+    let length = file.metadata().map_err(|error| error.to_string())?.len();
+    if length == 0 {
+        return Err("investigation is empty".into());
+    }
+    file.seek(SeekFrom::End(-1))
+        .map_err(|error| error.to_string())?;
+    let mut last = [0];
+    file.read_exact(&mut last)
+        .map_err(|error| error.to_string())?;
+    if last[0] == b'\n' {
+        let state = load_from_file(&mut file)?;
+        return Ok(TailRecoveryReport {
+            action: TailRecoveryAction::Clean,
+            applied: false,
+            event_log_bytes_before: length,
+            event_log_bytes_after: length,
+            last_valid_revision: state.revision,
+            recovered_revision: state.revision,
+            tail_bytes: 0,
+            tail_sha256: None,
+            backup_path: None,
+        });
+    }
+    let scan_length = length.min(MAX_RECOVERY_TAIL_BYTES);
+    let scan_start = length - scan_length;
+    file.seek(SeekFrom::Start(scan_start))
+        .map_err(|error| error.to_string())?;
+    let mut scanned = vec![0; usize::try_from(scan_length).map_err(|error| error.to_string())?];
+    file.read_exact(&mut scanned)
+        .map_err(|error| error.to_string())?;
+    let (prefix_end, tail, mut prefix_state) = if let Some(last_newline) =
+        scanned.iter().rposition(|byte| *byte == b'\n')
+    {
+        let prefix_end = scan_start + last_newline as u64 + 1;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|error| error.to_string())?;
+        let prefix_state = replay_lines(BufReader::new((&mut file).take(prefix_end)))?;
+        (prefix_end, &scanned[last_newline + 1..], prefix_state)
+    } else if scan_start == 0 {
+        (0, scanned.as_slice(), State::empty())
+    } else {
+        return Err(format!(
+            "no complete event line found within the last {MAX_RECOVERY_TAIL_BYTES} bytes; refusing recovery"
+        ));
+    };
+    let last_valid_revision = prefix_state.revision;
+    let tail_sha256 = format!("{:x}", Sha256::digest(tail));
+    let parsed = serde_json::from_slice::<EventRecord>(tail);
+    let (action, recovered_revision, event_log_bytes_after) = match parsed {
+        Ok(record) => {
+            prefix_state.apply(&record).map_err(|error| {
+                format!("unterminated event is invalid ({error}); refusing recovery")
+            })?;
+            (
+                TailRecoveryAction::AppendNewline,
+                record.revision,
+                length + 1,
+            )
+        }
+        Err(_) if prefix_end == 0 => {
+            return Err("first event is incomplete; refusing to discard the investigation".into());
+        }
+        Err(_) => (
+            TailRecoveryAction::TruncatePartialTail,
+            last_valid_revision,
+            prefix_end,
+        ),
+    };
+    let mut backup_path = None;
+    if apply {
+        match action {
+            TailRecoveryAction::Clean => unreachable!(),
+            TailRecoveryAction::AppendNewline => {
+                file.seek(SeekFrom::End(0))
+                    .map_err(|error| error.to_string())?;
+                file.write_all(b"\n").map_err(|error| error.to_string())?;
+                file.sync_all().map_err(|error| error.to_string())?;
+            }
+            TailRecoveryAction::TruncatePartialTail => {
+                let directory = root.join(".pi").join("recovery");
+                fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+                let path =
+                    directory.join(format!("tail-{last_valid_revision:06}-{tail_sha256}.bin"));
+                if path.exists() {
+                    if fs::read(&path).map_err(|error| error.to_string())? != tail {
+                        return Err("existing recovery backup has different bytes".into());
+                    }
+                } else {
+                    let temporary = directory.join(format!(
+                        ".tail-{last_valid_revision:06}-{tail_sha256}-{}-{}.tmp",
+                        std::process::id(),
+                        now_ns()?
+                    ));
+                    let mut backup = OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&temporary)
+                        .map_err(|error| error.to_string())?;
+                    backup.write_all(tail).map_err(|error| error.to_string())?;
+                    backup.sync_all().map_err(|error| error.to_string())?;
+                    drop(backup);
+                    if path.exists() {
+                        if fs::read(&path).map_err(|error| error.to_string())? != tail {
+                            return Err("existing recovery backup has different bytes".into());
+                        }
+                        fs::remove_file(&temporary).map_err(|error| error.to_string())?;
+                    } else {
+                        fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
+                    }
+                }
+                if let Ok(directory_file) = fs::File::open(&directory) {
+                    let _ = directory_file.sync_all();
+                }
+                file.set_len(prefix_end)
+                    .map_err(|error| error.to_string())?;
+                file.sync_all().map_err(|error| error.to_string())?;
+                backup_path = Some(path.display().to_string());
+            }
+        }
+        let recovered = load_from_file(&mut file)?;
+        if recovered.revision != recovered_revision {
+            return Err("recovered event log revision changed unexpectedly".into());
+        }
+    }
+    Ok(TailRecoveryReport {
+        action,
+        applied: apply,
+        event_log_bytes_before: length,
+        event_log_bytes_after,
+        last_valid_revision,
+        recovered_revision,
+        tail_bytes: tail.len(),
+        tail_sha256: Some(tail_sha256),
+        backup_path,
+    })
+}
+
 pub fn changes_since(root: &Path, revision: u64, limit: usize) -> Result<Vec<EventRecord>, String> {
-    let file = fs::File::open(event_path(root)).map_err(|error| error.to_string())?;
+    let mut file = fs::File::open(event_path(root)).map_err(|error| error.to_string())?;
     file.lock_shared().map_err(|error| error.to_string())?;
+    require_newline_terminated(&mut file)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| error.to_string())?;
     let mut state = State::empty();
     let mut changes = Vec::new();
     for (index, line) in BufReader::new(&file).lines().enumerate() {

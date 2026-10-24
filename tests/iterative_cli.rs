@@ -2865,3 +2865,136 @@ fn agent_can_check_format_groups_on_held_out_messages() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn interrupted_event_tail_can_be_inspected_and_recovered_without_hiding_complete_corruption() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&[
+        "init",
+        root_text,
+        "Can the investigation resume after a partial write?",
+    ]);
+    cli(&["hypothesis", root_text, "first event"]);
+    let event_path = root.join(".pi/events.jsonl");
+    let original = fs::read(&event_path).unwrap();
+    let last_start = original[..original.len() - 1]
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .unwrap()
+        + 1;
+    let partial = &original[last_start..last_start + 20];
+    let mut interrupted = original[..last_start].to_vec();
+    interrupted.extend_from_slice(partial);
+    fs::write(&event_path, &interrupted).unwrap();
+    let blocked = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["resume", root_text])
+        .output()
+        .unwrap();
+    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("unterminated final line"));
+    let preview = cli(&["recover-tail", root_text]);
+    assert_eq!(preview["action"], "truncate_partial_tail");
+    assert_eq!(preview["applied"], false);
+    assert_eq!(preview["last_valid_revision"], 1);
+    assert_eq!(preview["tail_bytes"], partial.len());
+    assert_eq!(fs::read(&event_path).unwrap(), interrupted);
+    let repaired = cli(&["recover-tail", root_text, "--apply"]);
+    assert_eq!(repaired["action"], "truncate_partial_tail");
+    assert_eq!(repaired["applied"], true);
+    let backup = repaired["backup_path"].as_str().unwrap();
+    assert_eq!(fs::read(backup).unwrap(), partial);
+    assert_eq!(cli(&["resume", root_text])["revision"], 1);
+    assert_eq!(
+        cli(&["hypothesis", root_text, "repeated event"])["revision"],
+        2
+    );
+
+    let with_newline = fs::read(&event_path).unwrap();
+    assert_eq!(with_newline.last(), Some(&b'\n'));
+    fs::write(&event_path, &with_newline[..with_newline.len() - 1]).unwrap();
+    let unterminated = fs::read(&event_path).unwrap();
+    let blocked_append = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["hypothesis", root_text, "must not glue to the prior event"])
+        .output()
+        .unwrap();
+    assert!(!blocked_append.status.success());
+    assert_eq!(fs::read(&event_path).unwrap(), unterminated);
+    let preview = cli(&["recover-tail", root_text]);
+    assert_eq!(preview["action"], "append_newline");
+    assert_eq!(preview["recovered_revision"], 2);
+    let repaired = cli(&["recover-tail", root_text, "--apply"]);
+    assert_eq!(repaired["action"], "append_newline");
+    assert!(repaired["backup_path"].is_null());
+    assert_eq!(fs::read(&event_path).unwrap(), with_newline);
+    assert_eq!(cli(&["resume", root_text])["revision"], 2);
+    assert_eq!(cli(&["recover-tail", root_text])["action"], "clean");
+
+    let lines: Vec<_> = std::str::from_utf8(&with_newline)
+        .unwrap()
+        .lines()
+        .collect();
+    let mut invalid_event: Value = serde_json::from_str(lines[1]).unwrap();
+    invalid_event["revision"] = serde_json::json!(99);
+    let invalid_unterminated = format!("{}\n{}", lines[0], invalid_event);
+    fs::write(&event_path, &invalid_unterminated).unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["recover-tail", root_text, "--apply"])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("unterminated event is invalid"));
+    assert_eq!(
+        fs::read(&event_path).unwrap(),
+        invalid_unterminated.as_bytes()
+    );
+    fs::write(&event_path, &with_newline).unwrap();
+
+    let mut corrupt_complete = with_newline.clone();
+    corrupt_complete.extend_from_slice(b"{broken\n");
+    fs::write(&event_path, &corrupt_complete).unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["recover-tail", root_text, "--apply"])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert_eq!(fs::read(&event_path).unwrap(), corrupt_complete);
+    fs::write(&event_path, with_newline).unwrap();
+    assert_eq!(cli(&["verify", root_text])["revision"], 2);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn recovery_preserves_a_complete_first_event_and_refuses_to_discard_a_partial_one() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&[
+        "init",
+        root_text,
+        "Can the first event survive a missing newline?",
+    ]);
+    let event_path = root.join(".pi/events.jsonl");
+    let original = fs::read(&event_path).unwrap();
+    fs::write(&event_path, &original[..original.len() - 1]).unwrap();
+    assert_eq!(
+        cli(&["recover-tail", root_text])["action"],
+        "append_newline"
+    );
+    assert_eq!(
+        cli(&["recover-tail", root_text, "--apply"])["recovered_revision"],
+        1
+    );
+    assert_eq!(fs::read(&event_path).unwrap(), original);
+    assert_eq!(cli(&["verify", root_text])["revision"], 1);
+
+    let partial = &original[..20];
+    fs::write(&event_path, partial).unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["recover-tail", root_text, "--apply"])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("first event is incomplete"));
+    assert_eq!(fs::read(&event_path).unwrap(), partial);
+    fs::remove_dir_all(root).unwrap();
+}

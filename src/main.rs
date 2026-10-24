@@ -98,6 +98,7 @@ fn print_help() {
     println!("  summary <dir>                      bounded corpus overview for agents");
     println!("  trials <dir> [offset] [limit<=100]  page trial metadata newest first");
     println!("  resume <dir> | changes <dir> <revision> | report <dir> <html-file>");
+    println!("  recover-tail <dir> [--apply]       inspect or repair an unterminated final event");
     println!("  observations <dir> [trial-id|-] [offset] [limit<=100]");
     println!("  search-observations <dir> <json-filter>  bounded multi-filter query");
     println!("  span <dir> <obs-id> <start> <end>    read half-open message byte span");
@@ -1210,6 +1211,15 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 "frame_known_value_count": state.frame_known_values.len(),
                 "analyses": state.analyses, "decisions": state.decisions}),
             )
+        }
+        "recover-tail" => {
+            if args.len() < 2
+                || args.len() > 3
+                || args.get(2).is_some_and(|value| value != "--apply")
+            {
+                return Err("expected optional --apply".into());
+            }
+            print_json(&workflow::recover_tail(root, args.len() == 3)?)
         }
         "summary" => {
             require_len(args, 2)?;
