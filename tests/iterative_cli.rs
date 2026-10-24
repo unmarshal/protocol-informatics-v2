@@ -1,9 +1,10 @@
+use protocol_informatics_v2::workflow::{self, CaptureRun, CaptureRunStatus, Event};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn workspace() -> PathBuf {
     for attempt in 0..1000 {
@@ -122,13 +123,49 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
         root_text,
         "trial-000004",
         "pcap-icmp",
+        "repeat-icmp",
+        "5000",
         "--",
         "cat",
         fixture_text,
     ]);
-    assert_eq!(second["event"]["capture"]["observation_count"], 24);
+    assert_eq!(second["status"], "completed");
+    assert_eq!(second["capture"]["observation_count"], 24);
+    let replay = cli(&[
+        "capture-command",
+        root_text,
+        "trial-000004",
+        "pcap-icmp",
+        "repeat-icmp",
+        "5000",
+        "--",
+        "cat",
+        fixture_text,
+    ]);
+    assert_eq!(replay["capture"]["id"], second["capture"]["id"]);
+    assert_eq!(replay["revision"], second["revision"]);
+    assert_eq!(
+        cli(&["capture-status", root_text, "repeat-icmp"])["status"],
+        "completed"
+    );
+    let mismatched_replay = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "capture-command",
+            root_text,
+            "trial-000004",
+            "pcap-icmp",
+            "repeat-icmp",
+            "5000",
+            "--",
+            "cat",
+            "examples/toy_messages.hex",
+        ])
+        .output()
+        .unwrap();
+    assert!(!mismatched_replay.status.success());
     let summary = cli(&["resume", root_text]);
-    assert_eq!(summary["revision"], 12);
+    assert_eq!(summary["revision"], 13);
+    assert_eq!(summary["capture_runs"][0]["status"], "completed");
     assert_eq!(summary["observation_count"], 48);
     assert_eq!(summary["hypotheses"][0]["score"], 0.9);
     let page = cli(&["observations", root_text, "trial-000004", "8", "2"]);
@@ -150,8 +187,9 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
             .any(|range| range["start"] == 6 && range["end"] == 8)
     );
     let changes = cli(&["changes", root_text, "11"]);
-    assert_eq!(changes.as_array().unwrap().len(), 1);
-    assert_eq!(changes[0]["event"]["type"], "capture_imported");
+    assert_eq!(changes.as_array().unwrap().len(), 2);
+    assert_eq!(changes[0]["event"]["type"], "capture_run_reserved");
+    assert_eq!(changes[1]["event"]["type"], "capture_imported");
     let verification = cli(&["verify", root_text]);
     assert_eq!(verification["captures"], 2);
     assert_eq!(verification["observations"], 48);
@@ -162,6 +200,8 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     let html = fs::read_to_string(report).unwrap();
     assert!(html.contains("Which bytes carry the ICMP sequence?"));
     assert!(html.contains("obs-000006-0010"));
+    assert!(html.contains("Capture command runs"));
+    assert!(html.contains("repeat-icmp"));
 
     let invalid = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
         .args(["tag", root_text, "missing", "response", "invalid"])
@@ -173,7 +213,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
         .output()
         .unwrap();
     assert!(!invalid_span.status.success());
-    assert_eq!(cli(&["resume", root_text])["revision"], 12);
+    assert_eq!(cli(&["resume", root_text])["revision"], 13);
     let artifact = root.join(capture["event"]["capture"]["artifact"].as_str().unwrap());
     fs::write(&artifact, b"changed").unwrap();
     let invalid_artifact = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
@@ -182,6 +222,247 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
         .unwrap();
     assert!(!invalid_artifact.status.success());
     assert!(String::from_utf8_lossy(&invalid_artifact.stderr).contains("SHA-256 mismatch"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn capture_timeout_records_failure_and_same_key_does_not_rerun() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&["init", root_text, "Can a capture timeout safely?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Bound execution",
+        "-",
+        "Stop on time",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&["trial", root_text, experiment_id, "test", "one command"]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let marker = root.join("attempts.txt");
+    let late_marker = root.join("late-child.txt");
+    let arguments = [
+        "capture-command",
+        root_text,
+        trial_id,
+        "hex",
+        "timeout-once",
+        "300",
+        "--",
+        "sh",
+        "-c",
+        "printf x >> \"$1\"; (sleep 1; printf y > \"$2\") & sleep 5; printf 'aa\\n'",
+        "_",
+        path(&marker),
+        path(&late_marker),
+    ];
+    let first = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(arguments)
+        .output()
+        .unwrap();
+    assert!(!first.status.success());
+    let first_json: Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(first_json["status"], "failed");
+    assert!(first_json["error"].as_str().unwrap().contains("timed out"));
+    assert_eq!(fs::read(&marker).unwrap(), b"x");
+    assert_eq!(
+        cli(&["capture-status", root_text, "timeout-once"])["status"],
+        "failed"
+    );
+    let replay = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(arguments)
+        .output()
+        .unwrap();
+    assert!(!replay.status.success());
+    assert_eq!(fs::read(&marker).unwrap(), b"x");
+    thread::sleep(Duration::from_millis(1200));
+    assert!(!late_marker.exists());
+    let summary = cli(&["resume", root_text]);
+    assert_eq!(summary["revision"], 5);
+    assert_eq!(summary["captures"].as_array().unwrap().len(), 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_capture_retry_sees_running_then_completed() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&[
+        "init",
+        root_text,
+        "Can concurrent retries share one capture?",
+    ]);
+    let experiment = cli(&["experiment", root_text, "Capture once", "-", "One artifact"]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&["trial", root_text, experiment_id, "test", "one command"]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/icmp_echo.pcap");
+    let arguments = [
+        "capture-command",
+        root_text,
+        trial_id,
+        "pcap-icmp",
+        "concurrent-once",
+        "5000",
+        "--",
+        "sh",
+        "-c",
+        "sleep 1; cat \"$1\"",
+        "_",
+        path(&fixture),
+    ];
+    let first = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(arguments)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut observed_running = false;
+    for _ in 0..100 {
+        let status = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+            .args(["capture-status", root_text, "concurrent-once"])
+            .output()
+            .unwrap();
+        if status.status.success() {
+            let value: Value = serde_json::from_slice(&status.stdout).unwrap();
+            if value["status"] == "running" {
+                observed_running = true;
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(observed_running);
+    let marker = cli(&[
+        "mark",
+        root_text,
+        trial_id,
+        "stimulus",
+        "Changed the controlled input while capture ran",
+    ]);
+    assert_eq!(marker["event"]["action"]["kind"], "stimulus");
+    let concurrent = cli(&arguments);
+    assert_eq!(concurrent["status"], "running");
+    let first_output = first.wait_with_output().unwrap();
+    assert!(
+        first_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first_output.stderr)
+    );
+    let completed: Value = serde_json::from_slice(&first_output.stdout).unwrap();
+    assert_eq!(completed["status"], "completed");
+    let replay = cli(&arguments);
+    assert_eq!(replay["capture"]["id"], completed["capture"]["id"]);
+    let summary = cli(&["resume", root_text]);
+    assert_eq!(summary["revision"], 6);
+    assert_eq!(summary["captures"].as_array().unwrap().len(), 1);
+    assert_eq!(cli(&["verify", root_text])["observations"], 24);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupted_reservation_is_inspectable_and_never_reexecuted() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&["init", root_text, "What if an agent dies during capture?"]);
+    let experiment = cli(&["experiment", root_text, "Reserve work", "-", "No rerun"]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&["trial", root_text, experiment_id, "test", "one command"]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let marker = root.join("should-not-exist.txt");
+    let argv = vec![
+        "sh".to_owned(),
+        "-c".to_owned(),
+        "printf x >> \"$1\"; printf 'aa\\n'".to_owned(),
+        "_".to_owned(),
+        path(&marker).to_owned(),
+    ];
+    workflow::append(
+        &root,
+        Event::CaptureRunReserved {
+            run: CaptureRun {
+                id: String::new(),
+                key: "interrupted-once".into(),
+                trial_id: trial_id.into(),
+                format: "hex".into(),
+                command_fingerprint: workflow::capture_run_fingerprint(
+                    trial_id, "hex", 5000, &argv,
+                )
+                .unwrap(),
+                timeout_ms: 5000,
+                status: CaptureRunStatus::Reserved,
+                capture_id: None,
+                error: None,
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        cli(&["capture-status", root_text, "interrupted-once"])["status"],
+        "interrupted"
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "capture-command",
+            root_text,
+            trial_id,
+            "hex",
+            "interrupted-once",
+            "5000",
+            "--",
+            "sh",
+            "-c",
+            "printf x >> \"$1\"; printf 'aa\\n'",
+            "_",
+            path(&marker),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!marker.exists());
+    assert_eq!(
+        cli(&["capture-status", root_text, "interrupted-once"])["status"],
+        "failed"
+    );
+    assert_eq!(cli(&["resume", root_text])["revision"], 5);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn capture_output_limit_records_failure_without_importing() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&["init", root_text, "Does a large capture stop?"]);
+    let experiment = cli(&["experiment", root_text, "Bound output", "-", "No import"]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&["trial", root_text, experiment_id, "test", "large output"]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "capture-command",
+            root_text,
+            trial_id,
+            "binary",
+            "too-many-bytes",
+            "5000",
+            "--",
+            "python3",
+            "-c",
+            "import sys; sys.stdout.buffer.write(b'x' * (32 * 1024 * 1024 + 1))",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "failed");
+    assert!(result["error"].as_str().unwrap().contains("exceeds 32 MiB"));
+    let summary = cli(&["resume", root_text]);
+    assert_eq!(summary["revision"], 5);
+    assert_eq!(summary["captures"].as_array().unwrap().len(), 0);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -701,7 +982,7 @@ fn controlled_intervention_locates_checksum_candidate_on_new_packets() {
 }
 
 #[test]
-fn replays_v1_log_and_appends_v2_events() {
+fn replays_v1_log_and_appends_v3_events() {
     let root = workspace();
     let events = root.join(".pi/events.jsonl");
     fs::create_dir_all(events.parent().unwrap()).unwrap();
@@ -715,7 +996,7 @@ fn replays_v1_log_and_appends_v2_events() {
         "Old investigation"
     );
     let appended = cli(&["hypothesis", path(&root), "A new claim"]);
-    assert_eq!(appended["schema_version"], 2);
+    assert_eq!(appended["schema_version"], 3);
     assert_eq!(appended["revision"], 2);
     assert_eq!(
         cli(&["changes", path(&root), "0"])

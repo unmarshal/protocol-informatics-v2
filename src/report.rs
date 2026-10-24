@@ -78,6 +78,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
   <div class="stack">
     <section class="panel"><h2>Hypotheses</h2><div id="hypotheses"></div></section>
     <section class="panel"><h2>Experiments and trials</h2><div id="experiments"></div></section>
+    <section class="panel"><h2>Capture command runs</h2><div id="captureRuns"></div></section>
     <section class="panel"><h2>Candidate format groups</h2><div id="clusters"></div></section>
     <section class="panel"><h2>Candidate fields</h2><div id="fieldCandidates"></div></section>
     <section class="panel"><h2>Analyses</h2><div id="analyses"></div></section>
@@ -127,6 +128,14 @@ for(const experiment of state.experiments) {
   }
   byId('experiments').append(row);
 }
+for(const run of state.capture_runs) {
+  const row=node('div','', 'row');
+  row.append(node('strong',run.id+' · '+run.key),node('div',run.status+' · '+run.trial_id+' · '+run.format+' · limit '+run.timeout_ms+' ms','small muted'));
+  if(run.capture_id) row.append(node('div','Capture '+run.capture_id,'small'));
+  if(run.error) row.append(node('div',run.error,'small'));
+  byId('captureRuns').append(row);
+}
+if(!state.capture_runs.length) byId('captureRuns').append(node('div','No command runs recorded.','small muted'));
 if(state.cluster_report) {
   for(const cluster of state.cluster_report.clusters) {
     const row=node('div','', 'row');

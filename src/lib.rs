@@ -5,6 +5,7 @@
 //! alignment core.
 
 mod alignment;
+pub mod capture;
 pub mod checksum;
 pub mod clustering;
 pub mod inference;

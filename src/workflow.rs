@@ -12,7 +12,7 @@ use crate::pcap::{
     extract_udp_messages,
 };
 
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +49,29 @@ pub struct Capture {
     pub sha256: String,
     pub artifact: String,
     pub observation_count: usize,
+    #[serde(default)]
+    pub run_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureRunStatus {
+    Reserved,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureRun {
+    pub id: String,
+    pub key: String,
+    pub trial_id: String,
+    pub format: String,
+    pub command_fingerprint: String,
+    pub timeout_ms: u64,
+    pub status: CaptureRunStatus,
+    pub capture_id: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +179,13 @@ pub enum Event {
         capture: Capture,
         observations: Vec<Observation>,
     },
+    CaptureRunReserved {
+        run: CaptureRun,
+    },
+    CaptureRunFailed {
+        key: String,
+        error: String,
+    },
     ActionMarked {
         action: Action,
     },
@@ -178,7 +208,9 @@ impl Event {
     /// revision they observed before acquiring the event-file lock.
     fn assign_ids(&mut self, revision: u64) {
         match self {
-            Self::Created { .. } | Self::HypothesisEvaluated { .. } => {}
+            Self::Created { .. }
+            | Self::HypothesisEvaluated { .. }
+            | Self::CaptureRunFailed { .. } => {}
             Self::HypothesisAdded { hypothesis } => {
                 hypothesis.id = format!("hyp-{revision:06}");
             }
@@ -197,6 +229,9 @@ impl Event {
                     observation.id = format!("obs-{revision:06}-{index:04}");
                     observation.capture_id = capture.id.clone();
                 }
+            }
+            Self::CaptureRunReserved { run } => {
+                run.id = format!("run-{revision:06}");
             }
             Self::ActionMarked { action } => {
                 action.id = format!("action-{revision:06}");
@@ -234,6 +269,7 @@ pub struct State {
     pub experiments: Vec<Experiment>,
     pub trials: Vec<Trial>,
     pub captures: Vec<Capture>,
+    pub capture_runs: Vec<CaptureRun>,
     pub observations: Vec<Observation>,
     pub actions: Vec<Action>,
     pub tags: Vec<Tag>,
@@ -252,6 +288,7 @@ impl State {
             experiments: Vec::new(),
             trials: Vec::new(),
             captures: Vec::new(),
+            capture_runs: Vec::new(),
             observations: Vec::new(),
             actions: Vec::new(),
             tags: Vec::new(),
@@ -355,8 +392,75 @@ impl State {
                         return Err("invalid or duplicate observation".into());
                     }
                 }
+                let run_index = if let Some(key) = &capture.run_key {
+                    let index = self
+                        .capture_runs
+                        .iter()
+                        .position(|run| &run.key == key)
+                        .ok_or_else(|| format!("unknown capture run key {key}"))?;
+                    let run = &self.capture_runs[index];
+                    if run.status != CaptureRunStatus::Reserved
+                        || run.trial_id != capture.trial_id
+                        || run.format != capture.format
+                    {
+                        return Err(format!("capture run {key} is not reserved for this import"));
+                    }
+                    Some(index)
+                } else {
+                    None
+                };
                 self.captures.push(capture.clone());
                 self.observations.extend(observations.clone());
+                if let Some(index) = run_index {
+                    self.capture_runs[index].status = CaptureRunStatus::Completed;
+                    self.capture_runs[index].capture_id = Some(capture.id.clone());
+                }
+            }
+            Event::CaptureRunReserved { run } => {
+                if !self.trials.iter().any(|trial| trial.id == run.trial_id) {
+                    return Err(format!("unknown trial {}", run.trial_id));
+                }
+                if run.key.is_empty()
+                    || run.key.len() > 128
+                    || run.key.chars().any(char::is_control)
+                    || run.command_fingerprint.len() != 64
+                    || !run
+                        .command_fingerprint
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit())
+                    || run.timeout_ms == 0
+                    || run.timeout_ms > 600_000
+                    || !valid_capture_format(&run.format)
+                    || run.status != CaptureRunStatus::Reserved
+                    || run.capture_id.is_some()
+                    || run.error.is_some()
+                    || self
+                        .capture_runs
+                        .iter()
+                        .any(|existing| existing.key == run.key)
+                    || self
+                        .capture_runs
+                        .iter()
+                        .any(|existing| existing.id == run.id)
+                {
+                    return Err("invalid or duplicate capture run reservation".into());
+                }
+                self.capture_runs.push(run.clone());
+            }
+            Event::CaptureRunFailed { key, error } => {
+                if error.trim().is_empty() {
+                    return Err("capture failure reason must not be empty".into());
+                }
+                let run = self
+                    .capture_runs
+                    .iter_mut()
+                    .find(|run| &run.key == key)
+                    .ok_or_else(|| format!("unknown capture run key {key}"))?;
+                if run.status != CaptureRunStatus::Reserved {
+                    return Err(format!("capture run {key} is not reserved"));
+                }
+                run.status = CaptureRunStatus::Failed;
+                run.error = Some(error.clone());
             }
             Event::ActionMarked { action } => {
                 if !self.trials.iter().any(|t| t.id == action.trial_id) {
@@ -451,6 +555,52 @@ fn event_path(root: &Path) -> PathBuf {
 }
 fn artifact_dir(root: &Path) -> PathBuf {
     root.join(".pi").join("artifacts")
+}
+
+pub fn valid_capture_format(format: &str) -> bool {
+    matches!(
+        format,
+        "hex" | "binary" | "pcap-icmp" | "pcapng-icmp" | "pcap-udp" | "pcapng-udp"
+    )
+}
+
+pub fn capture_run_fingerprint(
+    trial_id: &str,
+    format: &str,
+    timeout_ms: u64,
+    argv: &[String],
+) -> Result<String, String> {
+    let current_dir = std::env::current_dir().map_err(|error| error.to_string())?;
+    let encoded = serde_json::to_vec(&(
+        trial_id,
+        format,
+        timeout_ms,
+        current_dir.to_string_lossy(),
+        argv,
+    ))
+    .map_err(|error| error.to_string())?;
+    Ok(format!("{:x}", Sha256::digest(encoded)))
+}
+
+pub fn capture_run_lock(root: &Path, key: &str) -> Result<Option<fs::File>, String> {
+    if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
+        return Err("capture key must be 1 to 128 printable characters".into());
+    }
+    let directory = root.join(".pi").join("run-locks");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let digest = format!("{:x}", Sha256::digest(key.as_bytes()));
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join(format!("{digest}.lock")))
+        .map_err(|error| error.to_string())?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(fs::TryLockError::WouldBlock) => Ok(None),
+        Err(fs::TryLockError::Error(error)) => Err(error.to_string()),
+    }
 }
 
 pub fn create(root: &Path, question: &str) -> Result<EventRecord, String> {
@@ -619,6 +769,17 @@ pub fn import_capture(
     format: &str,
     raw: &[u8],
 ) -> Result<EventRecord, String> {
+    import_capture_for_run(root, trial_id, source, format, raw, None)
+}
+
+pub fn import_capture_for_run(
+    root: &Path,
+    trial_id: &str,
+    source: &str,
+    format: &str,
+    raw: &[u8],
+    run_key: Option<&str>,
+) -> Result<EventRecord, String> {
     let revision = load(root)?.revision + 1;
     let capture_id = format!("cap-{revision:06}");
     let observations = match format {
@@ -694,6 +855,7 @@ pub fn import_capture(
         sha256,
         artifact,
         observation_count: observations.len(),
+        run_key: run_key.map(str::to_owned),
     };
     append(
         root,

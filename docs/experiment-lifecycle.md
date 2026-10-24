@@ -1,6 +1,6 @@
 # Experiment and capture lifecycle
 
-Status: partial implementation, October 2026. Experiment, trial, action marker, capture import, observation tag, and hypothesis evaluation commands exist. The managed live capture lifecycle below remains a proposal.
+Status: partial implementation, October 2026. Experiment, trial, action marker, capture import, observation tag, hypothesis evaluation, and bounded keyed capture commands exist. The managed live capture lifecycle below remains a proposal.
 
 ## Model
 
@@ -53,4 +53,4 @@ Show the experiment as a timeline: capture intervals, marked actions, message bu
 
 ## First implementation slice
 
-Experiment, trial, capture, action, and tag records are implemented for hex lines and Ethernet/IPv4/ICMP messages in classic PCAP or pcapng. `capture-command` is an output-limited synchronous acquisition hook. Next add TCP extraction, then a managed `dumpcap` adapter with explicit start, status, and stop operations. Capture metadata such as loss, filter, and interface still needs to be recorded.
+Experiment, trial, capture, action, and tag records are implemented for hex lines, binary files, and Ethernet/IPv4/ICMP or UDP traffic in classic PCAP or pcapng. `capture-command` is a synchronous acquisition hook with a time limit, output limit, durable run reservation, idempotency key, and `capture-status`. Replaying a completed key returns the original capture; failed and interrupted keys cannot silently run again. This does not yet retain partial capture output after failure or offer explicit stop. Next add TCP extraction, then a managed `dumpcap` adapter with explicit start, status, and stop operations. Capture metadata such as loss, filter, and interface still needs to be recorded.

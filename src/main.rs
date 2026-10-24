@@ -1,14 +1,11 @@
 use std::env;
 use std::fs;
-use std::io::Read;
 use std::path::Path;
-use std::process::Command;
 use std::process::ExitCode;
-use std::process::Stdio;
 
 use protocol_informatics_v2::workflow::{
-    self, Action, AnalysisRecord, AnalysisScope, Decision, Event, Experiment, Hypothesis,
-    KnownValue, Observation, Tag, Trial, ValueSet,
+    self, Action, AnalysisRecord, AnalysisScope, CaptureRun, CaptureRunStatus, Decision, Event,
+    Experiment, Hypothesis, KnownValue, Observation, Tag, Trial, ValueSet,
 };
 use protocol_informatics_v2::{CpuAligner, analyze_best, parse_hex_samples};
 use serde::Serialize;
@@ -48,8 +45,9 @@ fn print_help() {
         "  import <dir> <trial-id> <hex|binary|pcap-icmp|pcapng-icmp|pcap-udp|pcapng-udp> <file>"
     );
     println!(
-        "  capture-command <dir> <trial-id> <hex|binary|pcap-icmp|pcapng-icmp|pcap-udp|pcapng-udp> -- <program> [args...]"
+        "  capture-command <dir> <trial-id> <format> <key> <timeout-ms> -- <program> [args...]"
     );
+    println!("  capture-status <dir> <key>           inspect a reserved capture command");
     println!("  mark <dir> <trial-id> <kind> <detail>");
     println!("  tag <dir> <obs-id> <phase> <label>");
     println!("  value <dir> <obs-id> <variable> <unsigned> <discovery|validation>");
@@ -182,6 +180,159 @@ fn record_analysis(
     )?)
 }
 
+fn capture_run_view(
+    state: &workflow::State,
+    run: &CaptureRun,
+    status_override: Option<&str>,
+) -> serde_json::Value {
+    let status = status_override.unwrap_or(match run.status {
+        CaptureRunStatus::Reserved => "reserved",
+        CaptureRunStatus::Completed => "completed",
+        CaptureRunStatus::Failed => "failed",
+    });
+    let capture = run
+        .capture_id
+        .as_ref()
+        .and_then(|id| state.captures.iter().find(|capture| &capture.id == id));
+    let observation_ids: Vec<_> = capture
+        .map(|capture| {
+            state
+                .observations
+                .iter()
+                .filter(|observation| observation.capture_id == capture.id)
+                .map(|observation| &observation.id)
+                .collect()
+        })
+        .unwrap_or_default();
+    json!({
+        "revision": state.revision, "run_id": run.id, "key": run.key,
+        "status": status, "trial_id": run.trial_id, "format": run.format,
+        "timeout_ms": run.timeout_ms, "capture": capture,
+        "observation_ids": observation_ids, "error": run.error,
+    })
+}
+
+fn capture_command(root: &Path, args: &[String]) -> Result<(), String> {
+    if args.len() < 8 || args[6] != "--" {
+        return Err(
+            "expected <trial-id> <format> <key> <timeout-ms> -- <program> [args...]".into(),
+        );
+    }
+    let trial_id = &args[2];
+    let format = &args[3];
+    let key = &args[4];
+    let timeout_ms: u64 = args[5]
+        .parse()
+        .map_err(|_| "timeout must be an unsigned number of milliseconds".to_string())?;
+    if timeout_ms == 0 || timeout_ms > protocol_informatics_v2::capture::MAX_TIMEOUT_MS {
+        return Err("timeout must be between 1 and 600000 ms".into());
+    }
+    if !workflow::valid_capture_format(format) {
+        return Err("unknown capture format".into());
+    }
+    let argv = &args[7..];
+    let fingerprint = workflow::capture_run_fingerprint(trial_id, format, timeout_ms, argv)?;
+    let state = workflow::load(root)?;
+    if !state.trials.iter().any(|trial| &trial.id == trial_id) {
+        return Err(format!("unknown trial {trial_id}"));
+    }
+    let lock = workflow::capture_run_lock(root, key)?;
+    let state = workflow::load(root)?;
+    let existing = state.capture_runs.iter().find(|run| &run.key == key);
+    if let Some(run) = existing
+        && run.command_fingerprint != fingerprint
+    {
+        return Err(format!(
+            "capture key {key} was used with different arguments"
+        ));
+    }
+    let Some(_lock) = lock else {
+        if let Some(run) = existing {
+            return print_json(&capture_run_view(
+                &state,
+                run,
+                (run.status == CaptureRunStatus::Reserved).then_some("running"),
+            ));
+        }
+        return print_json(&json!({"key": key, "status": "running"}));
+    };
+    if let Some(run) = existing {
+        match run.status {
+            CaptureRunStatus::Completed => return print_json(&capture_run_view(&state, run, None)),
+            CaptureRunStatus::Failed => {
+                print_json(&capture_run_view(&state, run, None))?;
+                return Err(format!("capture key {key} already failed"));
+            }
+            CaptureRunStatus::Reserved => {
+                workflow::append(
+                    root,
+                    Event::CaptureRunFailed {
+                        key: key.clone(),
+                        error: "previous command ended before capture completion".into(),
+                    },
+                )?;
+                let updated = workflow::load(root)?;
+                let run = updated
+                    .capture_runs
+                    .iter()
+                    .find(|run| &run.key == key)
+                    .unwrap();
+                print_json(&capture_run_view(&updated, run, None))?;
+                return Err(format!(
+                    "capture key {key} was interrupted; use a new key to rerun"
+                ));
+            }
+        }
+    }
+    let reserved = CaptureRun {
+        id: workflow::next_id(root, "run")?,
+        key: key.clone(),
+        trial_id: trial_id.clone(),
+        format: format.clone(),
+        command_fingerprint: fingerprint,
+        timeout_ms,
+        status: CaptureRunStatus::Reserved,
+        capture_id: None,
+        error: None,
+    };
+    workflow::append(root, Event::CaptureRunReserved { run: reserved })?;
+    let result = protocol_informatics_v2::capture::run_command(argv, timeout_ms).and_then(|raw| {
+        workflow::import_capture_for_run(
+            root,
+            trial_id,
+            &format!("command: {}", argv[0]),
+            format,
+            &raw,
+            Some(key),
+        )
+        .map(|_| ())
+    });
+    if let Err(error) = result {
+        workflow::append(
+            root,
+            Event::CaptureRunFailed {
+                key: key.clone(),
+                error: error.clone(),
+            },
+        )?;
+        let updated = workflow::load(root)?;
+        let run = updated
+            .capture_runs
+            .iter()
+            .find(|run| &run.key == key)
+            .unwrap();
+        print_json(&capture_run_view(&updated, run, None))?;
+        return Err(error);
+    }
+    let updated = workflow::load(root)?;
+    let run = updated
+        .capture_runs
+        .iter()
+        .find(|run| &run.key == key)
+        .unwrap();
+    print_json(&capture_run_view(&updated, run, None))
+}
+
 fn run_investigation_command(args: &[String]) -> Result<(), String> {
     let command = args[0].as_str();
     if args.len() < 2 {
@@ -252,42 +403,25 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 root, &args[2], &args[4], &args[3], &raw,
             )?)
         }
-        "capture-command" => {
-            if args.len() < 7 || args[4] != "--" {
-                return Err("expected -- <program> [args...]".into());
-            }
-            let mut child = Command::new(&args[5])
-                .args(&args[6..])
-                .stdout(Stdio::piped())
-                .spawn()
-                .map_err(|error| format!("capture command failed to start: {error}"))?;
-            let mut raw = Vec::new();
-            let read_result = child
-                .stdout
-                .take()
-                .expect("piped stdout")
-                .take(32 * 1024 * 1024 + 1)
-                .read_to_end(&mut raw);
-            if let Err(error) = read_result {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("capture output could not be read: {error}"));
-            }
-            if raw.len() > 32 * 1024 * 1024 {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("capture output exceeds 32 MiB".into());
-            }
-            let status = child.wait().map_err(|error| error.to_string())?;
-            if !status.success() {
-                return Err(format!(
-                    "capture command exited {status}; see command stderr for details"
-                ));
-            }
-            let source = format!("command: {}", args[5..].join(" "));
-            print_json(&workflow::import_capture(
-                root, &args[2], &source, &args[3], &raw,
-            )?)
+        "capture-command" => capture_command(root, args),
+        "capture-status" => {
+            require_len(args, 3)?;
+            let state = workflow::load(root)?;
+            let run = state
+                .capture_runs
+                .iter()
+                .find(|run| run.key == args[2])
+                .ok_or_else(|| format!("unknown capture key {}", args[2]))?;
+            let status = if run.status == CaptureRunStatus::Reserved {
+                if workflow::capture_run_lock(root, &run.key)?.is_some() {
+                    Some("interrupted")
+                } else {
+                    Some("running")
+                }
+            } else {
+                None
+            };
+            print_json(&capture_run_view(&state, run, status))
         }
         "mark" => {
             require_len(args, 5)?;
@@ -438,6 +572,7 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 &json!({"revision": state.revision, "question": state.question,
                 "hypotheses": state.hypotheses, "experiments": state.experiments,
                 "trials": state.trials, "captures": state.captures,
+                "capture_runs": state.capture_runs,
                 "observation_count": state.observations.len(), "tag_count": state.tags.len(),
                 "known_value_count": state.known_values.len(),
                 "analyses": state.analyses, "decisions": state.decisions}),
