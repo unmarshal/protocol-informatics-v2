@@ -81,13 +81,13 @@ pub enum ValidationStatus {
     Unassigned,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ClusterMatch {
     pub cluster_id: String,
     pub distance_to_representative: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RejectedCluster {
     pub cluster_id: String,
     pub insufficient_discovery_members: bool,
@@ -95,7 +95,7 @@ pub struct RejectedCluster {
     pub stable_byte_mismatch_offsets: Vec<usize>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ValidationObservation {
     pub observation_id: String,
     pub status: ValidationStatus,
@@ -122,18 +122,26 @@ pub struct ClusterValidation {
     pub validation_count: usize,
     pub validation_total: usize,
     pub validation_sampling_method: &'static str,
+    pub maximum_full_validation_observations: usize,
     pub cluster_count: usize,
     pub assigned_count: usize,
     pub ambiguous_count: usize,
     pub unassigned_count: usize,
     pub ambiguity_distance_margin: f64,
     pub maximum_reported_candidates_per_observation: usize,
+    pub maximum_reported_observations: usize,
+    pub reported_observation_count: usize,
+    pub omitted_observation_count: usize,
+    pub reported_counterexample_count: usize,
+    pub detail_selection_method: &'static str,
     pub clusters: Vec<Cluster>,
     pub observations: Vec<ValidationObservation>,
 }
 
 const AMBIGUITY_DISTANCE_MARGIN: f64 = 0.05;
 const MAX_REPORTED_MATCHES: usize = 5;
+const MAX_FULL_VALIDATION_OBSERVATIONS: usize = 10_000;
+const MAX_REPORTED_VALIDATION_OBSERVATIONS: usize = 512;
 
 pub fn validate_clusters(
     state: &State,
@@ -170,7 +178,13 @@ pub fn validate_clusters(
         return Err("validation trial has no observations".into());
     }
     let validation_total = validation.len();
-    let (validation, validation_sampling_method, _) = sample_observations(&validation);
+    let (validation, validation_sampling_method) =
+        if validation_total <= MAX_FULL_VALIDATION_OBSERVATIONS {
+            (validation, "all")
+        } else {
+            let (sample, method, _) = sample_observations(&validation);
+            (sample, method)
+        };
     let mut representatives = BTreeMap::new();
     for cluster in &report.clusters {
         let representative = state
@@ -269,9 +283,17 @@ pub fn validate_clusters(
             rejections,
         });
     }
+    let validation_count = observations.len();
+    let (observations, detail_selection_method) =
+        select_validation_details(observations, MAX_REPORTED_VALIDATION_OBSERVATIONS);
+    let reported_observation_count = observations.len();
+    let reported_counterexample_count = observations
+        .iter()
+        .filter(|observation| observation.status != ValidationStatus::Assigned)
+        .count();
     Ok(ClusterValidation {
         revision: state.revision,
-        method: "stable_header_and_medoid_held_out_v2",
+        method: "stable_header_and_medoid_held_out_v3",
         provisional: true,
         discovery_trial_id: discovery_trial_id.into(),
         validation_trial_id: validation_trial_id.into(),
@@ -279,18 +301,74 @@ pub fn validate_clusters(
         discovery_count: report.observation_count,
         discovery_total: report.selected_observation_count,
         discovery_sampling_method: report.sampling_method,
-        validation_count: observations.len(),
+        validation_count,
         validation_total,
         validation_sampling_method,
+        maximum_full_validation_observations: MAX_FULL_VALIDATION_OBSERVATIONS,
         cluster_count: report.clusters.len(),
         assigned_count,
         ambiguous_count,
         unassigned_count,
         ambiguity_distance_margin: AMBIGUITY_DISTANCE_MARGIN,
         maximum_reported_candidates_per_observation: MAX_REPORTED_MATCHES,
+        maximum_reported_observations: MAX_REPORTED_VALIDATION_OBSERVATIONS,
+        reported_observation_count,
+        omitted_observation_count: validation_count - reported_observation_count,
+        reported_counterexample_count,
+        detail_selection_method,
         clusters: report.clusters,
         observations,
     })
+}
+
+fn select_validation_details(
+    observations: Vec<ValidationObservation>,
+    limit: usize,
+) -> (Vec<ValidationObservation>, &'static str) {
+    if observations.len() <= limit {
+        return (observations, "all");
+    }
+    let mut chosen = Vec::with_capacity(limit);
+    for status in [ValidationStatus::Unassigned, ValidationStatus::Ambiguous] {
+        let remaining = limit - chosen.len();
+        chosen.extend(
+            observations
+                .iter()
+                .enumerate()
+                .filter_map(|(index, observation)| (observation.status == status).then_some(index))
+                .take(remaining),
+        );
+    }
+    if chosen.len() < limit {
+        let mut assigned: Vec<_> = observations
+            .iter()
+            .enumerate()
+            .filter(|(_, observation)| observation.status == ValidationStatus::Assigned)
+            .map(|(index, observation)| {
+                (
+                    Sha256::digest(observation.observation_id.as_bytes()).to_vec(),
+                    index,
+                )
+            })
+            .collect();
+        assigned.sort_unstable_by(|left, right| {
+            left.0.cmp(&right.0).then_with(|| {
+                observations[left.1]
+                    .observation_id
+                    .cmp(&observations[right.1].observation_id)
+            })
+        });
+        let remaining = limit - chosen.len();
+        chosen.extend(assigned.into_iter().take(remaining).map(|(_, index)| index));
+    }
+    chosen.sort_unstable();
+    (
+        chosen
+            .into_iter()
+            .map(|index| observations[index].clone())
+            .collect(),
+        "counterexamples_then_hash_v1",
+    )
 }
 
 struct Sample {
@@ -782,6 +860,42 @@ mod tests {
         assert_eq!(
             first.iter().map(|item| &item.id).collect::<Vec<_>>(),
             again.iter().map(|item| &item.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn detail_budget_keeps_a_late_unassigned_example_after_ambiguities() {
+        let mut observations: Vec<_> = (0..600)
+            .map(|index| ValidationObservation {
+                observation_id: format!("ambiguous-{index:04}"),
+                status: ValidationStatus::Ambiguous,
+                assigned_cluster_id: None,
+                compatible_cluster_count: 2,
+                candidates_truncated: false,
+                candidates: Vec::new(),
+                rejected_cluster_count: 0,
+                rejections_truncated: false,
+                rejections: Vec::new(),
+            })
+            .collect();
+        observations.push(ValidationObservation {
+            observation_id: "late-unassigned".into(),
+            status: ValidationStatus::Unassigned,
+            assigned_cluster_id: None,
+            compatible_cluster_count: 0,
+            candidates_truncated: false,
+            candidates: Vec::new(),
+            rejected_cluster_count: 2,
+            rejections_truncated: false,
+            rejections: Vec::new(),
+        });
+        let (details, method) = select_validation_details(observations, 512);
+        assert_eq!(method, "counterexamples_then_hash_v1");
+        assert_eq!(details.len(), 512);
+        assert!(
+            details
+                .iter()
+                .any(|item| item.observation_id == "late-unassigned")
         );
     }
 }

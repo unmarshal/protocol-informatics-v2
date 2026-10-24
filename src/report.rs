@@ -387,13 +387,15 @@ if(state.cluster_report) {
 } else byId('clusters').append(node('div',state.cluster_error||'No groups available.','small muted'));
 for(const item of state.cluster_validations||[]) {
   const result=item.result, row=node('div','', 'row');
-  row.append(node('strong',item.experiment_id+' · '+result.cluster_count+' discovery group(s)'),node('div',result.assigned_count+' assigned · '+result.ambiguous_count+' ambiguous · '+result.unassigned_count+' unassigned of '+result.validation_count+' sampled from '+result.validation_total+' held-out observations','small muted'),node('div','Discovery '+result.discovery_count+'/'+result.discovery_total+' ('+result.discovery_sampling_method+') · validation '+result.validation_sampling_method,'small muted'));
-  for(const observation of result.observations.slice(0,12)) {
+  row.append(node('strong',item.experiment_id+' · '+result.cluster_count+' discovery group(s)'),node('div',result.assigned_count+' assigned · '+result.ambiguous_count+' ambiguous · '+result.unassigned_count+' unassigned of '+result.validation_count+' evaluated held-out observations','small muted'),node('div','Discovery '+result.discovery_count+'/'+result.discovery_total+' ('+result.discovery_sampling_method+') · validation '+result.validation_count+'/'+result.validation_total+' ('+result.validation_sampling_method+')','small muted'),node('div',result.reported_observation_count+' detailed rows returned · '+result.omitted_observation_count+' omitted · counterexamples prioritized','small muted'));
+  const priority={unassigned:0,ambiguous:1,assigned:2};
+  const visible=result.observations.slice().sort((a,b)=>(priority[a.status]-priority[b.status])||a.observation_id.localeCompare(b.observation_id)).slice(0,12);
+  for(const observation of visible) {
     const label=observation.assigned_cluster_id||observation.candidates.map(candidate=>candidate.cluster_id).join(', ')||'no compatible group';
     row.append(node('div',observation.observation_id+' · '+observation.status+' · '+label,'small'));
     if(observation.status==='unassigned') for(const rejected of observation.rejections.slice(0,3)) row.append(node('div','↳ '+rejected.cluster_id+' rejected: '+(rejected.insufficient_discovery_members?'fewer than 3 discovery members · ':'')+(rejected.direction_mismatch?'direction · ':'')+'header offsets '+(rejected.stable_byte_mismatch_offsets.join(', ')||'none'),'small muted'));
   }
-  if(result.observations.length>12) row.append(node('div','Additional observations are available through validate-clusters.','small muted'));
+  if(result.observations.length>visible.length) row.append(node('div','More of the returned details are available through validate-clusters.','small muted'));
   byId('clusterValidation').append(row);
 }
 if(!(state.cluster_validations||[]).length) byId('clusterValidation').append(node('div','Use discovery and validation trials to test proposed groups on held-out messages.','small muted'));

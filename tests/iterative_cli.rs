@@ -3501,23 +3501,113 @@ fn large_icmp_trials_disclose_sampling_and_validate_new_sequence_values() {
         validation_id,
         "respect",
     ]);
-    assert_eq!(checked["method"], "stable_header_and_medoid_held_out_v2");
+    assert_eq!(checked["method"], "stable_header_and_medoid_held_out_v3");
     assert_eq!(checked["discovery_total"], 1024);
     assert_eq!(checked["discovery_count"], 512);
     assert_eq!(checked["validation_total"], 1024);
-    assert_eq!(checked["validation_count"], 512);
-    assert_eq!(checked["assigned_count"], 512);
+    assert_eq!(checked["validation_count"], 1024);
+    assert_eq!(checked["assigned_count"], 1024);
     assert_eq!(checked["ambiguous_count"], 0);
     assert_eq!(checked["unassigned_count"], 0);
+    assert_eq!(checked["validation_sampling_method"], "all");
+    assert_eq!(checked["reported_observation_count"], 512);
+    assert_eq!(checked["omitted_observation_count"], 512);
     assert_eq!(
-        checked["validation_sampling_method"],
-        "direction_length_stratified_hash_v1"
+        checked["detail_selection_method"],
+        "counterexamples_then_hash_v1"
     );
     let report = root.join("large-clusters.html");
     cli(&["report", root_text, path(&report)]);
     let html = fs::read_to_string(report).unwrap();
     assert!(html.contains("selected observations"));
-    assert!(html.contains("sampled from"));
+    assert!(html.contains("evaluated held-out observations"));
     assert_eq!(cli(&["verify", root_text])["observations"], 2048);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn full_held_out_evaluation_reports_a_rare_late_counterexample() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&[
+        "init",
+        root_text,
+        "Can a rare held-out packet challenge a group?",
+    ]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Sweep with a novel held-out packet",
+        "-",
+        "Most messages retain the format, one does not",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let discovery = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "discovery",
+        "sequences 0 through 511",
+    ]);
+    let validation = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "validation",
+        "new sequences plus novel identifier",
+    ]);
+    let discovery_id = discovery["event"]["trial"]["id"].as_str().unwrap();
+    let validation_id = validation["event"]["trial"]["id"].as_str().unwrap();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    cli(&[
+        "import",
+        root_text,
+        discovery_id,
+        "pcap-icmp",
+        path(&fixtures.join("icmp_sweep_512.pcap")),
+    ]);
+    let mut held_out = fs::read(fixtures.join("icmp_sweep_512_holdout.pcap")).unwrap();
+    let novel = fs::read(fixtures.join("icmp_holdout.pcap")).unwrap();
+    let packet_length = u32::from_le_bytes(novel[32..36].try_into().unwrap()) as usize;
+    let mut record = novel[24..40 + packet_length].to_vec();
+    record[..4].copy_from_slice(&1_722_000_000_u32.to_le_bytes());
+    held_out.extend(record);
+    let validation_file = root.join("held-out-with-one-novel.pcap");
+    fs::write(&validation_file, held_out).unwrap();
+    let imported = cli(&[
+        "import",
+        root_text,
+        validation_id,
+        "pcap-icmp",
+        path(&validation_file),
+    ]);
+    let rare_id = imported["event"]["observations"].as_array().unwrap()[1024]["id"]
+        .as_str()
+        .unwrap();
+    let checked = cli(&[
+        "validate-clusters",
+        root_text,
+        discovery_id,
+        validation_id,
+        "respect",
+    ]);
+    assert_eq!(checked["validation_total"], 1025);
+    assert_eq!(checked["validation_count"], 1025);
+    assert_eq!(checked["validation_sampling_method"], "all");
+    assert_eq!(checked["assigned_count"], 1024);
+    assert_eq!(checked["ambiguous_count"], 0);
+    assert_eq!(checked["unassigned_count"], 1);
+    assert_eq!(checked["reported_observation_count"], 512);
+    assert_eq!(checked["reported_counterexample_count"], 1);
+    assert_eq!(checked["omitted_observation_count"], 513);
+    let rare = checked["observations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|observation| observation["observation_id"] == rare_id)
+        .unwrap();
+    assert_eq!(rare["status"], "unassigned");
+    assert_eq!(rare["rejected_cluster_count"], 2);
+    assert_eq!(cli(&["verify", root_text])["observations"], 2049);
     fs::remove_dir_all(root).unwrap();
 }
