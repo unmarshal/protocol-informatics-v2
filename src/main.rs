@@ -1,7 +1,12 @@
 use std::env;
 use std::fs;
 use std::path::Path;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use protocol_informatics_v2::workflow::{
     self, Action, AnalysisRecord, AnalysisScope, CaptureRun, CaptureRunStatus, Decision, Event,
@@ -47,6 +52,8 @@ fn print_help() {
     println!(
         "  capture-command <dir> <trial-id> <format> <key> <timeout-ms> -- <program> [args...]"
     );
+    println!("  capture-start <dir> <trial-id> <format> <key> <timeout-ms> -- <program> [args...]");
+    println!("  capture-stop <dir> <key>             request a running capture to stop");
     println!("  capture-status <dir> <key>           inspect a reserved capture command");
     println!("  mark <dir> <trial-id> <kind> <detail>");
     println!("  mark-at <dir> <trial-id> <timestamp-ns> <kind> <detail>");
@@ -212,7 +219,24 @@ fn capture_run_view(
         "status": status, "trial_id": run.trial_id, "format": run.format,
         "timeout_ms": run.timeout_ms, "capture": capture,
         "observation_ids": observation_ids, "error": run.error,
+        "stop_requested": run.stop_requested,
     })
+}
+
+fn capture_status_name(root: &Path, run: &CaptureRun) -> Result<&'static str, String> {
+    match run.status {
+        CaptureRunStatus::Completed => Ok("completed"),
+        CaptureRunStatus::Failed => Ok("failed"),
+        CaptureRunStatus::Reserved => {
+            if workflow::capture_run_lock(root, &run.key)?.is_some() {
+                Ok("interrupted")
+            } else if run.stop_requested {
+                Ok("stopping")
+            } else {
+                Ok("running")
+            }
+        }
+    }
 }
 
 fn capture_command(root: &Path, args: &[String]) -> Result<(), String> {
@@ -254,7 +278,11 @@ fn capture_command(root: &Path, args: &[String]) -> Result<(), String> {
             return print_json(&capture_run_view(
                 &state,
                 run,
-                (run.status == CaptureRunStatus::Reserved).then_some("running"),
+                (run.status == CaptureRunStatus::Reserved).then_some(if run.stop_requested {
+                    "stopping"
+                } else {
+                    "running"
+                }),
             ));
         }
         return print_json(&json!({"key": key, "status": "running"}));
@@ -297,9 +325,28 @@ fn capture_command(root: &Path, args: &[String]) -> Result<(), String> {
         status: CaptureRunStatus::Reserved,
         capture_id: None,
         error: None,
+        stop_requested: false,
     };
     workflow::append(root, Event::CaptureRunReserved { run: reserved })?;
-    let result = protocol_informatics_v2::capture::run_command(argv, timeout_ms).and_then(|raw| {
+    let event_path = root.join(".pi/events.jsonl");
+    let mut last_length = 0;
+    let result = protocol_informatics_v2::capture::run_command_with_stop(argv, timeout_ms, || {
+        let length = fs::metadata(&event_path)
+            .map_err(|error| error.to_string())?
+            .len();
+        if length == last_length {
+            return Ok(false);
+        }
+        last_length = length;
+        let state = workflow::load(root)?;
+        let run = state
+            .capture_runs
+            .iter()
+            .find(|run| &run.key == key)
+            .ok_or_else(|| format!("capture run {key} disappeared"))?;
+        Ok(run.stop_requested)
+    })
+    .and_then(|raw| {
         workflow::import_capture_for_run(
             root,
             trial_id,
@@ -334,6 +381,107 @@ fn capture_command(root: &Path, args: &[String]) -> Result<(), String> {
         .find(|run| &run.key == key)
         .unwrap();
     print_json(&capture_run_view(&updated, run, None))
+}
+
+fn capture_start(root: &Path, args: &[String]) -> Result<(), String> {
+    if args.len() < 8 || args[6] != "--" {
+        return Err(
+            "expected <trial-id> <format> <key> <timeout-ms> -- <program> [args...]".into(),
+        );
+    }
+    let trial_id = &args[2];
+    let format = &args[3];
+    let key = &args[4];
+    let timeout_ms: u64 = args[5]
+        .parse()
+        .map_err(|_| "timeout must be an unsigned number of milliseconds".to_string())?;
+    if timeout_ms == 0 || timeout_ms > protocol_informatics_v2::capture::MAX_TIMEOUT_MS {
+        return Err("timeout must be between 1 and 600000 ms".into());
+    }
+    if !workflow::valid_capture_format(format) {
+        return Err("unknown capture format".into());
+    }
+    let fingerprint = workflow::capture_run_fingerprint(trial_id, format, timeout_ms, &args[7..])?;
+    let state = workflow::load(root)?;
+    if !state.trials.iter().any(|trial| &trial.id == trial_id) {
+        return Err(format!("unknown trial {trial_id}"));
+    }
+    if let Some(run) = state.capture_runs.iter().find(|run| &run.key == key) {
+        if run.command_fingerprint != fingerprint {
+            return Err(format!(
+                "capture key {key} was used with different arguments"
+            ));
+        }
+        let status = capture_status_name(root, run)?;
+        return print_json(&capture_run_view(&state, run, Some(status)));
+    }
+    let mut command = Command::new(env::current_exe().map_err(|error| error.to_string())?);
+    command
+        .arg("capture-command")
+        .args(&args[1..])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut worker = command
+        .spawn()
+        .map_err(|error| format!("capture worker could not start: {error}"))?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let state = workflow::load(root)?;
+        let worker_exited = worker
+            .try_wait()
+            .map_err(|error| error.to_string())?
+            .is_some();
+        if let Some(run) = state.capture_runs.iter().find(|run| &run.key == key) {
+            if run.command_fingerprint != fingerprint {
+                return Err(format!(
+                    "capture key {key} was used with different arguments"
+                ));
+            }
+            let status = capture_status_name(root, run)?;
+            if status != "interrupted" || worker_exited {
+                return print_json(&capture_run_view(&state, run, Some(status)));
+            }
+        }
+        if Instant::now() >= deadline {
+            if worker_exited {
+                return Err(format!("capture worker exited before reserving key {key}"));
+            }
+            return print_json(&json!({"key": key, "status": "starting"}));
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn capture_stop(root: &Path, key: &str) -> Result<(), String> {
+    let state = workflow::load(root)?;
+    let run = state
+        .capture_runs
+        .iter()
+        .find(|run| run.key == key)
+        .ok_or_else(|| format!("unknown capture key {key}"))?;
+    if capture_status_name(root, run)? == "running"
+        && let Err(error) =
+            workflow::append(root, Event::CaptureRunStopRequested { key: key.into() })
+    {
+        let updated = workflow::load(root)?;
+        let Some(current) = updated.capture_runs.iter().find(|run| run.key == key) else {
+            return Err(error);
+        };
+        if current.status == CaptureRunStatus::Reserved && !current.stop_requested {
+            return Err(error);
+        }
+    }
+    let updated = workflow::load(root)?;
+    let run = updated
+        .capture_runs
+        .iter()
+        .find(|run| run.key == key)
+        .ok_or_else(|| format!("unknown capture key {key}"))?;
+    let status = capture_status_name(root, run)?;
+    print_json(&capture_run_view(&updated, run, Some(status)))
 }
 
 fn window_view(state: &workflow::State, window: &WindowTag, replayed: bool) -> serde_json::Value {
@@ -494,6 +642,11 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             )?)
         }
         "capture-command" => capture_command(root, args),
+        "capture-start" => capture_start(root, args),
+        "capture-stop" => {
+            require_len(args, 3)?;
+            capture_stop(root, &args[2])
+        }
         "capture-status" => {
             require_len(args, 3)?;
             let state = workflow::load(root)?;
@@ -502,16 +655,8 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 .iter()
                 .find(|run| run.key == args[2])
                 .ok_or_else(|| format!("unknown capture key {}", args[2]))?;
-            let status = if run.status == CaptureRunStatus::Reserved {
-                if workflow::capture_run_lock(root, &run.key)?.is_some() {
-                    Some("interrupted")
-                } else {
-                    Some("running")
-                }
-            } else {
-                None
-            };
-            print_json(&capture_run_view(&state, run, status))
+            let status = capture_status_name(root, run)?;
+            print_json(&capture_run_view(&state, run, Some(status)))
         }
         "mark" => {
             require_len(args, 5)?;

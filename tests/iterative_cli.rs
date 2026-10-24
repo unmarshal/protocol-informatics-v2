@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn workspace() -> PathBuf {
     for attempt in 0..1000 {
@@ -38,6 +38,21 @@ fn cli(args: &[&str]) -> Value {
 
 fn path(path: &Path) -> &str {
     path.to_str().unwrap()
+}
+
+fn wait_for_capture(root: &str, key: &str, deadline: Duration) -> Value {
+    let started = Instant::now();
+    loop {
+        let status = cli(&["capture-status", root, key]);
+        if status["status"] == "completed" || status["status"] == "failed" {
+            return status;
+        }
+        assert!(
+            started.elapsed() < deadline,
+            "capture {key} did not finish: {status}"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
 }
 
 #[test]
@@ -507,6 +522,188 @@ fn concurrent_capture_retry_sees_running_then_completed() {
 
 #[cfg(unix)]
 #[test]
+fn agent_can_start_mark_stop_and_resume_a_background_capture() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&[
+        "init",
+        root_text,
+        "Can an agent control a capture while marking actions?",
+    ]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Timed capture",
+        "-",
+        "Preserve a stopped PCAP",
+    ]);
+    let exp_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&[
+        "trial",
+        root_text,
+        exp_id,
+        "baseline",
+        "one emitted capture",
+    ]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/icmp_echo.pcap");
+    let emitted = root.join("emitted.flag");
+    let args = [
+        "capture-start",
+        root_text,
+        trial_id,
+        "pcap-icmp",
+        "background-once",
+        "10000",
+        "--",
+        "sh",
+        "-c",
+        "cat \"$1\"; touch \"$2\"; sleep 30",
+        "_",
+        path(&fixture),
+        path(&emitted),
+    ];
+    let started = cli(&args);
+    assert_eq!(started["status"], "running");
+    assert_eq!(cli(&args)["status"], "running");
+    for _ in 0..100 {
+        if emitted.exists() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(emitted.exists());
+    let marker = cli(&[
+        "mark",
+        root_text,
+        trial_id,
+        "stimulus",
+        "Changed input while capture ran",
+    ]);
+    assert_eq!(marker["event"]["action"]["kind"], "stimulus");
+    let stop = cli(&["capture-stop", root_text, "background-once"]);
+    assert_eq!(stop["stop_requested"], true);
+    assert!(stop["status"] == "stopping" || stop["status"] == "completed");
+    let again = cli(&["capture-stop", root_text, "background-once"]);
+    assert_eq!(again["stop_requested"], true);
+    let completed = wait_for_capture(root_text, "background-once", Duration::from_secs(5));
+    assert_eq!(completed["status"], "completed");
+    assert_eq!(completed["observation_ids"].as_array().unwrap().len(), 24);
+    assert_eq!(cli(&["verify", root_text])["observations"], 24);
+    let replay = cli(&args);
+    assert_eq!(replay["capture"]["id"], completed["capture"]["id"]);
+    assert_eq!(replay["revision"], completed["revision"]);
+    let report = root.join("background-report.html");
+    cli(&["report", root_text, path(&report)]);
+    assert!(
+        fs::read_to_string(report)
+            .unwrap()
+            .contains("stop requested")
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn stop_forces_an_unresponsive_capture_but_preserves_valid_output() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&["init", root_text, "Can an unresponsive capture be stopped?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Force stop",
+        "-",
+        "Preserve emitted packets",
+    ]);
+    let exp_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&["trial", root_text, exp_id, "test", "ignore interrupt"]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/icmp_echo.pcap");
+    let emitted = root.join("emitted.flag");
+    let started = cli(&[
+        "capture-start",
+        root_text,
+        trial_id,
+        "pcap-icmp",
+        "force-stop-once",
+        "10000",
+        "--",
+        "sh",
+        "-c",
+        "trap '' INT; cat \"$1\"; touch \"$2\"; sleep 30",
+        "_",
+        path(&fixture),
+        path(&emitted),
+    ]);
+    assert_eq!(started["status"], "running");
+    for _ in 0..100 {
+        if emitted.exists() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(emitted.exists());
+    assert_eq!(
+        cli(&["capture-stop", root_text, "force-stop-once"])["stop_requested"],
+        true
+    );
+    let completed = wait_for_capture(root_text, "force-stop-once", Duration::from_secs(5));
+    assert_eq!(completed["status"], "completed");
+    assert_eq!(cli(&["verify", root_text])["observations"], 24);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn stopping_before_any_payload_records_failure_without_a_capture() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&["init", root_text, "What if a capture stops before output?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Empty stop",
+        "-",
+        "No partial artifact",
+    ]);
+    let exp_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&["trial", root_text, exp_id, "test", "sleep first"]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let started = cli(&[
+        "capture-start",
+        root_text,
+        trial_id,
+        "hex",
+        "empty-stop-once",
+        "10000",
+        "--",
+        "sh",
+        "-c",
+        "sleep 30; printf 'aa\\n'",
+    ]);
+    assert_eq!(started["status"], "running");
+    cli(&["capture-stop", root_text, "empty-stop-once"]);
+    let failed = wait_for_capture(root_text, "empty-stop-once", Duration::from_secs(5));
+    assert_eq!(failed["status"], "failed");
+    assert!(
+        failed["error"]
+            .as_str()
+            .unwrap()
+            .contains("no supported messages")
+    );
+    assert_eq!(
+        cli(&["resume", root_text])["captures"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn interrupted_reservation_is_inspectable_and_never_reexecuted() {
     let root = workspace();
     let root_text = path(&root);
@@ -539,6 +736,7 @@ fn interrupted_reservation_is_inspectable_and_never_reexecuted() {
                 status: CaptureRunStatus::Reserved,
                 capture_id: None,
                 error: None,
+                stop_requested: false,
             },
         },
     )
@@ -1393,7 +1591,7 @@ fn controlled_intervention_locates_checksum_candidate_on_new_packets() {
 }
 
 #[test]
-fn replays_v1_log_and_appends_v6_events() {
+fn replays_v1_log_and_appends_v7_events() {
     let root = workspace();
     let events = root.join(".pi/events.jsonl");
     fs::create_dir_all(events.parent().unwrap()).unwrap();
@@ -1407,7 +1605,7 @@ fn replays_v1_log_and_appends_v6_events() {
         "Old investigation"
     );
     let appended = cli(&["hypothesis", path(&root), "A new claim"]);
-    assert_eq!(appended["schema_version"], 6);
+    assert_eq!(appended["schema_version"], 7);
     assert_eq!(appended["revision"], 2);
     assert_eq!(
         cli(&["changes", path(&root), "0"])

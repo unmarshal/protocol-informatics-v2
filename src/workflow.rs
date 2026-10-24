@@ -13,7 +13,7 @@ use crate::pcap::{
 };
 use crate::reassembly::{SourceSpan, reassemble_tcp_segments};
 
-const SCHEMA_VERSION: u32 = 6;
+const SCHEMA_VERSION: u32 = 7;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +73,8 @@ pub struct CaptureRun {
     pub status: CaptureRunStatus,
     pub capture_id: Option<String>,
     pub error: Option<String>,
+    #[serde(default)]
+    pub stop_requested: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,6 +211,9 @@ pub enum Event {
         key: String,
         error: String,
     },
+    CaptureRunStopRequested {
+        key: String,
+    },
     ActionMarked {
         action: Action,
     },
@@ -237,7 +242,8 @@ impl Event {
         match self {
             Self::Created { .. }
             | Self::HypothesisEvaluated { .. }
-            | Self::CaptureRunFailed { .. } => {}
+            | Self::CaptureRunFailed { .. }
+            | Self::CaptureRunStopRequested { .. } => {}
             Self::HypothesisAdded { hypothesis } => {
                 hypothesis.id = format!("hyp-{revision:06}");
             }
@@ -485,6 +491,7 @@ impl State {
                     || run.status != CaptureRunStatus::Reserved
                     || run.capture_id.is_some()
                     || run.error.is_some()
+                    || run.stop_requested
                     || self
                         .capture_runs
                         .iter()
@@ -512,6 +519,17 @@ impl State {
                 }
                 run.status = CaptureRunStatus::Failed;
                 run.error = Some(error.clone());
+            }
+            Event::CaptureRunStopRequested { key } => {
+                let run = self
+                    .capture_runs
+                    .iter_mut()
+                    .find(|run| &run.key == key)
+                    .ok_or_else(|| format!("unknown capture run key {key}"))?;
+                if run.status != CaptureRunStatus::Reserved || run.stop_requested {
+                    return Err(format!("capture run {key} cannot be stopped"));
+                }
+                run.stop_requested = true;
             }
             Event::ActionMarked { action } => {
                 if !self.trials.iter().any(|t| t.id == action.trial_id) {

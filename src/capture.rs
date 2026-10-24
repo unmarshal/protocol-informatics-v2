@@ -11,8 +11,20 @@ use std::os::unix::process::CommandExt;
 
 pub const MAX_CAPTURE_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_TIMEOUT_MS: u64 = 600_000;
+const STOP_GRACE_MS: u64 = 2_000;
 
 pub fn run_command(argv: &[String], timeout_ms: u64) -> Result<Vec<u8>, String> {
+    run_command_with_stop(argv, timeout_ms, || Ok(false))
+}
+
+pub fn run_command_with_stop<F>(
+    argv: &[String],
+    timeout_ms: u64,
+    mut stop_requested: F,
+) -> Result<Vec<u8>, String>
+where
+    F: FnMut() -> Result<bool, String>,
+{
     if argv.is_empty() || timeout_ms == 0 || timeout_ms > MAX_TIMEOUT_MS {
         return Err("capture command needs a program and a timeout from 1 to 600000 ms".into());
     }
@@ -38,6 +50,7 @@ pub fn run_command(argv: &[String], timeout_ms: u64) -> Result<Vec<u8>, String> 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut output = None;
     let mut exit_status = None;
+    let mut stop_at = None;
     loop {
         if output.is_none() {
             match receiver.try_recv() {
@@ -69,7 +82,7 @@ pub fn run_command(argv: &[String], timeout_ms: u64) -> Result<Vec<u8>, String> 
             }
         }
         if let Some(status) = exit_status {
-            if !status.success() {
+            if !status.success() && stop_at.is_none() {
                 stop_process_group(&mut child);
                 return Err(format!("capture command exited {status}"));
             }
@@ -77,11 +90,52 @@ pub fn run_command(argv: &[String], timeout_ms: u64) -> Result<Vec<u8>, String> 
                 return Ok(raw);
             }
         }
-        if Instant::now() >= deadline {
+        if stop_at.is_none() {
+            match stop_requested() {
+                Ok(true) => {
+                    interrupt_process_group(&mut child);
+                    stop_at = Some(Instant::now());
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    stop_process_group(&mut child);
+                    return Err(format!("capture stop status could not be checked: {error}"));
+                }
+            }
+        }
+        if stop_at.is_some_and(|at| at.elapsed() >= Duration::from_millis(STOP_GRACE_MS)) {
+            stop_process_group(&mut child);
+            if output.is_none() {
+                let raw = receiver
+                    .recv_timeout(Duration::from_millis(500))
+                    .map_err(|_| "capture output did not close after stop".to_string())?
+                    .map_err(|error| format!("capture output could not be read: {error}"))?;
+                if raw.len() > MAX_CAPTURE_BYTES {
+                    return Err("capture output exceeds 32 MiB".into());
+                }
+                output = Some(raw);
+            }
+            return Ok(output.expect("output received after stop"));
+        }
+        if stop_at.is_none() && Instant::now() >= deadline {
             stop_process_group(&mut child);
             return Err(format!("capture command timed out after {timeout_ms} ms"));
         }
         thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn interrupt_process_group(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let process_group = child.id() as libc::pid_t;
+        unsafe {
+            libc::kill(-process_group, libc::SIGINT);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
     }
 }
 

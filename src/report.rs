@@ -132,7 +132,7 @@ for(const experiment of state.experiments) {
 }
 for(const run of state.capture_runs) {
   const row=node('div','', 'row');
-  row.append(node('strong',run.id+' · '+run.key),node('div',run.status+' · '+run.trial_id+' · '+run.format+' · limit '+run.timeout_ms+' ms','small muted'));
+  row.append(node('strong',run.id+' · '+run.key),node('div',run.status+(run.stop_requested?' · stop requested':'')+' · '+run.trial_id+' · '+run.format+' · limit '+run.timeout_ms+' ms','small muted'));
   if(run.capture_id) row.append(node('div','Capture '+run.capture_id,'small'));
   if(run.error) row.append(node('div',run.error,'small'));
   byId('captureRuns').append(row);
