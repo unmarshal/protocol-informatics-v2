@@ -7,7 +7,8 @@ use std::process::ExitCode;
 use std::process::Stdio;
 
 use protocol_informatics_v2::workflow::{
-    self, Action, AnalysisRecord, Decision, Event, Experiment, Hypothesis, Tag, Trial,
+    self, Action, AnalysisRecord, Decision, Event, Experiment, Hypothesis, KnownValue, Tag, Trial,
+    ValueSet,
 };
 use protocol_informatics_v2::{CpuAligner, analyze_best, parse_hex_samples};
 use serde::Serialize;
@@ -49,6 +50,8 @@ fn print_help() {
     );
     println!("  mark <dir> <trial-id> <kind> <detail>");
     println!("  tag <dir> <obs-id> <phase> <label>");
+    println!("  value <dir> <obs-id> <variable> <unsigned> <discovery|validation>");
+    println!("  infer-value <dir> <variable>         find exact unsigned field candidates");
     println!("  analyze-investigation <dir> [trial-id]");
     println!("  decide <dir> <decision> [evidence-ids]");
     println!("  resume <dir> | changes <dir> <revision> | report <dir> <html-file>");
@@ -121,6 +124,15 @@ fn print_json(value: &impl Serialize) -> Result<(), String> {
         serde_json::to_string_pretty(value).map_err(|error| error.to_string())?
     );
     Ok(())
+}
+
+fn parse_unsigned(text: &str) -> Result<u64, String> {
+    let parsed = if let Some(hex) = text.strip_prefix("0x") {
+        u64::from_str_radix(hex, 16)
+    } else {
+        text.parse()
+    };
+    parsed.map_err(|_| "value must be an unsigned decimal or 0x-prefixed integer".into())
 }
 
 fn run_investigation_command(args: &[String]) -> Result<(), String> {
@@ -250,6 +262,33 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             };
             print_json(&workflow::append(root, Event::ObservationTagged { tag })?)
         }
+        "value" => {
+            require_len(args, 6)?;
+            let value = parse_unsigned(&args[4])?;
+            let set = match args[5].as_str() {
+                "discovery" => ValueSet::Discovery,
+                "validation" => ValueSet::Validation,
+                _ => return Err("set must be discovery or validation".into()),
+            };
+            let known_value = KnownValue {
+                id: workflow::next_id(root, "value")?,
+                observation_id: args[2].clone(),
+                variable: args[3].clone(),
+                value,
+                set,
+            };
+            print_json(&workflow::append(
+                root,
+                Event::ValueAnnotated { known_value },
+            )?)
+        }
+        "infer-value" => {
+            require_len(args, 3)?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::inference::infer_unsigned_field(
+                &state, &args[2],
+            )?)
+        }
         "analyze-investigation" => {
             if args.len() > 3 {
                 return Err("expected optional trial ID".into());
@@ -313,6 +352,7 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 "hypotheses": state.hypotheses, "experiments": state.experiments,
                 "trials": state.trials, "captures": state.captures,
                 "observation_count": state.observations.len(), "tag_count": state.tags.len(),
+                "known_value_count": state.known_values.len(),
                 "analyses": state.analyses, "decisions": state.decisions}),
             )
         }

@@ -1,9 +1,22 @@
 //! A self-contained, read-only human view of an investigation revision.
 
 use crate::workflow::State;
+use std::collections::BTreeSet;
 
 pub fn render(state: &State) -> String {
-    let data = serde_json::to_string(state)
+    let variables: BTreeSet<&str> = state
+        .known_values
+        .iter()
+        .map(|value| value.variable.as_str())
+        .collect();
+    let inferences: Vec<_> = variables
+        .into_iter()
+        .filter_map(|variable| crate::inference::infer_unsigned_field(state, variable).ok())
+        .collect();
+    let mut view = serde_json::to_value(state).expect("state is serializable");
+    view["field_inferences"] =
+        serde_json::to_value(inferences).expect("inferences are serializable");
+    let data = serde_json::to_string(&view)
         .expect("state is serializable")
         .replace('<', "\\u003c")
         .replace('>', "\\u003e")
@@ -39,6 +52,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
 .bytes { display:flex; flex-wrap:wrap; gap:4px; margin-top:12px }
 .byte { width:2.1em; text-align:center; padding:4px 0; background:#243448; border-radius:3px; font-family:ui-monospace,monospace }
 .byte.changed { background:#75502c; color:#fff0c9 }
+.byte.candidate { outline:2px solid #5cd6ab; background:#174c43 }
 .legend { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px }
 @media(max-width:850px) { .layout { grid-template-columns:1fr } }
 </style>
@@ -49,6 +63,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
   <div class="stack">
     <section class="panel"><h2>Hypotheses</h2><div id="hypotheses"></div></section>
     <section class="panel"><h2>Experiments and trials</h2><div id="experiments"></div></section>
+    <section class="panel"><h2>Candidate fields</h2><div id="fieldCandidates"></div></section>
     <section class="panel"><h2>Decisions</h2><div id="decisions"></div></section>
   </div>
   <div class="stack">
@@ -64,6 +79,12 @@ const node = (tag, text, className) => { const el=document.createElement(tag); e
 const captureById = new Map(state.captures.map(x=>[x.id,x]));
 const trialById = new Map(state.trials.map(x=>[x.id,x]));
 const tagsFor = id => state.tags.filter(x=>x.observation_id===id);
+const valuesFor = id => state.known_values.filter(x=>x.observation_id===id);
+const fieldOverlays = state.field_inferences.flatMap(inference => {
+  const passed=inference.candidates.filter(candidate=>candidate.validation_total>0&&candidate.validation_matches===candidate.validation_total);
+  const observationIds=new Set(state.known_values.filter(value=>value.variable===inference.variable).map(value=>value.observation_id));
+  return !inference.truncated&&passed.length===1 ? [{variable:inference.variable,observationIds,...passed[0]}] : [];
+});
 byId('revision').textContent=state.revision;
 byId('question').textContent=state.question;
 for(const [label,count] of [['Observations',state.observations.length],['Captures',state.captures.length],['Hypotheses',state.hypotheses.length],['Experiments',state.experiments.length]]) {
@@ -72,6 +93,13 @@ for(const [label,count] of [['Observations',state.observations.length],['Capture
 for(const h of state.hypotheses) {
   const row=node('div','', 'row'); row.append(node('strong',h.id+' · '+h.claim),node('div','Agent/analyst rating: '+(h.score===null?'unscored':h.score.toFixed(3))+' · evidence: '+h.evidence.length+' · counterexamples: '+h.counterexamples.length,'small muted')); byId('hypotheses').append(row);
 }
+for(const inference of state.field_inferences) {
+  const row=node('div','', 'row');
+  row.append(node('strong',inference.variable),node('div',inference.discovery_count+' discovery values · '+inference.validation_count+' held-out values · '+inference.candidate_count+' candidate(s)','small muted'));
+  for(const candidate of inference.candidates.slice(0,5)) row.append(node('div','['+candidate.start+', '+candidate.end+') '+candidate.byte_order+' · held-out '+candidate.validation_matches+'/'+candidate.validation_total,'small'));
+  byId('fieldCandidates').append(row);
+}
+if(!state.field_inferences.length) byId('fieldCandidates').append(node('div','Annotate controlled values to search for exact numeric fields.','small muted'));
 for(const experiment of state.experiments) {
   const row=node('div','', 'row'); row.append(node('strong',experiment.id+' · '+experiment.question),node('div','Prediction: '+experiment.prediction,'small muted'));
   for(const trial of state.trials.filter(x=>x.experiment_id===experiment.id)) {
@@ -115,13 +143,21 @@ function showDetail(observation) {
   detail.append(node('div','Source '+capture.source+' · '+capture.format+' · source index '+observation.source_index+(observation.source_offset===null?'':' · file offset '+observation.source_offset),'small muted'));
   if(observation.direction) detail.append(node('div',observation.direction,'small muted'));
   for(const tag of tagsFor(observation.id)) detail.append(node('span',tag.phase+': '+tag.label,'pill'));
-  const bytes=node('div','', 'bytes'); for(let i=0;i<observation.bytes_hex.length;i+=2) bytes.append(node('span',observation.bytes_hex.slice(i,i+2),'byte')); detail.append(bytes);
-  detail.append(node('div','Bytes are shown at their original message offsets. Field overlays will follow verified hypotheses.','small muted legend'));
+  for(const value of valuesFor(observation.id)) detail.append(node('span',value.variable+'='+value.value+' ('+value.set+')','pill'));
+  const bytes=node('div','', 'bytes');
+  for(let i=0;i<observation.bytes_hex.length;i+=2) {
+    const offset=i/2, overlay=fieldOverlays.find(field=>field.observationIds.has(observation.id)&&offset>=field.start&&offset<field.end);
+    const cell=node('span',observation.bytes_hex.slice(i,i+2),overlay?'byte candidate':'byte');
+    cell.title=overlay?overlay.variable+' candidate ['+overlay.start+', '+overlay.end+')':'byte '+offset;
+    bytes.append(cell);
+  }
+  detail.append(bytes);
+  detail.append(node('div','Green outline marks a unique candidate that matched held-out values; it still needs protocol-level confirmation.','small muted legend'));
 }
 function renderObservations() {
   const selected=byId('trialFilter').value, search=byId('search').value.toLowerCase();
   const list=byId('observations'); list.replaceChildren();
-  const matches=state.observations.filter(o=>{ const c=captureById.get(o.capture_id); const labels=tagsFor(o.id).map(t=>t.label+' '+t.phase).join(' '); return (!selected||c.trial_id===selected) && (o.id+' '+o.bytes_hex+' '+(o.direction||'')+' '+labels).toLowerCase().includes(search); });
+  const matches=state.observations.filter(o=>{ const c=captureById.get(o.capture_id); const labels=tagsFor(o.id).map(t=>t.label+' '+t.phase).join(' ')+valuesFor(o.id).map(v=>v.variable+'='+v.value).join(' '); return (!selected||c.trial_id===selected) && (o.id+' '+o.bytes_hex+' '+(o.direction||'')+' '+labels).toLowerCase().includes(search); });
   list.append(node('div',matches.length+' of '+state.observations.length+' observations','small muted'));
   for(const o of matches) { const row=node('div','', 'row'); const button=node('button',o.id+' · '+o.bytes_hex.match(/../g).join(' ').slice(0,100)); button.onclick=()=>showDetail(o); row.append(button,node('div',(o.direction||'')+' '+tagsFor(o.id).map(t=>'['+t.phase+': '+t.label+']').join(' '),'small muted')); list.append(row); }
 }

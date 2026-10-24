@@ -4,6 +4,7 @@
 //! clustering, field hypotheses, and active experiments belong in later layers.
 
 mod alignment;
+pub mod inference;
 mod input;
 pub mod pcap;
 mod profile;

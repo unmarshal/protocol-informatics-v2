@@ -60,4 +60,4 @@ The viewer must allow a person to adjust a boundary or type, split or merge a cl
 
 ## First interface milestone
 
-Stable IDs, versioned events, `observations` with pagination, `span` with exact byte offsets, `diff`, `compare-trials`, `resume`, and a read-only report are implemented. The next interface work is a richer corpus summary, hypothesis explanation, source-linked field overlays, and a tool server over the same operations.
+Stable IDs, versioned events, `observations` with pagination, `span` with exact byte offsets, `diff`, `compare-trials`, `resume`, known-value annotation, held-out unsigned field inference, and a read-only report are implemented. The report outlines a unique candidate when it matches held-out examples. The next interface work is a richer corpus summary, hypothesis explanation, editable field overlays, and a tool server over the same operations.

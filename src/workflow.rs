@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::pcap::{extract_icmp_messages, extract_pcapng_icmp_messages};
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hypothesis {
@@ -66,6 +66,22 @@ pub struct Tag {
     pub phase: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValueSet {
+    Discovery,
+    Validation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnownValue {
+    pub id: String,
+    pub observation_id: String,
+    pub variable: String,
+    pub value: u64,
+    pub set: ValueSet,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Action {
     pub id: String,
@@ -120,6 +136,9 @@ pub enum Event {
     ObservationTagged {
         tag: Tag,
     },
+    ValueAnnotated {
+        known_value: KnownValue,
+    },
     AnalysisRecorded {
         analysis: AnalysisRecord,
     },
@@ -159,6 +178,9 @@ impl Event {
             Self::ObservationTagged { tag } => {
                 tag.id = format!("tag-{revision:06}");
             }
+            Self::ValueAnnotated { known_value } => {
+                known_value.id = format!("value-{revision:06}");
+            }
             Self::AnalysisRecorded { analysis } => {
                 analysis.id = format!("analysis-{revision:06}");
             }
@@ -189,6 +211,7 @@ pub struct State {
     pub observations: Vec<Observation>,
     pub actions: Vec<Action>,
     pub tags: Vec<Tag>,
+    pub known_values: Vec<KnownValue>,
     pub analyses: Vec<AnalysisRecord>,
     pub decisions: Vec<Decision>,
 }
@@ -206,13 +229,16 @@ impl State {
             observations: Vec::new(),
             actions: Vec::new(),
             tags: Vec::new(),
+            known_values: Vec::new(),
             analyses: Vec::new(),
             decisions: Vec::new(),
         }
     }
 
     fn apply(&mut self, record: &EventRecord) -> Result<(), String> {
-        if record.schema_version != SCHEMA_VERSION || record.revision != self.revision + 1 {
+        if !(1..=SCHEMA_VERSION).contains(&record.schema_version)
+            || record.revision != self.revision + 1
+        {
             return Err(format!(
                 "invalid event version or revision at {}",
                 record.revision
@@ -326,6 +352,29 @@ impl State {
                     return Err("empty or duplicate tag".into());
                 }
                 self.tags.push(tag.clone());
+            }
+            Event::ValueAnnotated { known_value } => {
+                if !self
+                    .observations
+                    .iter()
+                    .any(|observation| observation.id == known_value.observation_id)
+                {
+                    return Err(format!(
+                        "unknown observation {}",
+                        known_value.observation_id
+                    ));
+                }
+                if known_value.variable.trim().is_empty() {
+                    return Err("known-value variable must not be empty".into());
+                }
+                if let Some(existing) = self.known_values.iter_mut().find(|existing| {
+                    existing.observation_id == known_value.observation_id
+                        && existing.variable == known_value.variable
+                }) {
+                    *existing = known_value.clone();
+                } else {
+                    self.known_values.push(known_value.clone());
+                }
             }
             Event::AnalysisRecorded { analysis } => {
                 if analysis.observation_ids.is_empty()

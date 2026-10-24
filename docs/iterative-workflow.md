@@ -41,4 +41,4 @@ The viewer shows a chronological investigation history alongside the evidence gr
 
 ## First implementation slice
 
-The local investigation store, JSON `resume` and `changes` commands, and imported hex/classic-PCAP samples are implemented. The `capture-command` hook can execute a local command that writes up to 32 MiB to standard output. Local writers now lock the event file and assign IDs at commit time. Next add interrupted-write recovery, controlled capture processes, automatic prediction checks, and derived-result invalidation.
+The local investigation store, JSON `resume` and `changes` commands, and imported hex/PCAP/pcapng samples are implemented. The `capture-command` hook can execute a local command that writes up to 32 MiB to standard output. Local writers lock the event file and assign IDs at commit time. Externally known values can be annotated for discovery or validation; exact numeric field candidates are tested on held-out observations. Next add interrupted-write recovery, controlled capture processes, broader prediction checks, and derived-result invalidation.

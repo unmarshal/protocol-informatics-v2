@@ -3,7 +3,7 @@
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::workflow::{Capture, Observation, State, Tag, from_hex, to_hex};
+use crate::workflow::{Capture, KnownValue, Observation, State, Tag, from_hex, to_hex};
 
 #[derive(Debug, Serialize)]
 pub struct ObservationPreview<'a> {
@@ -17,6 +17,7 @@ pub struct ObservationPreview<'a> {
     pub length: usize,
     pub preview_hex: &'a str,
     pub tags: Vec<&'a Tag>,
+    pub known_values: Vec<&'a KnownValue>,
 }
 
 #[derive(Debug, Serialize)]
@@ -97,6 +98,14 @@ fn tags_for<'a>(state: &'a State, observation: &Observation) -> Vec<&'a Tag> {
         .collect()
 }
 
+fn values_for<'a>(state: &'a State, observation: &Observation) -> Vec<&'a KnownValue> {
+    state
+        .known_values
+        .iter()
+        .filter(|value| value.observation_id == observation.id)
+        .collect()
+}
+
 pub fn list_observations<'a>(
     state: &'a State,
     trial_id: Option<&str>,
@@ -134,6 +143,7 @@ pub fn list_observations<'a>(
             length: observation.bytes_hex.len() / 2,
             preview_hex: &observation.bytes_hex[..observation.bytes_hex.len().min(64)],
             tags: tags_for(state, observation),
+            known_values: values_for(state, observation),
         })
         .collect();
     Ok(ObservationPage {

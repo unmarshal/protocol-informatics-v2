@@ -16,6 +16,14 @@ cargo run -- experiment /tmp/pi-icmp 'Cross the low-byte boundary' hyp-000002 'B
 cargo run -- trial /tmp/pi-icmp exp-000003 baseline 'sequence number'
 cargo run -- mark /tmp/pi-icmp trial-000004 stimulus 'Generate echo traffic'
 cargo run -- import /tmp/pi-icmp trial-000004 pcap-icmp examples/icmp_echo.pcap
+cargo run -- value /tmp/pi-icmp obs-000006-0000 sequence 0 discovery
+cargo run -- value /tmp/pi-icmp obs-000006-0002 sequence 1 discovery
+cargo run -- value /tmp/pi-icmp obs-000006-0004 sequence 2 discovery
+cargo run -- value /tmp/pi-icmp obs-000006-0008 sequence 255 discovery
+cargo run -- value /tmp/pi-icmp obs-000006-0010 sequence 256 discovery
+cargo run -- value /tmp/pi-icmp obs-000006-0012 sequence 257 validation
+cargo run -- value /tmp/pi-icmp obs-000006-0022 sequence 65535 validation
+cargo run -- infer-value /tmp/pi-icmp sequence
 cargo run -- observations /tmp/pi-icmp trial-000004 8 4
 cargo run -- span /tmp/pi-icmp obs-000006-0010 6 8
 cargo run -- diff /tmp/pi-icmp obs-000006-0008 obs-000006-0010
@@ -33,6 +41,8 @@ For a controlled comparison, the generator also writes `icmp_baseline_255.pcap` 
 
 The `evaluate` score is supplied by the analyst or agent. The program validates its range and evidence IDs, but does **not** calculate a probability that the hypothesis is true. `analyze-investigation` stores a separate descriptive alignment result; it does not evaluate the semantic claim.
 
+`value` records an externally known unsigned value for an observation, in decimal or `0x` hex. `infer-value` searches fixed offsets for exact 1, 2, 4, or 8-byte encodings in both byte orders. It fits only the `discovery` examples, then reports matches and counterexamples from the `validation` examples. The ICMP sweep yields one candidate: `[6, 8)` in big-endian order, matching both held-out packets. This is evidence for a field location, not proof of its protocol meaning. A corrected annotation appends a new event and supersedes the earlier value in the current view.
+
 The JSON CLI is the current agent interface. `observations` returns at most 100 previews per call, with an offset for paging. `span` reads at most 4096 bytes from one observation, using half-open `[start, end)` message-byte offsets and reporting the original PCAP file offset when available. `diff` shows changed contiguous byte ranges at original message offsets. `resume` returns the current investigation summary; `changes` returns up to 100 events after a revision. `verify` replays the log, checks artifact hashes, and compares extracted observations with original capture bytes. Every record carries a stable ID and the event log has monotonically increasing revisions.
 
 For a command that emits classic PCAP or hex lines on standard output, use `capture-command` instead of `import`:
@@ -43,7 +53,7 @@ cargo run -- capture-command /tmp/pi-icmp trial-000004 pcap-icmp -- cat examples
 
 The command runs locally, must exit successfully, and is stopped if output exceeds 32 MiB. It is a generic acquisition hook, not yet a managed network capture service. Capture commands should be chosen with care because they execute as the current user.
 
-The generated report is a self-contained, read-only HTML view with experiments, actions, hypotheses, decisions, observation filters, tags, and a byte inspector. Regenerate it after new events. The append-only source record is `/tmp/pi-icmp/.pi/events.jsonl`; immutable raw captures and analysis JSON live under `/tmp/pi-icmp/.pi/artifacts/` with SHA-256 names. Keep the whole directory to preserve provenance.
+The generated report is a self-contained, read-only HTML view with experiments, actions, hypotheses, decisions, observation filters, tags, candidate fields, and a byte inspector. A unique candidate that matches held-out values is outlined at its original byte offsets. Regenerate the report after new events. The append-only source record is `/tmp/pi-icmp/.pi/events.jsonl`; immutable raw captures and analysis JSON live under `/tmp/pi-icmp/.pi/artifacts/` with SHA-256 names. Keep the whole directory to preserve provenance.
 
 ## One-shot analysis
 
@@ -58,7 +68,7 @@ Hex input has one extracted message per line; spaces and colons are allowed. Bla
 
 Classic PCAP and pcapng ingestion currently support Ethernet, unfragmented IPv4, and ICMP messages. The pcapng reader accepts Enhanced Packet Blocks and rejects legacy packet blocks. It does not support VLANs, IPv6, TCP stream reassembly, file-format record boundaries, or managed live capture. The HTML view is read-only. Local event writers use file locks and assign IDs at commit time; the concurrent CLI test covers simultaneous hypotheses and imports. Distributed coordination, idempotent action handles, and interrupted-write recovery remain open work. The fixture tests parsing, exact source offsets, checksums, and the alignment strategy against independent known answers.
 
-The next inference step is to compare controlled baseline and variant trials, cluster message roles before alignment, then test candidate lengths, counters, checksums, and request/response relations on held-out examples. See the [workflow](docs/iterative-workflow.md), [interface design](docs/interface-design.md), and [experiment lifecycle](docs/experiment-lifecycle.md) for the fuller direction. GPU acceleration can wait for representative CPU profiles.
+The next inference step is to cluster message roles before alignment, then test candidate lengths, checksums, and request/response relations on held-out examples. See the [workflow](docs/iterative-workflow.md), [interface design](docs/interface-design.md), and [experiment lifecycle](docs/experiment-lifecycle.md) for the fuller direction. GPU acceleration can wait for representative CPU profiles.
 
 ## Licensing
 

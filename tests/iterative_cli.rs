@@ -354,3 +354,98 @@ fn imports_pcapng_through_the_same_investigation_workflow() {
     assert_eq!(cli(&["verify", root_text])["observations"], 24);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn annotated_icmp_values_locate_sequence_on_held_out_packets() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&["init", root_text, "Find the controlled sequence field"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Sweep sequence",
+        "-",
+        "Big-endian field",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&["trial", root_text, experiment_id, "sweep", "sequence"]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/icmp_echo.pcapng");
+    cli(&["import", root_text, trial_id, "pcapng-icmp", path(&fixture)]);
+    for (index, value) in [(0, 0), (2, 1), (4, 2), (8, 254), (10, 256)] {
+        let id = format!("obs-000004-{index:04}");
+        cli(&[
+            "value",
+            root_text,
+            &id,
+            "sequence",
+            &value.to_string(),
+            "discovery",
+        ]);
+    }
+    for (index, value) in [(12, 257), (22, 65535)] {
+        let id = format!("obs-000004-{index:04}");
+        cli(&[
+            "value",
+            root_text,
+            &id,
+            "sequence",
+            &value.to_string(),
+            "validation",
+        ]);
+    }
+    // An explicit correction replaces the materialized annotation while the
+    // original event remains in the log.
+    cli(&[
+        "value",
+        root_text,
+        "obs-000004-0008",
+        "sequence",
+        "0xff",
+        "discovery",
+    ]);
+    let result = cli(&["infer-value", root_text, "sequence"]);
+    assert_eq!(result["discovery_count"], 5);
+    assert_eq!(result["validation_count"], 2);
+    assert_eq!(result["candidate_count"], 1);
+    assert_eq!(result["candidates"][0]["start"], 6);
+    assert_eq!(result["candidates"][0]["end"], 8);
+    assert_eq!(result["candidates"][0]["byte_order"], "big_endian");
+    assert_eq!(result["candidates"][0]["validation_matches"], 2);
+    assert_eq!(cli(&["resume", root_text])["known_value_count"], 7);
+    let page = cli(&["observations", root_text, "-", "8", "1"]);
+    assert_eq!(page["observations"][0]["known_values"][0]["value"], 255);
+    let report = root.join("report.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("Candidate fields"));
+    assert!(html.contains("big_endian"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn replays_v1_log_and_appends_v2_events() {
+    let root = workspace();
+    let events = root.join(".pi/events.jsonl");
+    fs::create_dir_all(events.parent().unwrap()).unwrap();
+    fs::write(
+        &events,
+        "{\"schema_version\":1,\"revision\":1,\"timestamp_ms\":0,\"event\":{\"type\":\"created\",\"question\":\"Old investigation\"}}\n",
+    )
+    .unwrap();
+    assert_eq!(
+        cli(&["resume", path(&root)])["question"],
+        "Old investigation"
+    );
+    let appended = cli(&["hypothesis", path(&root), "A new claim"]);
+    assert_eq!(appended["schema_version"], 2);
+    assert_eq!(appended["revision"], 2);
+    assert_eq!(
+        cli(&["changes", path(&root), "0"])
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    fs::remove_dir_all(root).unwrap();
+}
