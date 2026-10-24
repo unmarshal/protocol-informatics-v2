@@ -70,6 +70,218 @@ pub struct ClusterReport {
     pub clusters: Vec<Cluster>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationStatus {
+    Assigned,
+    Ambiguous,
+    Unassigned,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClusterMatch {
+    pub cluster_id: String,
+    pub distance_to_representative: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RejectedCluster {
+    pub cluster_id: String,
+    pub insufficient_discovery_members: bool,
+    pub direction_mismatch: bool,
+    pub stable_byte_mismatch_offsets: Vec<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ValidationObservation {
+    pub observation_id: String,
+    pub status: ValidationStatus,
+    pub assigned_cluster_id: Option<String>,
+    pub compatible_cluster_count: usize,
+    pub candidates_truncated: bool,
+    pub candidates: Vec<ClusterMatch>,
+    pub rejected_cluster_count: usize,
+    pub rejections_truncated: bool,
+    pub rejections: Vec<RejectedCluster>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClusterValidation {
+    pub revision: u64,
+    pub method: &'static str,
+    pub provisional: bool,
+    pub discovery_trial_id: String,
+    pub validation_trial_id: String,
+    pub direction_mode: &'static str,
+    pub discovery_count: usize,
+    pub validation_count: usize,
+    pub cluster_count: usize,
+    pub assigned_count: usize,
+    pub ambiguous_count: usize,
+    pub unassigned_count: usize,
+    pub ambiguity_distance_margin: f64,
+    pub maximum_reported_candidates_per_observation: usize,
+    pub clusters: Vec<Cluster>,
+    pub observations: Vec<ValidationObservation>,
+}
+
+const AMBIGUITY_DISTANCE_MARGIN: f64 = 0.05;
+const MAX_REPORTED_MATCHES: usize = 5;
+
+pub fn validate_clusters(
+    state: &State,
+    discovery_trial_id: &str,
+    validation_trial_id: &str,
+    respect_direction: bool,
+) -> Result<ClusterValidation, String> {
+    let discovery_trial = state
+        .trials
+        .iter()
+        .find(|trial| trial.id == discovery_trial_id)
+        .ok_or_else(|| format!("unknown trial {discovery_trial_id}"))?;
+    let validation_trial = state
+        .trials
+        .iter()
+        .find(|trial| trial.id == validation_trial_id)
+        .ok_or_else(|| format!("unknown trial {validation_trial_id}"))?;
+    if discovery_trial_id == validation_trial_id
+        || discovery_trial.experiment_id != validation_trial.experiment_id
+    {
+        return Err("discovery and validation must be distinct trials of one experiment".into());
+    }
+    let report = cluster_observations(state, Some(discovery_trial_id), respect_direction)?;
+    let validation: Vec<_> = state
+        .observations
+        .iter()
+        .filter(|observation| {
+            state.captures.iter().any(|capture| {
+                capture.id == observation.capture_id && capture.trial_id == validation_trial_id
+            })
+        })
+        .collect();
+    if validation.is_empty() || validation.len() > MAX_OBSERVATIONS {
+        return Err(format!(
+            "validation trial needs 1 to {MAX_OBSERVATIONS} observations"
+        ));
+    }
+    let mut representatives = BTreeMap::new();
+    for cluster in &report.clusters {
+        let representative = state
+            .observations
+            .iter()
+            .find(|observation| observation.id == cluster.representative_observation_id)
+            .ok_or_else(|| {
+                format!(
+                    "unknown representative {}",
+                    cluster.representative_observation_id
+                )
+            })?;
+        representatives.insert(cluster.id.as_str(), from_hex(&representative.bytes_hex)?);
+    }
+    let mut observations = Vec::new();
+    let mut assigned_count = 0;
+    let mut ambiguous_count = 0;
+    let mut unassigned_count = 0;
+    for observation in validation {
+        let bytes = from_hex(&observation.bytes_hex)?;
+        let mut candidates = Vec::new();
+        let mut rejections = Vec::new();
+        for cluster in &report.clusters {
+            let enough_members = cluster.member_count >= MIN_CHILD_SIZE;
+            let direction_fits = cluster.split_rules.iter().all(|rule| match rule {
+                SplitRule::Direction { value } => value == &observation.direction,
+                SplitRule::Byte { .. } => true,
+            });
+            let stable_byte_mismatch_offsets: Vec<_> = cluster
+                .stable_header_bytes
+                .iter()
+                .filter(|stable| bytes.get(stable.offset) != Some(&stable.value))
+                .map(|stable| stable.offset)
+                .collect();
+            if enough_members && direction_fits && stable_byte_mismatch_offsets.is_empty() {
+                let representative = representatives
+                    .get(cluster.id.as_str())
+                    .expect("every cluster has a representative");
+                candidates.push(ClusterMatch {
+                    cluster_id: cluster.id.clone(),
+                    distance_to_representative: sample_distance(&bytes, representative),
+                });
+            } else {
+                rejections.push(RejectedCluster {
+                    cluster_id: cluster.id.clone(),
+                    insufficient_discovery_members: !enough_members,
+                    direction_mismatch: !direction_fits,
+                    stable_byte_mismatch_offsets,
+                });
+            }
+        }
+        candidates.sort_by(|a, b| {
+            a.distance_to_representative
+                .total_cmp(&b.distance_to_representative)
+                .then_with(|| a.cluster_id.cmp(&b.cluster_id))
+        });
+        let compatible_cluster_count = candidates.len();
+        let status = if candidates.is_empty() {
+            unassigned_count += 1;
+            ValidationStatus::Unassigned
+        } else if candidates.len() > 1
+            && candidates[1].distance_to_representative - candidates[0].distance_to_representative
+                <= AMBIGUITY_DISTANCE_MARGIN
+        {
+            ambiguous_count += 1;
+            ValidationStatus::Ambiguous
+        } else {
+            assigned_count += 1;
+            ValidationStatus::Assigned
+        };
+        let assigned_cluster_id =
+            (status == ValidationStatus::Assigned).then(|| candidates[0].cluster_id.clone());
+        candidates.truncate(MAX_REPORTED_MATCHES);
+        rejections.sort_by(|a, b| {
+            (usize::from(a.insufficient_discovery_members)
+                + usize::from(a.direction_mismatch)
+                + a.stable_byte_mismatch_offsets.len())
+            .cmp(
+                &(usize::from(b.insufficient_discovery_members)
+                    + usize::from(b.direction_mismatch)
+                    + b.stable_byte_mismatch_offsets.len()),
+            )
+            .then_with(|| a.cluster_id.cmp(&b.cluster_id))
+        });
+        let rejected_cluster_count = rejections.len();
+        rejections.truncate(MAX_REPORTED_MATCHES);
+        observations.push(ValidationObservation {
+            observation_id: observation.id.clone(),
+            status,
+            assigned_cluster_id,
+            compatible_cluster_count,
+            candidates_truncated: compatible_cluster_count > MAX_REPORTED_MATCHES,
+            candidates,
+            rejected_cluster_count,
+            rejections_truncated: rejected_cluster_count > MAX_REPORTED_MATCHES,
+            rejections,
+        });
+    }
+    Ok(ClusterValidation {
+        revision: state.revision,
+        method: "stable_header_and_medoid_held_out_v1",
+        provisional: true,
+        discovery_trial_id: discovery_trial_id.into(),
+        validation_trial_id: validation_trial_id.into(),
+        direction_mode: report.direction_mode,
+        discovery_count: report.observation_count,
+        validation_count: observations.len(),
+        cluster_count: report.clusters.len(),
+        assigned_count,
+        ambiguous_count,
+        unassigned_count,
+        ambiguity_distance_margin: AMBIGUITY_DISTANCE_MARGIN,
+        maximum_reported_candidates_per_observation: MAX_REPORTED_MATCHES,
+        clusters: report.clusters,
+        observations,
+    })
+}
+
 struct Sample {
     id: String,
     direction: Option<String>,

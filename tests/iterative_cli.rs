@@ -2714,3 +2714,154 @@ fn clusters_icmp_roles_before_alignment_and_exposes_members() {
     assert!(String::from_utf8_lossy(&stale.stderr).contains("unknown cluster"));
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn agent_can_check_format_groups_on_held_out_messages() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&["init", root_text, "Do candidate format groups generalize?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Vary message kind",
+        "-",
+        "Header groups predict held-out messages",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let discovery = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "discovery",
+        "six messages",
+    ]);
+    let validation = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "validation",
+        "two known and one novel kind",
+    ]);
+    let discovery_id = discovery["event"]["trial"]["id"].as_str().unwrap();
+    let validation_id = validation["event"]["trial"]["id"].as_str().unwrap();
+    let discovery_file = root.join("discovery.hex");
+    fs::write(
+        &discovery_file,
+        "01a0b0c01001\n01a1b1c11002\n01a2b2c21003\n02d0e0f02004\n02d1e1f12005\n02d2e2f22006\n",
+    )
+    .unwrap();
+    let validation_file = root.join("validation.hex");
+    fs::write(
+        &validation_file,
+        "01a3b3c31004\n02d3e3f32007\n03f0f0f03008\n",
+    )
+    .unwrap();
+    cli(&[
+        "import",
+        root_text,
+        discovery_id,
+        "hex",
+        path(&discovery_file),
+    ]);
+    let imported = cli(&[
+        "import",
+        root_text,
+        validation_id,
+        "hex",
+        path(&validation_file),
+    ]);
+    let novel_id = imported["event"]["observations"][2]["id"].as_str().unwrap();
+    let result = cli(&[
+        "validate-clusters",
+        root_text,
+        discovery_id,
+        validation_id,
+        "ignore",
+    ]);
+    assert_eq!(result["discovery_count"], 6);
+    assert_eq!(result["validation_count"], 3);
+    assert_eq!(result["cluster_count"], 2);
+    assert_eq!(result["assigned_count"], 2);
+    assert_eq!(result["unassigned_count"], 1);
+    assert_eq!(result["observations"][0]["status"], "assigned");
+    assert_eq!(result["observations"][1]["status"], "assigned");
+    assert_ne!(
+        result["observations"][0]["assigned_cluster_id"],
+        result["observations"][1]["assigned_cluster_id"]
+    );
+    assert_eq!(result["observations"][2]["status"], "unassigned");
+    assert_eq!(result["observations"][2]["observation_id"], novel_id);
+    assert_eq!(result["observations"][2]["rejected_cluster_count"], 2);
+    assert!(
+        result["observations"][2]["rejections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|rejected| rejected["stable_byte_mismatch_offsets"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!(0)))
+    );
+    let report = root.join("cluster-validation.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("Held-out grouping"));
+    assert!(html.contains("cluster_validations"));
+    assert!(html.contains(novel_id));
+    let small_experiment = cli(&[
+        "experiment",
+        root_text,
+        "Repeat a single sample",
+        "-",
+        "A lone sample is insufficient",
+    ]);
+    let small_experiment_id = small_experiment["event"]["experiment"]["id"]
+        .as_str()
+        .unwrap();
+    let small_discovery = cli(&[
+        "trial",
+        root_text,
+        small_experiment_id,
+        "discovery",
+        "one sample",
+    ]);
+    let small_validation = cli(&[
+        "trial",
+        root_text,
+        small_experiment_id,
+        "validation",
+        "one repeat",
+    ]);
+    let small_discovery_id = small_discovery["event"]["trial"]["id"].as_str().unwrap();
+    let small_validation_id = small_validation["event"]["trial"]["id"].as_str().unwrap();
+    let small_file = root.join("one.hex");
+    fs::write(&small_file, "0102030405\n").unwrap();
+    cli(&[
+        "import",
+        root_text,
+        small_discovery_id,
+        "hex",
+        path(&small_file),
+    ]);
+    cli(&[
+        "import",
+        root_text,
+        small_validation_id,
+        "hex",
+        path(&small_file),
+    ]);
+    let small = cli(&[
+        "validate-clusters",
+        root_text,
+        small_discovery_id,
+        small_validation_id,
+        "ignore",
+    ]);
+    assert_eq!(small["assigned_count"], 0);
+    assert_eq!(small["unassigned_count"], 1);
+    assert_eq!(
+        small["observations"][0]["rejections"][0]["insufficient_discovery_members"],
+        true
+    );
+    fs::remove_dir_all(root).unwrap();
+}

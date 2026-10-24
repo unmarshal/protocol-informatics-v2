@@ -46,6 +46,27 @@ pub fn render(state: &State) -> String {
             view["cluster_error"] = serde_json::Value::String(error);
         }
     }
+    let mut cluster_validations = Vec::new();
+    for experiment in state.experiments.iter().take(8) {
+        let discovery = state
+            .trials
+            .iter()
+            .find(|trial| trial.experiment_id == experiment.id && trial.role == "discovery");
+        let validation = state
+            .trials
+            .iter()
+            .find(|trial| trial.experiment_id == experiment.id && trial.role == "validation");
+        if let (Some(discovery), Some(validation)) = (discovery, validation)
+            && let Ok(result) =
+                crate::clustering::validate_clusters(state, &discovery.id, &validation.id, true)
+        {
+            cluster_validations.push(serde_json::json!({
+                "experiment_id": experiment.id,
+                "result": result,
+            }));
+        }
+    }
+    view["cluster_validations"] = serde_json::Value::Array(cluster_validations);
     let mut framing_inferences = Vec::new();
     let mut framing_previews = Vec::new();
     let mut tlv_inferences = Vec::new();
@@ -188,6 +209,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
     <section class="panel"><h2>Capture command runs</h2><div id="captureRuns"></div></section>
     <section class="panel"><h2>Tagged action windows</h2><div id="tagWindows"></div></section>
     <section class="panel"><h2>Candidate format groups</h2><div id="clusters"></div></section>
+    <section class="panel"><h2>Held-out grouping</h2><div id="clusterValidation"></div></section>
     <section class="panel"><h2>Candidate fields</h2><div id="fieldCandidates"></div></section>
     <section class="panel"><h2>Candidate record framing</h2><div id="framingCandidates"></div></section>
     <section class="panel"><h2>Candidate typed records</h2><div id="tlvCandidates"></div></section>
@@ -353,6 +375,18 @@ if(state.cluster_report) {
     byId('clusters').append(row);
   }
 } else byId('clusters').append(node('div',state.cluster_error||'No groups available.','small muted'));
+for(const item of state.cluster_validations||[]) {
+  const result=item.result, row=node('div','', 'row');
+  row.append(node('strong',item.experiment_id+' · '+result.cluster_count+' discovery group(s)'),node('div',result.assigned_count+' assigned · '+result.ambiguous_count+' ambiguous · '+result.unassigned_count+' unassigned of '+result.validation_count+' held-out observations','small muted'));
+  for(const observation of result.observations.slice(0,12)) {
+    const label=observation.assigned_cluster_id||observation.candidates.map(candidate=>candidate.cluster_id).join(', ')||'no compatible group';
+    row.append(node('div',observation.observation_id+' · '+observation.status+' · '+label,'small'));
+    if(observation.status==='unassigned') for(const rejected of observation.rejections.slice(0,3)) row.append(node('div','↳ '+rejected.cluster_id+' rejected: '+(rejected.insufficient_discovery_members?'fewer than 3 discovery members · ':'')+(rejected.direction_mismatch?'direction · ':'')+'header offsets '+(rejected.stable_byte_mismatch_offsets.join(', ')||'none'),'small muted'));
+  }
+  if(result.observations.length>12) row.append(node('div','Additional observations are available through validate-clusters.','small muted'));
+  byId('clusterValidation').append(row);
+}
+if(!(state.cluster_validations||[]).length) byId('clusterValidation').append(node('div','Use discovery and validation trials to test proposed groups on held-out messages.','small muted'));
 for(const analysis of state.analyses) {
   const row=node('div','', 'row');
   const scope=analysis.scope?.kind==='cluster'?'group '+analysis.scope.cluster_id:analysis.scope?.kind==='trial'?'trial '+analysis.scope.trial_id:analysis.scope?.kind||'legacy selection';

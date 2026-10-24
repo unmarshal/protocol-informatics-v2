@@ -92,6 +92,7 @@ fn print_help() {
     );
     println!("  analyze-investigation <dir> [trial-id]");
     println!("  cluster <dir> [trial-id|-] [respect|ignore]");
+    println!("  validate-clusters <dir> <discovery-trial> <validation-trial> [respect|ignore]");
     println!("  analyze-cluster <dir> <cluster-id> [trial-id|-] [respect|ignore]");
     println!("  decide <dir> <decision> [evidence-ids]");
     println!("  summary <dir>                      bounded corpus overview for agents");
@@ -1123,6 +1124,21 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 &state,
                 trial,
                 direction_mode(args.get(3))?,
+            )?)
+        }
+        "validate-clusters" => {
+            if args.len() < 4 || args.len() > 5 {
+                return Err(
+                    "expected discovery trial, validation trial, and optional direction mode"
+                        .into(),
+                );
+            }
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::clustering::validate_clusters(
+                &state,
+                &args[2],
+                &args[3],
+                direction_mode(args.get(4))?,
             )?)
         }
         "analyze-cluster" => {
