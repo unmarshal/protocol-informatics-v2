@@ -1,6 +1,7 @@
 //! Bounded, stable navigation over a replayed investigation state.
 
 use serde::Serialize;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::workflow::{Capture, Observation, State, Tag, from_hex, to_hex};
 
@@ -59,6 +60,25 @@ pub struct ObservationDiff<'a> {
     pub right_length: usize,
     pub coordinate_system: &'static str,
     pub changed_ranges: Vec<ChangedRange>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChangedPosition {
+    pub offset: usize,
+    pub pairs_changed: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TrialComparison<'a> {
+    pub revision: u64,
+    pub baseline_trial_id: &'a str,
+    pub variant_trial_id: &'a str,
+    pub pairing: &'static str,
+    pub pair_count: usize,
+    pub unmatched_baseline: usize,
+    pub unmatched_variant: usize,
+    pub changed_positions: Vec<ChangedPosition>,
+    pub pairs: Vec<ObservationDiff<'a>>,
 }
 
 fn capture_for<'a>(state: &'a State, observation: &Observation) -> &'a Capture {
@@ -202,5 +222,90 @@ pub fn diff_observations<'a>(
         right_length: right.len(),
         coordinate_system: "message_bytes",
         changed_ranges,
+    })
+}
+
+/// Pair observations within each direction by their order in the event log.
+/// This is a descriptive comparison, not evidence of causal correspondence.
+pub fn compare_trials<'a>(
+    state: &'a State,
+    baseline_id: &str,
+    variant_id: &str,
+) -> Result<TrialComparison<'a>, String> {
+    let baseline = state
+        .trials
+        .iter()
+        .find(|trial| trial.id == baseline_id)
+        .ok_or_else(|| format!("unknown trial {baseline_id}"))?;
+    let variant = state
+        .trials
+        .iter()
+        .find(|trial| trial.id == variant_id)
+        .ok_or_else(|| format!("unknown trial {variant_id}"))?;
+    if baseline.id == variant.id {
+        return Err("comparison requires two distinct trials".into());
+    }
+    if baseline.experiment_id != variant.experiment_id {
+        return Err("trials belong to different experiments".into());
+    }
+    let group = |trial_id: &str| -> BTreeMap<String, Vec<&Observation>> {
+        let mut groups = BTreeMap::<String, Vec<&Observation>>::new();
+        for observation in &state.observations {
+            if capture_for(state, observation).trial_id == trial_id {
+                groups
+                    .entry(observation.direction.clone().unwrap_or_default())
+                    .or_default()
+                    .push(observation);
+            }
+        }
+        groups
+    };
+    let baseline_groups = group(baseline_id);
+    let variant_groups = group(variant_id);
+    let directions: BTreeSet<_> = baseline_groups
+        .keys()
+        .chain(variant_groups.keys())
+        .collect();
+    let mut pairs = Vec::new();
+    let mut unmatched_baseline = 0;
+    let mut unmatched_variant = 0;
+    let mut changed_counts = BTreeMap::<usize, usize>::new();
+    for direction in directions {
+        let left = baseline_groups
+            .get(direction)
+            .map_or(&[][..], Vec::as_slice);
+        let right = variant_groups.get(direction).map_or(&[][..], Vec::as_slice);
+        unmatched_baseline += left.len().saturating_sub(right.len());
+        unmatched_variant += right.len().saturating_sub(left.len());
+        for (baseline_observation, variant_observation) in left.iter().zip(right) {
+            if pairs.len() == 100 {
+                return Err("trial comparison exceeds 100 pairs; use observation diff on a smaller selection".into());
+            }
+            let diff = diff_observations(state, &baseline_observation.id, &variant_observation.id)?;
+            for range in &diff.changed_ranges {
+                for offset in range.start..range.end {
+                    *changed_counts.entry(offset).or_default() += 1;
+                }
+            }
+            pairs.push(diff);
+        }
+    }
+    let changed_positions = changed_counts
+        .into_iter()
+        .map(|(offset, pairs_changed)| ChangedPosition {
+            offset,
+            pairs_changed,
+        })
+        .collect();
+    Ok(TrialComparison {
+        revision: state.revision,
+        baseline_trial_id: &baseline.id,
+        variant_trial_id: &variant.id,
+        pairing: "same_direction_then_source_order",
+        pair_count: pairs.len(),
+        unmatched_baseline,
+        unmatched_variant,
+        changed_positions,
+        pairs,
     })
 }

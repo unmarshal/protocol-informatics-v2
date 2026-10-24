@@ -231,6 +231,14 @@ fn controlled_trials_isolate_sequence_and_checksum_bytes() {
     assert_eq!(ranges[1]["end"], 8);
     assert_eq!(ranges[1]["left_hex"], "00ff");
     assert_eq!(ranges[1]["right_hex"], "0100");
+    let trial_comparison = cli(&["compare-trials", root_text, "trial-000004", "trial-000005"]);
+    assert_eq!(trial_comparison["pair_count"], 2);
+    assert_eq!(trial_comparison["unmatched_baseline"], 0);
+    assert_eq!(trial_comparison["unmatched_variant"], 0);
+    assert_eq!(trial_comparison["changed_positions"][0]["offset"], 3);
+    assert_eq!(trial_comparison["changed_positions"][0]["pairs_changed"], 2);
+    assert_eq!(trial_comparison["changed_positions"][1]["offset"], 6);
+    assert_eq!(trial_comparison["changed_positions"][2]["offset"], 7);
     assert_eq!(cli(&["verify", root_text])["observations"], 4);
     fs::remove_dir_all(root).unwrap();
 }

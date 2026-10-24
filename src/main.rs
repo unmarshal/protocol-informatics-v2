@@ -53,6 +53,7 @@ fn print_help() {
     println!("  observations <dir> [trial-id|-] [offset] [limit<=100]");
     println!("  span <dir> <obs-id> <start> <end>    read half-open message byte span");
     println!("  diff <dir> <left-obs-id> <right-obs-id>");
+    println!("  compare-trials <dir> <baseline-trial-id> <variant-trial-id>");
     println!("  verify <dir>                         verify stored evidence artifacts");
     println!("IDs are comma-separated where plural; use '-' for an empty list.");
 }
@@ -346,6 +347,13 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             require_len(args, 4)?;
             let state = workflow::load(root)?;
             print_json(&protocol_informatics_v2::query::diff_observations(
+                &state, &args[2], &args[3],
+            )?)
+        }
+        "compare-trials" => {
+            require_len(args, 4)?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::query::compare_trials(
                 &state, &args[2], &args[3],
             )?)
         }
