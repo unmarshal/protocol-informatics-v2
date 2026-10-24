@@ -1,5 +1,5 @@
 //! Ethernet/IPv4 transport extraction from classic pcap and pcapng.
-//! ICMP messages and UDP application payloads share capture parsing and retain exact
+//! ICMP messages, UDP datagrams, and TCP segment payloads share capture parsing and retain exact
 //! byte offsets into the original capture.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,6 +12,7 @@ pub struct TransportMessage {
     pub destination_ipv4: [u8; 4],
     pub source_port: Option<u16>,
     pub destination_port: Option<u16>,
+    pub tcp_sequence: Option<u32>,
     pub bytes: Vec<u8>,
 }
 
@@ -23,6 +24,7 @@ struct TransportSlice<'a> {
     destination_ipv4: [u8; 4],
     source_port: Option<u16>,
     destination_port: Option<u16>,
+    tcp_sequence: Option<u32>,
     bytes: &'a [u8],
 }
 
@@ -30,6 +32,7 @@ struct TransportSlice<'a> {
 enum Transport {
     Icmp,
     Udp,
+    Tcp,
 }
 
 impl Transport {
@@ -37,6 +40,7 @@ impl Transport {
         match self {
             Self::Icmp => 1,
             Self::Udp => 17,
+            Self::Tcp => 6,
         }
     }
 }
@@ -79,6 +83,11 @@ pub fn extract_icmp_messages(data: &[u8]) -> Result<Vec<TransportMessage>, Strin
 
 pub fn extract_udp_messages(data: &[u8]) -> Result<Vec<TransportMessage>, String> {
     extract_pcap_messages(data, Transport::Udp)
+}
+
+/// Return application bytes from individual TCP segments. This does not reassemble streams.
+pub fn extract_tcp_segments(data: &[u8]) -> Result<Vec<TransportMessage>, String> {
+    extract_pcap_messages(data, Transport::Tcp)
 }
 
 fn extract_pcap_messages(
@@ -161,6 +170,10 @@ pub fn extract_pcapng_icmp_messages(data: &[u8]) -> Result<Vec<TransportMessage>
 
 pub fn extract_pcapng_udp_messages(data: &[u8]) -> Result<Vec<TransportMessage>, String> {
     extract_pcapng_messages(data, Transport::Udp)
+}
+
+pub fn extract_pcapng_tcp_segments(data: &[u8]) -> Result<Vec<TransportMessage>, String> {
+    extract_pcapng_messages(data, Transport::Tcp)
 }
 
 fn extract_pcapng_messages(
@@ -344,6 +357,7 @@ fn push_ethernet_transport(
             destination_ipv4: message.destination_ipv4,
             source_port: message.source_port,
             destination_port: message.destination_port,
+            tcp_sequence: message.tcp_sequence,
             bytes: message.bytes.to_vec(),
         });
     }
@@ -378,45 +392,64 @@ fn extract_ethernet_transport(
         return Ok(None);
     }
     let payload = &ip[header_length..total_length];
-    let (bytes, source_port, destination_port) = match transport {
-        Transport::Icmp => {
-            if payload.len() < 8 {
-                return Err("truncated ICMP message".into());
+    let (bytes, source_port, destination_port, tcp_sequence, transport_header_length) =
+        match transport {
+            Transport::Icmp => {
+                if payload.len() < 8 {
+                    return Err("truncated ICMP message".into());
+                }
+                (payload, None, None, None, 0)
             }
-            (payload, None, None)
-        }
-        Transport::Udp => {
-            if payload.len() < 8 {
-                return Err("truncated UDP header".into());
+            Transport::Udp => {
+                if payload.len() < 8 {
+                    return Err("truncated UDP header".into());
+                }
+                let length = u16::from_be_bytes([payload[4], payload[5]]) as usize;
+                if length < 8 || length > payload.len() {
+                    return Err("invalid UDP datagram length".into());
+                }
+                if length == 8 {
+                    return Ok(None);
+                }
+                (
+                    &payload[8..length],
+                    Some(u16::from_be_bytes([payload[0], payload[1]])),
+                    Some(u16::from_be_bytes([payload[2], payload[3]])),
+                    None,
+                    8,
+                )
             }
-            let length = u16::from_be_bytes([payload[4], payload[5]]) as usize;
-            if length < 8 || length > payload.len() {
-                return Err("invalid UDP datagram length".into());
+            Transport::Tcp => {
+                if payload.len() < 20 {
+                    return Err("truncated TCP header".into());
+                }
+                let header_length = ((payload[12] >> 4) as usize) * 4;
+                if header_length < 20 || header_length > payload.len() {
+                    return Err("invalid TCP data offset".into());
+                }
+                if header_length == payload.len() {
+                    return Ok(None);
+                }
+                (
+                    &payload[header_length..],
+                    Some(u16::from_be_bytes([payload[0], payload[1]])),
+                    Some(u16::from_be_bytes([payload[2], payload[3]])),
+                    Some(u32::from_be_bytes(
+                        payload[4..8].try_into().expect("TCP header checked"),
+                    )),
+                    header_length,
+                )
             }
-            if length == 8 {
-                return Ok(None);
-            }
-            (
-                &payload[8..length],
-                Some(u16::from_be_bytes([payload[0], payload[1]])),
-                Some(u16::from_be_bytes([payload[2], payload[3]])),
-            )
-        }
-    };
+        };
     let source_ipv4 = ip[12..16].try_into().expect("validated IPv4 header");
     let destination_ipv4 = ip[16..20].try_into().expect("validated IPv4 header");
     Ok(Some(TransportSlice {
-        offset: 14
-            + header_length
-            + if matches!(transport, Transport::Udp) {
-                8
-            } else {
-                0
-            },
+        offset: 14 + header_length + transport_header_length,
         source_ipv4,
         destination_ipv4,
         source_port,
         destination_port,
+        tcp_sequence,
         bytes,
     }))
 }
@@ -516,6 +549,91 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn tcp_fixture_preserves_segment_payloads_sequences_and_offsets() {
+        let raw = include_bytes!("../examples/tcp_payload.pcap");
+        let classic = extract_tcp_segments(raw).unwrap();
+        let enhanced_raw = include_bytes!("../examples/tcp_payload.pcapng");
+        let enhanced = extract_pcapng_tcp_segments(enhanced_raw).unwrap();
+        let truth: serde_json::Value =
+            serde_json::from_str(include_str!("../examples/tcp_payload.truth.json")).unwrap();
+        assert_eq!(classic.len(), 12);
+        assert_eq!(enhanced.len(), classic.len());
+        assert_eq!(truth["packet_count"], 18);
+        for ((left, right), case) in classic
+            .iter()
+            .zip(&enhanced)
+            .zip(truth["cases"].as_array().unwrap())
+        {
+            assert_eq!(left.bytes, right.bytes);
+            assert_eq!(left.timestamp_ns, right.timestamp_ns);
+            assert_eq!(
+                left.packet_index as u64,
+                case["packet_index"].as_u64().unwrap()
+            );
+            assert_eq!(
+                left.source_offset as u64,
+                case["source_offset"].as_u64().unwrap()
+            );
+            assert_eq!(
+                left.tcp_sequence.map(u64::from),
+                case["tcp_sequence"].as_u64()
+            );
+            assert_eq!(
+                left.bytes[4..6],
+                (case["transaction_id"].as_u64().unwrap() as u16).to_be_bytes()
+            );
+            assert_eq!(
+                left.source_port == Some(4242),
+                case["response"].as_bool().unwrap()
+            );
+            assert_eq!(
+                left.bytes,
+                crate::workflow::from_hex(case["payload_hex"].as_str().unwrap()).unwrap()
+            );
+            assert_eq!(
+                &raw[left.source_offset..left.source_offset + left.bytes.len()],
+                left.bytes
+            );
+            assert_eq!(
+                &enhanced_raw[right.source_offset..right.source_offset + right.bytes.len()],
+                right.bytes
+            );
+        }
+        assert!(extract_udp_messages(raw).unwrap().is_empty());
+    }
+
+    #[test]
+    fn tcp_rejects_invalid_offsets_and_skips_fragmented_ipv4() {
+        let raw = include_bytes!("../examples/tcp_payload.pcap");
+        let first = extract_tcp_segments(raw).unwrap().remove(0);
+        let header_start = first.source_offset - 24;
+        let mut bad_offset = raw.to_vec();
+        bad_offset[header_start + 12] = 0x40;
+        assert!(
+            extract_tcp_segments(&bad_offset)
+                .unwrap_err()
+                .contains("TCP data offset")
+        );
+        bad_offset[header_start + 12] = 0xf0;
+        assert!(
+            extract_tcp_segments(&bad_offset)
+                .unwrap_err()
+                .contains("TCP data offset")
+        );
+        let mut truncated = raw.to_vec();
+        let ip_start = header_start - 20;
+        truncated[ip_start + 2..ip_start + 4].copy_from_slice(&39_u16.to_be_bytes());
+        assert!(
+            extract_tcp_segments(&truncated)
+                .unwrap_err()
+                .contains("truncated TCP header")
+        );
+        let mut fragmented = raw.to_vec();
+        fragmented[ip_start + 6..ip_start + 8].copy_from_slice(&0x2000_u16.to_be_bytes());
+        assert_eq!(extract_tcp_segments(&fragmented).unwrap().len(), 11);
     }
 
     fn icmp_checksum(input: &[u8]) -> u16 {

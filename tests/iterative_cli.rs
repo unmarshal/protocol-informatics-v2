@@ -729,9 +729,114 @@ fn agent_can_investigate_dns_over_udp_without_a_dns_specific_decoder() {
     let report = root.join("dns-report.html");
     cli(&["report", root_text, path(&report)]);
     let html = fs::read_to_string(report).unwrap();
-    assert!(html.contains("UDP ports"));
+    assert!(html.contains("ports "));
     assert!(html.contains("transaction_id"));
     assert_eq!(cli(&["verify", root_text])["observations"], 12);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn agent_can_investigate_tcp_payloads_without_an_application_decoder() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&[
+        "init",
+        root_text,
+        "Where is the application transaction ID in TCP payloads?",
+    ]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Vary transaction ID and payload length",
+        "-",
+        "Find a two-byte ID in the application bytes",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&["trial", root_text, experiment_id, "sweep", "six exchanges"]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/tcp_payload.pcap");
+    let capture = cli(&["import", root_text, trial_id, "pcap-tcp", path(&fixture)]);
+    assert_eq!(capture["event"]["capture"]["observation_count"], 12);
+    assert_eq!(capture["event"]["observations"][0]["source_index"], 1);
+    assert_eq!(capture["event"]["observations"][0]["source_port"], 41000);
+    assert_eq!(
+        capture["event"]["observations"][0]["destination_port"],
+        4242
+    );
+    assert_eq!(capture["event"]["observations"][0]["tcp_sequence"], 1000);
+    assert_eq!(capture["event"]["observations"][1]["tcp_sequence"], 9000);
+    let page = cli(&["observations", root_text, trial_id, "0", "1"]);
+    assert_eq!(page["observations"][0]["tcp_sequence"], 1000);
+    let span = cli(&["span", root_text, "obs-000004-0000", "4", "6"]);
+    assert_eq!(span["bytes_hex"], "0000");
+    assert_eq!(span["source_file_offset"], 172);
+    cli(&[
+        "tag",
+        root_text,
+        "obs-000004-0000",
+        "baseline",
+        "first request",
+    ]);
+    for (index, value) in [(0, 0), (2, 1), (4, 2), (6, 255)] {
+        let id = format!("obs-000004-{index:04}");
+        cli(&[
+            "value",
+            root_text,
+            &id,
+            "transaction_id",
+            &value.to_string(),
+            "discovery",
+        ]);
+    }
+    for (index, value) in [(8, 256), (10, 257)] {
+        let id = format!("obs-000004-{index:04}");
+        cli(&[
+            "value",
+            root_text,
+            &id,
+            "transaction_id",
+            &value.to_string(),
+            "validation",
+        ]);
+    }
+    let inferred = cli(&["infer-value", root_text, "transaction_id"]);
+    let preferred: Vec<_> = inferred["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|candidate| candidate["preferred"] == true)
+        .collect();
+    assert_eq!(preferred.len(), 1);
+    assert_eq!(preferred[0]["start"], 4);
+    assert_eq!(preferred[0]["end"], 6);
+    assert_eq!(preferred[0]["byte_order"], "big_endian");
+    assert_eq!(preferred[0]["validation_matches"], 2);
+    let enhanced_fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/tcp_payload.pcapng");
+    let run = cli(&[
+        "capture-command",
+        root_text,
+        trial_id,
+        "pcapng-tcp",
+        "tcp-ng-once",
+        "5000",
+        "--",
+        "cat",
+        path(&enhanced_fixture),
+    ]);
+    assert_eq!(run["status"], "completed");
+    assert_eq!(run["capture"]["format"], "pcapng-tcp");
+    assert_eq!(run["observation_ids"].as_array().unwrap().len(), 12);
+    assert_eq!(
+        cli(&["capture-status", root_text, "tcp-ng-once"])["status"],
+        "completed"
+    );
+    assert_eq!(cli(&["verify", root_text])["observations"], 24);
+    let report = root.join("tcp-report.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("TCP seq"));
+    assert!(html.contains("transaction_id"));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -982,7 +1087,7 @@ fn controlled_intervention_locates_checksum_candidate_on_new_packets() {
 }
 
 #[test]
-fn replays_v1_log_and_appends_v3_events() {
+fn replays_v1_log_and_appends_v4_events() {
     let root = workspace();
     let events = root.join(".pi/events.jsonl");
     fs::create_dir_all(events.parent().unwrap()).unwrap();
@@ -996,7 +1101,7 @@ fn replays_v1_log_and_appends_v3_events() {
         "Old investigation"
     );
     let appended = cli(&["hypothesis", path(&root), "A new claim"]);
-    assert_eq!(appended["schema_version"], 3);
+    assert_eq!(appended["schema_version"], 4);
     assert_eq!(appended["revision"], 2);
     assert_eq!(
         cli(&["changes", path(&root), "0"])

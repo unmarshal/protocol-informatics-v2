@@ -87,6 +87,28 @@ cargo run -- report /tmp/pi-dns /tmp/pi-dns-report.html
 
 The two-byte candidate `[0, 2)` passes both held-out values. A one-byte `[1, 2)` candidate fits only the discovery values below 256 and fails the held-out examples. Use `pcapng-udp` with `examples/dns_udp.pcapng` for the equivalent pcapng capture.
 
+## TCP application payloads
+
+`pcap-tcp` and `pcapng-tcp` extract the application bytes of each nonempty TCP segment. The observation keeps its source and destination ports, TCP sequence number, timestamp, packet index, and exact file offset. Segments are separate observations: a message split across TCP segments is **not** reassembled, and retransmissions remain visible. These formats are useful for controlled captures where each test message fits in one segment. Do not infer application field boundaries across multiple segments until stream reassembly is available.
+
+`examples/generate_tcp_fixture.py` creates a synthetic, documented request/reply protocol with six controlled transaction IDs. ACK-only packets are excluded, and alternating TCP header lengths check that offsets point to application bytes. The request ID at `[4, 6)` is found using four discovery values and two held-out values without an application-specific decoder.
+
+```sh
+python3 examples/generate_tcp_fixture.py
+cargo run -- init /tmp/pi-tcp 'Where is the transaction ID?'
+cargo run -- experiment /tmp/pi-tcp 'Vary ID and payload length' - 'Locate the ID'
+cargo run -- trial /tmp/pi-tcp exp-000002 sweep 'six exchanges'
+cargo run -- import /tmp/pi-tcp trial-000003 pcap-tcp examples/tcp_payload.pcap
+cargo run -- observations /tmp/pi-tcp trial-000003 0 4
+cargo run -- value /tmp/pi-tcp obs-000004-0000 transaction_id 0 discovery
+cargo run -- value /tmp/pi-tcp obs-000004-0002 transaction_id 1 discovery
+cargo run -- value /tmp/pi-tcp obs-000004-0004 transaction_id 2 discovery
+cargo run -- value /tmp/pi-tcp obs-000004-0006 transaction_id 255 discovery
+cargo run -- value /tmp/pi-tcp obs-000004-0008 transaction_id 256 validation
+cargo run -- value /tmp/pi-tcp obs-000004-0010 transaction_id 257 validation
+cargo run -- infer-value /tmp/pi-tcp transaction_id
+```
+
 ## Standalone binary files
 
 `binary` imports one file as one observation, keeping original byte offsets. It accepts nonempty files up to 1 MiB. Multiple files can be imported into the same trial, and all the usual tagging, grouping, byte-span, comparison, alignment, and inference commands apply. This works without a file-format parser; it does not yet segment files into nested records.
@@ -122,7 +144,7 @@ Hex input has one extracted message per line; spaces and colons are allowed. Bla
 
 ## Current scope and next work
 
-Classic PCAP and pcapng ingestion currently support Ethernet, unfragmented IPv4, ICMP messages, and UDP application payloads. The pcapng reader accepts Enhanced Packet Blocks and rejects legacy packet blocks. UDP extraction checks the declared datagram length but does not verify its checksum or parse its application payload. Binary files are one observation each, with a 1 MiB limit until the event store can reference large byte spans without copying them into events. It does not support VLANs, IPv6, TCP stream reassembly, file-format record boundaries, or managed live capture. The HTML view is read-only and pages bytes in 256-byte chunks. Local event writers use file locks and assign IDs at commit time; the concurrent CLI test covers simultaneous hypotheses, imports, and keyed capture retries. Distributed coordination, a resumable live capture service, and interrupted event-write recovery remain open work. The fixtures test parsing, exact source offsets, ICMP checksums, and the alignment strategy against independent known answers.
+Classic PCAP and pcapng ingestion currently support Ethernet, unfragmented IPv4, ICMP messages, UDP application payloads, and individual TCP segment payloads. The pcapng reader accepts Enhanced Packet Blocks and rejects legacy packet blocks. UDP extraction checks the declared datagram length but does not verify its checksum or parse its application payload. TCP extraction validates its data offset and excludes empty payloads; it does not reassemble a stream or deduplicate retransmissions. Binary files are one observation each, with a 1 MiB limit until the event store can reference large byte spans without copying them into events. It does not support VLANs, IPv6, file-format record boundaries, or managed live capture. The HTML view is read-only and pages bytes in 256-byte chunks. Local event writers use file locks and assign IDs at commit time; the concurrent CLI test covers simultaneous hypotheses, imports, and keyed capture retries. Distributed coordination, a resumable live capture service, and interrupted event-write recovery remain open work. The fixtures test parsing, exact source offsets, ICMP checksums, and the alignment strategy against independent known answers.
 
 The next inference step is to measure cluster stability across new captures, then test candidate lengths and request/response relations on held-out examples. See the [workflow](docs/iterative-workflow.md), [interface design](docs/interface-design.md), and [experiment lifecycle](docs/experiment-lifecycle.md) for the fuller direction. GPU acceleration can wait for representative CPU profiles.
 

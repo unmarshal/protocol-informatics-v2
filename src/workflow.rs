@@ -8,11 +8,11 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::pcap::{
-    extract_icmp_messages, extract_pcapng_icmp_messages, extract_pcapng_udp_messages,
-    extract_udp_messages,
+    extract_icmp_messages, extract_pcapng_icmp_messages, extract_pcapng_tcp_segments,
+    extract_pcapng_udp_messages, extract_tcp_segments, extract_udp_messages,
 };
 
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +86,8 @@ pub struct Observation {
     pub source_port: Option<u16>,
     #[serde(default)]
     pub destination_port: Option<u16>,
+    #[serde(default)]
+    pub tcp_sequence: Option<u32>,
     pub bytes_hex: String,
 }
 
@@ -560,7 +562,14 @@ fn artifact_dir(root: &Path) -> PathBuf {
 pub fn valid_capture_format(format: &str) -> bool {
     matches!(
         format,
-        "hex" | "binary" | "pcap-icmp" | "pcapng-icmp" | "pcap-udp" | "pcapng-udp"
+        "hex"
+            | "binary"
+            | "pcap-icmp"
+            | "pcapng-icmp"
+            | "pcap-udp"
+            | "pcapng-udp"
+            | "pcap-tcp"
+            | "pcapng-tcp"
     )
 }
 
@@ -799,15 +808,18 @@ pub fn import_capture_for_run(
                 direction: None,
                 source_port: None,
                 destination_port: None,
+                tcp_sequence: None,
                 bytes_hex: to_hex(raw),
             }]
         }
-        "pcap-icmp" | "pcapng-icmp" | "pcap-udp" | "pcapng-udp" => {
+        "pcap-icmp" | "pcapng-icmp" | "pcap-udp" | "pcapng-udp" | "pcap-tcp" | "pcapng-tcp" => {
             let messages = match format {
                 "pcap-icmp" => extract_icmp_messages(raw)?,
                 "pcapng-icmp" => extract_pcapng_icmp_messages(raw)?,
                 "pcap-udp" => extract_udp_messages(raw)?,
                 "pcapng-udp" => extract_pcapng_udp_messages(raw)?,
+                "pcap-tcp" => extract_tcp_segments(raw)?,
+                "pcapng-tcp" => extract_pcapng_tcp_segments(raw)?,
                 _ => unreachable!(),
             };
             messages
@@ -825,13 +837,14 @@ pub fn import_capture_for_run(
                     )),
                     source_port: message.source_port,
                     destination_port: message.destination_port,
+                    tcp_sequence: message.tcp_sequence,
                     bytes_hex: to_hex(&message.bytes),
                 })
                 .collect()
         }
         _ => {
             return Err(
-                "format must be hex, binary, pcap-icmp, pcapng-icmp, pcap-udp, or pcapng-udp"
+                "format must be hex, binary, pcap-icmp, pcapng-icmp, pcap-udp, pcapng-udp, pcap-tcp, or pcapng-tcp"
                     .into(),
             );
         }
@@ -842,8 +855,8 @@ pub fn import_capture_for_run(
     let extension = match format {
         "hex" => "hex",
         "binary" => "bin",
-        "pcap-icmp" | "pcap-udp" => "pcap",
-        "pcapng-icmp" | "pcapng-udp" => "pcapng",
+        "pcap-icmp" | "pcap-udp" | "pcap-tcp" => "pcap",
+        "pcapng-icmp" | "pcapng-udp" | "pcapng-tcp" => "pcapng",
         _ => unreachable!("format validated above"),
     };
     let (sha256, artifact) = store_artifact(root, raw, extension)?;
@@ -886,6 +899,7 @@ fn parse_hex_observations(raw: &[u8], capture_id: &str) -> Result<Vec<Observatio
             direction: None,
             source_port: None,
             destination_port: None,
+            tcp_sequence: None,
             bytes_hex: to_hex(&samples[0]),
         });
     }
@@ -974,12 +988,14 @@ pub fn verify(root: &Path) -> Result<Verification, String> {
                     }
                 }
             }
-            "pcap-icmp" | "pcapng-icmp" | "pcap-udp" | "pcapng-udp" => {
+            "pcap-icmp" | "pcapng-icmp" | "pcap-udp" | "pcapng-udp" | "pcap-tcp" | "pcapng-tcp" => {
                 let expected = match capture.format.as_str() {
                     "pcap-icmp" => extract_icmp_messages(&raw)?,
                     "pcapng-icmp" => extract_pcapng_icmp_messages(&raw)?,
                     "pcap-udp" => extract_udp_messages(&raw)?,
                     "pcapng-udp" => extract_pcapng_udp_messages(&raw)?,
+                    "pcap-tcp" => extract_tcp_segments(&raw)?,
+                    "pcapng-tcp" => extract_pcapng_tcp_segments(&raw)?,
                     _ => unreachable!(),
                 };
                 if expected.len() != actual.len() {
@@ -992,6 +1008,7 @@ pub fn verify(root: &Path) -> Result<Verification, String> {
                         || Some(expected.timestamp_ns) != actual.timestamp_ns
                         || expected.source_port != actual.source_port
                         || expected.destination_port != actual.destination_port
+                        || expected.tcp_sequence != actual.tcp_sequence
                         || Some(ipv4_direction(
                             expected.source_ipv4,
                             expected.destination_ipv4,

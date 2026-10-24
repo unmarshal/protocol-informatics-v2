@@ -251,6 +251,7 @@ mod tests {
                 direction: None,
                 source_port: None,
                 destination_port: None,
+                tcp_sequence: None,
                 bytes_hex: format!("aa{value:02x}{duplicate:02x}"),
             });
             state.known_values.push(KnownValue {
@@ -293,6 +294,7 @@ mod tests {
                 direction: None,
                 source_port: None,
                 destination_port: None,
+                tcp_sequence: None,
                 bytes_hex: format!("0000{value:04x}"),
             });
             state.known_values.push(KnownValue {

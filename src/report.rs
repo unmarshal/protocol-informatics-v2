@@ -199,7 +199,7 @@ function showDetail(observation) {
   const detail=byId('detail'); detail.replaceChildren();
   detail.append(node('strong',observation.id),node('div','Trial '+trial.id+' ('+trial.role+') · capture '+capture.id,'small'));
   detail.append(node('div','Source '+capture.source+' · '+capture.format+' · source index '+observation.source_index+(observation.source_offset===null?'':' · file offset '+observation.source_offset),'small muted'));
-  if(observation.direction) detail.append(node('div',observation.direction+(observation.source_port===null?'':' · UDP ports '+observation.source_port+' → '+observation.destination_port),'small muted'));
+  if(observation.direction) detail.append(node('div',observation.direction+(observation.source_port===null?'':' · ports '+observation.source_port+' → '+observation.destination_port)+(observation.tcp_sequence===null?'':' · TCP seq '+observation.tcp_sequence),'small muted'));
   for(const tag of tagsFor(observation.id)) detail.append(node('span',tag.phase+': '+tag.label,'pill'));
   for(const value of valuesFor(observation.id)) detail.append(node('span',value.variable+'='+value.value+' ('+value.set+')','pill'));
   const total=observation.bytes_hex.length/2, pageSize=256;
@@ -224,7 +224,7 @@ function showDetail(observation) {
 function renderObservations() {
   const selected=byId('trialFilter').value, cluster=clusterById.get(byId('clusterFilter').value), search=byId('search').value.toLowerCase();
   const list=byId('observations'); list.replaceChildren();
-  const matches=state.observations.filter(o=>{ const c=captureById.get(o.capture_id); const labels=tagsFor(o.id).map(t=>t.label+' '+t.phase).join(' ')+valuesFor(o.id).map(v=>v.variable+'='+v.value).join(' '); return (!selected||c.trial_id===selected) && (!cluster||cluster.member_observation_ids.includes(o.id)) && (o.id+' '+o.bytes_hex+' '+(o.direction||'')+' '+(o.source_port??'')+' '+(o.destination_port??'')+' '+labels).toLowerCase().includes(search); });
+  const matches=state.observations.filter(o=>{ const c=captureById.get(o.capture_id); const labels=tagsFor(o.id).map(t=>t.label+' '+t.phase).join(' ')+valuesFor(o.id).map(v=>v.variable+'='+v.value).join(' '); return (!selected||c.trial_id===selected) && (!cluster||cluster.member_observation_ids.includes(o.id)) && (o.id+' '+o.bytes_hex+' '+(o.direction||'')+' '+(o.source_port??'')+' '+(o.destination_port??'')+' '+(o.tcp_sequence??'')+' '+labels).toLowerCase().includes(search); });
   list.append(node('div',matches.length+' of '+state.observations.length+' observations','small muted'));
   for(const o of matches) { const row=node('div','', 'row'); const button=node('button',o.id+' · '+(o.bytes_hex.slice(0,80).match(/../g)||[]).join(' ')); button.onclick=()=>showDetail(o); row.append(button,node('div',(o.direction||'')+(o.source_port===null?'':' · '+o.source_port+' → '+o.destination_port)+' '+tagsFor(o.id).map(t=>'['+t.phase+': '+t.label+']').join(' '),'small muted')); list.append(row); }
 }

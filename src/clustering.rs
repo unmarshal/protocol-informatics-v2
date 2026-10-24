@@ -406,6 +406,7 @@ mod tests {
                 direction: None,
                 source_port: None,
                 destination_port: None,
+                tcp_sequence: None,
                 bytes_hex: bytes.into(),
             });
         }
@@ -436,6 +437,7 @@ mod tests {
                 direction: None,
                 source_port: None,
                 destination_port: None,
+                tcp_sequence: None,
                 bytes_hex: format!("aa{index:02x}55"),
             });
         }
