@@ -13,6 +13,7 @@ mod input;
 pub mod pcap;
 mod profile;
 pub mod query;
+pub mod reassembly;
 pub mod report;
 pub mod workflow;
 

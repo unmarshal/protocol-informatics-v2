@@ -28,6 +28,8 @@ An experiment can contain multiple baseline and variant trials, each with its ow
 
 Use small JSONL manifests for portable interchange and content-addressed binary blobs for payloads. Raw bytes remain lossless. Derived records are versioned separately; large corpora can add an indexed store without changing their meaning. All byte spans use half-open `[start, end)` offsets and name the source coordinate system.
 
+An observation assembled from multiple TCP packets has no single source-file offset. Its `source_spans` map half-open message-byte ranges to packet indices and original file offsets. A `read_span` response clips that map to the requested bytes, so an agent can cite the exact packets behind an inferred field. Sequence gaps create distinct observations; conflicting retransmissions are reported as errors rather than silently choosing bytes.
+
 ## Agent navigation
 
 Start with a structured JSON CLI. An agent tool server can expose the same operations later. Each operation needs a bounded result, stable IDs, schema version, explicit units, reproducible ordering, and a cursor for pagination.

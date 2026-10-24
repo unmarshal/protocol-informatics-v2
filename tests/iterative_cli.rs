@@ -841,6 +841,170 @@ fn agent_can_investigate_tcp_payloads_without_an_application_decoder() {
 }
 
 #[test]
+fn agent_can_infer_across_tcp_segments_and_trace_each_byte() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&[
+        "init",
+        root_text,
+        "Can a split TCP message be reconstructed?",
+    ]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Split the transaction ID across TCP packets",
+        "-",
+        "The reconstructed ID spans two source packets",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "sweep",
+        "six split requests",
+    ]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/tcp_stream.pcap");
+    let raw = fs::read(&fixture).unwrap();
+    let segments = protocol_informatics_v2::pcap::extract_tcp_segments(&raw).unwrap();
+    let duplicate = segments
+        .iter()
+        .find(|segment| {
+            segment.source_port == Some(42002)
+                && segment.tcp_sequence == Some(2205)
+                && segments.iter().any(|other| {
+                    other.packet_index < segment.packet_index
+                        && other.source_port == segment.source_port
+                        && other.tcp_sequence == segment.tcp_sequence
+                })
+        })
+        .unwrap();
+    let mut conflicting = raw.clone();
+    conflicting[duplicate.source_offset] ^= 0x01;
+    let conflict_path = root.join("conflicting.pcap");
+    fs::write(&conflict_path, conflicting).unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "import",
+            root_text,
+            trial_id,
+            "pcap-tcp-stream",
+            path(&conflict_path),
+        ])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("conflicting TCP overlap"));
+    assert_eq!(
+        cli(&["resume", root_text])["captures"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+
+    let capture = cli(&[
+        "import",
+        root_text,
+        trial_id,
+        "pcap-tcp-stream",
+        path(&fixture),
+    ]);
+    assert_eq!(capture["event"]["capture"]["observation_count"], 12);
+    assert_eq!(
+        capture["event"]["observations"][0]["source_offset"],
+        Value::Null
+    );
+    assert_eq!(
+        capture["event"]["observations"][0]["source_spans"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        capture["event"]["observations"][0]["bytes_hex"],
+        "5049325100000161"
+    );
+    let span = cli(&["span", root_text, "obs-000004-0000", "4", "6"]);
+    assert_eq!(span["bytes_hex"], "0000");
+    assert_eq!(span["source_file_offset"], Value::Null);
+    let sources = span["source_spans"].as_array().unwrap();
+    assert_eq!(sources.len(), 2);
+    assert_eq!(sources[0]["message_start"], 4);
+    assert_eq!(sources[0]["message_end"], 5);
+    assert_eq!(sources[1]["message_start"], 5);
+    assert_eq!(sources[1]["message_end"], 6);
+    for source in sources {
+        let offset = source["file_offset"].as_u64().unwrap() as usize;
+        let start = source["message_start"].as_u64().unwrap() as usize;
+        let end = source["message_end"].as_u64().unwrap() as usize;
+        let bytes = protocol_informatics_v2::workflow::from_hex(
+            capture["event"]["observations"][0]["bytes_hex"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(&raw[offset..offset + end - start], &bytes[start..end]);
+    }
+    for (index, value) in [(0, 0), (2, 1), (4, 2), (6, 255)] {
+        let id = format!("obs-000004-{index:04}");
+        cli(&[
+            "value",
+            root_text,
+            &id,
+            "transaction_id",
+            &value.to_string(),
+            "discovery",
+        ]);
+    }
+    for (index, value) in [(8, 256), (10, 257)] {
+        let id = format!("obs-000004-{index:04}");
+        cli(&[
+            "value",
+            root_text,
+            &id,
+            "transaction_id",
+            &value.to_string(),
+            "validation",
+        ]);
+    }
+    let inferred = cli(&["infer-value", root_text, "transaction_id"]);
+    let preferred: Vec<_> = inferred["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|candidate| candidate["preferred"] == true)
+        .collect();
+    assert_eq!(preferred.len(), 1);
+    assert_eq!(preferred[0]["start"], 4);
+    assert_eq!(preferred[0]["end"], 6);
+    assert_eq!(preferred[0]["validation_matches"], 2);
+    let enhanced = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/tcp_stream.pcapng");
+    let run = cli(&[
+        "capture-command",
+        root_text,
+        trial_id,
+        "pcapng-tcp-stream",
+        "split-tcp-once",
+        "5000",
+        "--",
+        "cat",
+        path(&enhanced),
+    ]);
+    assert_eq!(run["status"], "completed");
+    assert_eq!(run["observation_ids"].as_array().unwrap().len(), 12);
+    assert_eq!(cli(&["verify", root_text])["observations"], 24);
+    let report = root.join("stream-report.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("Byte provenance"));
+    assert!(html.contains("transaction_id"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn agent_can_infer_a_field_from_standalone_binary_files() {
     let root = workspace();
     let root_text = path(&root);
@@ -1087,7 +1251,7 @@ fn controlled_intervention_locates_checksum_candidate_on_new_packets() {
 }
 
 #[test]
-fn replays_v1_log_and_appends_v4_events() {
+fn replays_v1_log_and_appends_v5_events() {
     let root = workspace();
     let events = root.join(".pi/events.jsonl");
     fs::create_dir_all(events.parent().unwrap()).unwrap();
@@ -1101,7 +1265,7 @@ fn replays_v1_log_and_appends_v4_events() {
         "Old investigation"
     );
     let appended = cli(&["hypothesis", path(&root), "A new claim"]);
-    assert_eq!(appended["schema_version"], 4);
+    assert_eq!(appended["schema_version"], 5);
     assert_eq!(appended["revision"], 2);
     assert_eq!(
         cli(&["changes", path(&root), "0"])

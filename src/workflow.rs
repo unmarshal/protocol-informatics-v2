@@ -11,8 +11,9 @@ use crate::pcap::{
     extract_icmp_messages, extract_pcapng_icmp_messages, extract_pcapng_tcp_segments,
     extract_pcapng_udp_messages, extract_tcp_segments, extract_udp_messages,
 };
+use crate::reassembly::{SourceSpan, reassemble_tcp_segments};
 
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 5;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +89,10 @@ pub struct Observation {
     pub destination_port: Option<u16>,
     #[serde(default)]
     pub tcp_sequence: Option<u32>,
+    #[serde(default)]
+    pub stream_gap_before: bool,
+    #[serde(default)]
+    pub source_spans: Vec<SourceSpan>,
     pub bytes_hex: String,
 }
 
@@ -393,6 +398,22 @@ impl State {
                     {
                         return Err("invalid or duplicate observation".into());
                     }
+                    if capture.format.ends_with("tcp-stream") {
+                        let mut covered = 0;
+                        for span in &observation.source_spans {
+                            if span.message_start != covered || span.message_end <= covered {
+                                return Err("invalid TCP stream source spans".into());
+                            }
+                            covered = span.message_end;
+                        }
+                        if observation.source_offset.is_some()
+                            || covered.checked_mul(2) != Some(observation.bytes_hex.len())
+                        {
+                            return Err(
+                                "TCP stream source spans do not cover the observation".into()
+                            );
+                        }
+                    }
                 }
                 let run_index = if let Some(key) = &capture.run_key {
                     let index = self
@@ -570,6 +591,8 @@ pub fn valid_capture_format(format: &str) -> bool {
             | "pcapng-udp"
             | "pcap-tcp"
             | "pcapng-tcp"
+            | "pcap-tcp-stream"
+            | "pcapng-tcp-stream"
     )
 }
 
@@ -809,8 +832,38 @@ pub fn import_capture_for_run(
                 source_port: None,
                 destination_port: None,
                 tcp_sequence: None,
+                stream_gap_before: false,
+                source_spans: Vec::new(),
                 bytes_hex: to_hex(raw),
             }]
+        }
+        "pcap-tcp-stream" | "pcapng-tcp-stream" => {
+            let segments = if format == "pcap-tcp-stream" {
+                extract_tcp_segments(raw)?
+            } else {
+                extract_pcapng_tcp_segments(raw)?
+            };
+            reassemble_tcp_segments(&segments)?
+                .into_iter()
+                .enumerate()
+                .map(|(index, message)| Observation {
+                    id: format!("obs-{revision:06}-{index:04}"),
+                    capture_id: capture_id.clone(),
+                    source_index: message.first_packet_index,
+                    source_offset: None,
+                    timestamp_ns: Some(message.first_timestamp_ns),
+                    direction: Some(ipv4_direction(
+                        message.source_ipv4,
+                        message.destination_ipv4,
+                    )),
+                    source_port: Some(message.source_port),
+                    destination_port: Some(message.destination_port),
+                    tcp_sequence: Some(message.tcp_sequence),
+                    stream_gap_before: message.gap_before,
+                    source_spans: message.source_spans,
+                    bytes_hex: to_hex(&message.bytes),
+                })
+                .collect()
         }
         "pcap-icmp" | "pcapng-icmp" | "pcap-udp" | "pcapng-udp" | "pcap-tcp" | "pcapng-tcp" => {
             let messages = match format {
@@ -838,15 +891,14 @@ pub fn import_capture_for_run(
                     source_port: message.source_port,
                     destination_port: message.destination_port,
                     tcp_sequence: message.tcp_sequence,
+                    stream_gap_before: false,
+                    source_spans: Vec::new(),
                     bytes_hex: to_hex(&message.bytes),
                 })
                 .collect()
         }
         _ => {
-            return Err(
-                "format must be hex, binary, pcap-icmp, pcapng-icmp, pcap-udp, pcapng-udp, pcap-tcp, or pcapng-tcp"
-                    .into(),
-            );
+            return Err("unknown capture format; use --help for supported formats".into());
         }
     };
     if observations.is_empty() {
@@ -855,8 +907,8 @@ pub fn import_capture_for_run(
     let extension = match format {
         "hex" => "hex",
         "binary" => "bin",
-        "pcap-icmp" | "pcap-udp" | "pcap-tcp" => "pcap",
-        "pcapng-icmp" | "pcapng-udp" | "pcapng-tcp" => "pcapng",
+        "pcap-icmp" | "pcap-udp" | "pcap-tcp" | "pcap-tcp-stream" => "pcap",
+        "pcapng-icmp" | "pcapng-udp" | "pcapng-tcp" | "pcapng-tcp-stream" => "pcapng",
         _ => unreachable!("format validated above"),
     };
     let (sha256, artifact) = store_artifact(root, raw, extension)?;
@@ -900,6 +952,8 @@ fn parse_hex_observations(raw: &[u8], capture_id: &str) -> Result<Vec<Observatio
             source_port: None,
             destination_port: None,
             tcp_sequence: None,
+            stream_gap_before: false,
+            source_spans: Vec::new(),
             bytes_hex: to_hex(&samples[0]),
         });
     }
@@ -968,6 +1022,8 @@ pub fn verify(root: &Path) -> Result<Verification, String> {
                 if actual.len() != 1
                     || actual[0].source_offset != Some(0)
                     || actual[0].source_index != 0
+                    || actual[0].stream_gap_before
+                    || !actual[0].source_spans.is_empty()
                     || actual[0].bytes_hex != to_hex(&raw)
                 {
                     return Err(format!(
@@ -983,8 +1039,42 @@ pub fn verify(root: &Path) -> Result<Verification, String> {
                         || expected.bytes_hex != actual.bytes_hex
                         || expected.source_index != actual.source_index
                         || expected.source_offset != actual.source_offset
+                        || actual.stream_gap_before
+                        || !actual.source_spans.is_empty()
                     {
                         return Err(format!("capture {} observation mismatch", capture.id));
+                    }
+                }
+            }
+            "pcap-tcp-stream" | "pcapng-tcp-stream" => {
+                let segments = if capture.format == "pcap-tcp-stream" {
+                    extract_tcp_segments(&raw)?
+                } else {
+                    extract_pcapng_tcp_segments(&raw)?
+                };
+                let expected = reassemble_tcp_segments(&segments)?;
+                if expected.len() != actual.len() {
+                    return Err(format!("capture {} stream count mismatch", capture.id));
+                }
+                for (expected, actual) in expected.iter().zip(actual) {
+                    if to_hex(&expected.bytes) != actual.bytes_hex
+                        || expected.first_packet_index != actual.source_index
+                        || actual.source_offset.is_some()
+                        || Some(expected.first_timestamp_ns) != actual.timestamp_ns
+                        || Some(expected.source_port) != actual.source_port
+                        || Some(expected.destination_port) != actual.destination_port
+                        || Some(expected.tcp_sequence) != actual.tcp_sequence
+                        || expected.gap_before != actual.stream_gap_before
+                        || expected.source_spans != actual.source_spans
+                        || Some(ipv4_direction(
+                            expected.source_ipv4,
+                            expected.destination_ipv4,
+                        )) != actual.direction
+                    {
+                        return Err(format!(
+                            "capture {} stream observation mismatch",
+                            capture.id
+                        ));
                     }
                 }
             }
@@ -1009,6 +1099,8 @@ pub fn verify(root: &Path) -> Result<Verification, String> {
                         || expected.source_port != actual.source_port
                         || expected.destination_port != actual.destination_port
                         || expected.tcp_sequence != actual.tcp_sequence
+                        || actual.stream_gap_before
+                        || !actual.source_spans.is_empty()
                         || Some(ipv4_direction(
                             expected.source_ipv4,
                             expected.destination_ipv4,

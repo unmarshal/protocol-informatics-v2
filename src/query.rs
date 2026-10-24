@@ -3,6 +3,7 @@
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::reassembly::SourceSpan;
 use crate::workflow::{Capture, KnownValue, Observation, State, Tag, from_hex, to_hex};
 
 #[derive(Debug, Serialize)]
@@ -17,6 +18,8 @@ pub struct ObservationPreview<'a> {
     pub source_port: Option<u16>,
     pub destination_port: Option<u16>,
     pub tcp_sequence: Option<u32>,
+    pub stream_gap_before: bool,
+    pub source_span_count: usize,
     pub length: usize,
     pub preview_hex: &'a str,
     pub tags: Vec<&'a Tag>,
@@ -43,6 +46,7 @@ pub struct ByteSpan<'a> {
     pub end: usize,
     pub coordinate_system: &'static str,
     pub source_file_offset: Option<usize>,
+    pub source_spans: Vec<SourceSpan>,
     pub bytes_hex: String,
     pub tags: Vec<&'a Tag>,
 }
@@ -146,6 +150,8 @@ pub fn list_observations<'a>(
             source_port: observation.source_port,
             destination_port: observation.destination_port,
             tcp_sequence: observation.tcp_sequence,
+            stream_gap_before: observation.stream_gap_before,
+            source_span_count: observation.source_spans.len(),
             length: observation.bytes_hex.len() / 2,
             preview_hex: &observation.bytes_hex[..observation.bytes_hex.len().min(64)],
             tags: tags_for(state, observation),
@@ -190,6 +196,20 @@ pub fn read_span<'a>(
         end,
         coordinate_system: "message_bytes",
         source_file_offset: observation.source_offset.map(|offset| offset + start),
+        source_spans: observation
+            .source_spans
+            .iter()
+            .filter_map(|span| {
+                let message_start = span.message_start.max(start);
+                let message_end = span.message_end.min(end);
+                (message_start < message_end).then(|| SourceSpan {
+                    message_start,
+                    message_end,
+                    packet_index: span.packet_index,
+                    file_offset: span.file_offset + message_start - span.message_start,
+                })
+            })
+            .collect(),
         bytes_hex: to_hex(&bytes[start..end]),
         tags: tags_for(state, observation),
     })

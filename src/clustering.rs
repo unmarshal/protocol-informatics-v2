@@ -407,6 +407,8 @@ mod tests {
                 source_port: None,
                 destination_port: None,
                 tcp_sequence: None,
+                stream_gap_before: false,
+                source_spans: Vec::new(),
                 bytes_hex: bytes.into(),
             });
         }
@@ -438,6 +440,8 @@ mod tests {
                 source_port: None,
                 destination_port: None,
                 tcp_sequence: None,
+                stream_gap_before: false,
+                source_spans: Vec::new(),
                 bytes_hex: format!("aa{index:02x}55"),
             });
         }

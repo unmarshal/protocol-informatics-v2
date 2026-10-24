@@ -13,6 +13,7 @@ pub struct TransportMessage {
     pub source_port: Option<u16>,
     pub destination_port: Option<u16>,
     pub tcp_sequence: Option<u32>,
+    pub tcp_syn: bool,
     pub bytes: Vec<u8>,
 }
 
@@ -25,6 +26,7 @@ struct TransportSlice<'a> {
     source_port: Option<u16>,
     destination_port: Option<u16>,
     tcp_sequence: Option<u32>,
+    tcp_syn: bool,
     bytes: &'a [u8],
 }
 
@@ -358,6 +360,7 @@ fn push_ethernet_transport(
             source_port: message.source_port,
             destination_port: message.destination_port,
             tcp_sequence: message.tcp_sequence,
+            tcp_syn: message.tcp_syn,
             bytes: message.bytes.to_vec(),
         });
     }
@@ -392,13 +395,13 @@ fn extract_ethernet_transport(
         return Ok(None);
     }
     let payload = &ip[header_length..total_length];
-    let (bytes, source_port, destination_port, tcp_sequence, transport_header_length) =
+    let (bytes, source_port, destination_port, tcp_sequence, tcp_syn, transport_header_length) =
         match transport {
             Transport::Icmp => {
                 if payload.len() < 8 {
                     return Err("truncated ICMP message".into());
                 }
-                (payload, None, None, None, 0)
+                (payload, None, None, None, false, 0)
             }
             Transport::Udp => {
                 if payload.len() < 8 {
@@ -416,6 +419,7 @@ fn extract_ethernet_transport(
                     Some(u16::from_be_bytes([payload[0], payload[1]])),
                     Some(u16::from_be_bytes([payload[2], payload[3]])),
                     None,
+                    false,
                     8,
                 )
             }
@@ -437,6 +441,7 @@ fn extract_ethernet_transport(
                     Some(u32::from_be_bytes(
                         payload[4..8].try_into().expect("TCP header checked"),
                     )),
+                    payload[13] & 0x02 != 0,
                     header_length,
                 )
             }
@@ -450,6 +455,7 @@ fn extract_ethernet_transport(
         source_port,
         destination_port,
         tcp_sequence,
+        tcp_syn,
         bytes,
     }))
 }

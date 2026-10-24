@@ -252,6 +252,8 @@ mod tests {
                 source_port: None,
                 destination_port: None,
                 tcp_sequence: None,
+                stream_gap_before: false,
+                source_spans: Vec::new(),
                 bytes_hex: format!("aa{value:02x}{duplicate:02x}"),
             });
             state.known_values.push(KnownValue {
@@ -295,6 +297,8 @@ mod tests {
                 source_port: None,
                 destination_port: None,
                 tcp_sequence: None,
+                stream_gap_before: false,
+                source_spans: Vec::new(),
                 bytes_hex: format!("0000{value:04x}"),
             });
             state.known_values.push(KnownValue {

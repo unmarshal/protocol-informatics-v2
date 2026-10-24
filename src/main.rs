@@ -42,7 +42,7 @@ fn print_help() {
     println!("  experiment <dir> <question> <hyp-ids> <prediction>");
     println!("  trial <dir> <exp-id> <role> <changed-factor>");
     println!(
-        "  import <dir> <trial-id> <hex|binary|pcap-icmp|pcapng-icmp|pcap-udp|pcapng-udp|pcap-tcp|pcapng-tcp> <file>"
+        "  import <dir> <trial-id> <hex|binary|pcap-icmp|pcapng-icmp|pcap-udp|pcapng-udp|pcap-tcp|pcapng-tcp|pcap-tcp-stream|pcapng-tcp-stream> <file>"
     );
     println!(
         "  capture-command <dir> <trial-id> <format> <key> <timeout-ms> -- <program> [args...]"

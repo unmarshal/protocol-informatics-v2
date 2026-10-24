@@ -65,6 +65,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
 .byte { width:2.1em; text-align:center; padding:4px 0; background:#243448; border-radius:3px; font-family:ui-monospace,monospace }
 .byte.changed { background:#75502c; color:#fff0c9 }
 .byte.candidate { outline:2px solid #5cd6ab; background:#174c43 }
+.byte.packet-start { box-shadow:inset 3px 0 #8bb8ff }
 .byte-nav { display:flex; gap:10px; align-items:center; margin-top:12px }
 .byte-nav button { background:#243448; color:#e9eef5; border:1px solid #4a607a; border-radius:5px; padding:4px 8px; cursor:pointer }
 .byte-nav button:disabled { opacity:.4; cursor:default }
@@ -200,6 +201,12 @@ function showDetail(observation) {
   detail.append(node('strong',observation.id),node('div','Trial '+trial.id+' ('+trial.role+') · capture '+capture.id,'small'));
   detail.append(node('div','Source '+capture.source+' · '+capture.format+' · source index '+observation.source_index+(observation.source_offset===null?'':' · file offset '+observation.source_offset),'small muted'));
   if(observation.direction) detail.append(node('div',observation.direction+(observation.source_port===null?'':' · ports '+observation.source_port+' → '+observation.destination_port)+(observation.tcp_sequence===null?'':' · TCP seq '+observation.tcp_sequence),'small muted'));
+  if(observation.source_spans?.length) {
+    detail.append(node('div','Contiguous TCP run from '+observation.source_spans.length+' source span(s)'+(observation.stream_gap_before?' · gap before this run':''),'small muted'));
+    const sources=node('details',''); sources.append(node('summary','Byte provenance'));
+    for(const span of observation.source_spans) sources.append(node('div','Message ['+span.message_start+', '+span.message_end+') ← packet '+span.packet_index+' at file offset '+span.file_offset,'small muted'));
+    detail.append(sources);
+  }
   for(const tag of tagsFor(observation.id)) detail.append(node('span',tag.phase+': '+tag.label,'pill'));
   for(const value of valuesFor(observation.id)) detail.append(node('span',value.variable+'='+value.value+' ('+value.set+')','pill'));
   const total=observation.bytes_hex.length/2, pageSize=256;
@@ -210,8 +217,10 @@ function showDetail(observation) {
     const start=page*pageSize, end=Math.min(total,start+pageSize); bytes.replaceChildren();
     for(let offset=start;offset<end;offset++) {
       const overlay=fieldOverlays.find(field=>field.observationIds.has(observation.id)&&offset>=field.start&&offset<field.end);
-      const cell=node('span',observation.bytes_hex.slice(2*offset,2*offset+2),overlay?'byte candidate':'byte');
-      cell.title=overlay?overlay.variable+' candidate ['+overlay.start+', '+overlay.end+')':'byte '+offset;
+      const source=observation.source_spans?.find(span=>offset>=span.message_start&&offset<span.message_end);
+      const packetStart=source&&source.message_start===offset&&offset!==0;
+      const cell=node('span',observation.bytes_hex.slice(2*offset,2*offset+2),(overlay?'byte candidate':'byte')+(packetStart?' packet-start':''));
+      cell.title=(overlay?overlay.variable+' candidate ['+overlay.start+', '+overlay.end+')':'byte '+offset)+(source?' · packet '+source.packet_index+' · file offset '+(source.file_offset+offset-source.message_start):'');
       bytes.append(cell);
     }
     status.textContent='Bytes ['+start+', '+end+') of '+total; previous.disabled=page===0; next.disabled=end>=total;
@@ -219,6 +228,7 @@ function showDetail(observation) {
   previous.onclick=()=>{page--;draw();}; next.onclick=()=>{page++;draw();};
   if(total>pageSize) { navigation.append(previous,status,next); detail.append(navigation); }
   detail.append(bytes); draw();
+  if(observation.source_spans?.length>1) detail.append(node('div','Blue left edge marks the first byte contributed by another packet. Hover a byte for its source offset.','small muted legend'));
   detail.append(node('div','Green outline marks the unique shortest candidate matching held-out values. Longer encodings may also fit; boundaries and meaning need protocol-level confirmation.','small muted legend'));
 }
 function renderObservations() {

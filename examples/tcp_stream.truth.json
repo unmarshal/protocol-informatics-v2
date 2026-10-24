@@ -1,0 +1,143 @@
+{
+  "format": "Ethernet/IPv4/TCP/invented application",
+  "packet_count": 25,
+  "observation_count": 12,
+  "transaction_id_span": [
+    4,
+    6
+  ],
+  "cases": [
+    {
+      "transaction_id": 0,
+      "client_port": 42000,
+      "request_hex": "5049325100000161",
+      "response_hex": "5049325200000101",
+      "request_segments": [
+        {
+          "packet_index": 1,
+          "source_offset": 164,
+          "sequence": 2000,
+          "payload_hex": "5049325100"
+        },
+        {
+          "packet_index": 2,
+          "source_offset": 239,
+          "sequence": 2005,
+          "payload_hex": "000161"
+        }
+      ],
+      "response_packet_index": 3,
+      "response_source_offset": 312
+    },
+    {
+      "transaction_id": 1,
+      "client_port": 42001,
+      "request_hex": "504932510001066c6f6e676572",
+      "response_hex": "5049325200010102",
+      "request_segments": [
+        {
+          "packet_index": 5,
+          "source_offset": 460,
+          "sequence": 2100,
+          "payload_hex": "5049325100"
+        },
+        {
+          "packet_index": 6,
+          "source_offset": 535,
+          "sequence": 2105,
+          "payload_hex": "01066c6f6e676572"
+        }
+      ],
+      "response_packet_index": 7,
+      "response_source_offset": 613
+    },
+    {
+      "transaction_id": 2,
+      "client_port": 42002,
+      "request_hex": "504932510002027878",
+      "response_hex": "5049325200020103",
+      "request_segments": [
+        {
+          "packet_index": 9,
+          "source_offset": 761,
+          "sequence": 2200,
+          "payload_hex": "5049325100"
+        },
+        {
+          "packet_index": 10,
+          "source_offset": 836,
+          "sequence": 2205,
+          "payload_hex": "02027878"
+        }
+      ],
+      "response_packet_index": 12,
+      "response_source_offset": 984
+    },
+    {
+      "transaction_id": 255,
+      "client_port": 42003,
+      "request_hex": "5049325100ff0564656c7461",
+      "response_hex": "5049325200ff0104",
+      "request_segments": [
+        {
+          "packet_index": 15,
+          "source_offset": 1209,
+          "sequence": 2300,
+          "payload_hex": "5049325100"
+        },
+        {
+          "packet_index": 14,
+          "source_offset": 1132,
+          "sequence": 2305,
+          "payload_hex": "ff0564656c7461"
+        }
+      ],
+      "response_packet_index": 16,
+      "response_source_offset": 1284
+    },
+    {
+      "transaction_id": 256,
+      "client_port": 42004,
+      "request_hex": "5049325101000161",
+      "response_hex": "5049325201000105",
+      "request_segments": [
+        {
+          "packet_index": 18,
+          "source_offset": 1432,
+          "sequence": 2400,
+          "payload_hex": "5049325101"
+        },
+        {
+          "packet_index": 19,
+          "source_offset": 1507,
+          "sequence": 2405,
+          "payload_hex": "000161"
+        }
+      ],
+      "response_packet_index": 20,
+      "response_source_offset": 1580
+    },
+    {
+      "transaction_id": 257,
+      "client_port": 42005,
+      "request_hex": "504932510101046d616e79",
+      "response_hex": "5049325201010106",
+      "request_segments": [
+        {
+          "packet_index": 22,
+          "source_offset": 1728,
+          "sequence": 2500,
+          "payload_hex": "5049325101"
+        },
+        {
+          "packet_index": 23,
+          "source_offset": 1803,
+          "sequence": 2505,
+          "payload_hex": "01046d616e79"
+        }
+      ],
+      "response_packet_index": 24,
+      "response_source_offset": 1879
+    }
+  ]
+}
