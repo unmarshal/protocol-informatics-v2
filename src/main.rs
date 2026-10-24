@@ -44,9 +44,9 @@ fn print_help() {
     println!("  evaluate <dir> <hyp-id> <score> <evidence-ids> <counterexample-ids>");
     println!("  experiment <dir> <question> <hyp-ids> <prediction>");
     println!("  trial <dir> <exp-id> <role> <changed-factor>");
-    println!("  import <dir> <trial-id> <hex|pcap-icmp|pcapng-icmp> <file>");
+    println!("  import <dir> <trial-id> <hex|pcap-icmp|pcapng-icmp|pcap-udp|pcapng-udp> <file>");
     println!(
-        "  capture-command <dir> <trial-id> <hex|pcap-icmp|pcapng-icmp> -- <program> [args...]"
+        "  capture-command <dir> <trial-id> <hex|pcap-icmp|pcapng-icmp|pcap-udp|pcapng-udp> -- <program> [args...]"
     );
     println!("  mark <dir> <trial-id> <kind> <detail>");
     println!("  tag <dir> <obs-id> <phase> <label>");

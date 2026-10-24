@@ -7,7 +7,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::pcap::{extract_icmp_messages, extract_pcapng_icmp_messages};
+use crate::pcap::{
+    extract_icmp_messages, extract_pcapng_icmp_messages, extract_pcapng_udp_messages,
+    extract_udp_messages,
+};
 
 const SCHEMA_VERSION: u32 = 2;
 
@@ -55,6 +58,10 @@ pub struct Observation {
     pub source_offset: Option<usize>,
     pub timestamp_ns: Option<u64>,
     pub direction: Option<String>,
+    #[serde(default)]
+    pub source_port: Option<u16>,
+    #[serde(default)]
+    pub destination_port: Option<u16>,
     pub bytes_hex: String,
 }
 
@@ -615,11 +622,13 @@ pub fn import_capture(
     let capture_id = format!("cap-{revision:06}");
     let observations = match format {
         "hex" => parse_hex_observations(raw, &capture_id)?,
-        "pcap-icmp" | "pcapng-icmp" => {
-            let messages = if format == "pcap-icmp" {
-                extract_icmp_messages(raw)?
-            } else {
-                extract_pcapng_icmp_messages(raw)?
+        "pcap-icmp" | "pcapng-icmp" | "pcap-udp" | "pcapng-udp" => {
+            let messages = match format {
+                "pcap-icmp" => extract_icmp_messages(raw)?,
+                "pcapng-icmp" => extract_pcapng_icmp_messages(raw)?,
+                "pcap-udp" => extract_udp_messages(raw)?,
+                "pcapng-udp" => extract_pcapng_udp_messages(raw)?,
+                _ => unreachable!(),
             };
             messages
                 .into_iter()
@@ -634,19 +643,25 @@ pub fn import_capture(
                         message.source_ipv4,
                         message.destination_ipv4,
                     )),
+                    source_port: message.source_port,
+                    destination_port: message.destination_port,
                     bytes_hex: to_hex(&message.bytes),
                 })
                 .collect()
         }
-        _ => return Err("format must be hex, pcap-icmp, or pcapng-icmp".into()),
+        _ => {
+            return Err(
+                "format must be hex, pcap-icmp, pcapng-icmp, pcap-udp, or pcapng-udp".into(),
+            );
+        }
     };
     if observations.is_empty() {
         return Err("capture produced no supported messages".into());
     }
     let extension = match format {
         "hex" => "hex",
-        "pcap-icmp" => "pcap",
-        "pcapng-icmp" => "pcapng",
+        "pcap-icmp" | "pcap-udp" => "pcap",
+        "pcapng-icmp" | "pcapng-udp" => "pcapng",
         _ => unreachable!("format validated above"),
     };
     let (sha256, artifact) = store_artifact(root, raw, extension)?;
@@ -686,6 +701,8 @@ fn parse_hex_observations(raw: &[u8], capture_id: &str) -> Result<Vec<Observatio
             source_offset: None,
             timestamp_ns: None,
             direction: None,
+            source_port: None,
+            destination_port: None,
             bytes_hex: to_hex(&samples[0]),
         });
     }
@@ -762,11 +779,13 @@ pub fn verify(root: &Path) -> Result<Verification, String> {
                     }
                 }
             }
-            "pcap-icmp" | "pcapng-icmp" => {
-                let expected = if capture.format == "pcap-icmp" {
-                    extract_icmp_messages(&raw)?
-                } else {
-                    extract_pcapng_icmp_messages(&raw)?
+            "pcap-icmp" | "pcapng-icmp" | "pcap-udp" | "pcapng-udp" => {
+                let expected = match capture.format.as_str() {
+                    "pcap-icmp" => extract_icmp_messages(&raw)?,
+                    "pcapng-icmp" => extract_pcapng_icmp_messages(&raw)?,
+                    "pcap-udp" => extract_udp_messages(&raw)?,
+                    "pcapng-udp" => extract_pcapng_udp_messages(&raw)?,
+                    _ => unreachable!(),
                 };
                 if expected.len() != actual.len() {
                     return Err(format!("capture {} extraction count mismatch", capture.id));
@@ -776,6 +795,8 @@ pub fn verify(root: &Path) -> Result<Verification, String> {
                         || expected.packet_index != actual.source_index
                         || Some(expected.source_offset) != actual.source_offset
                         || Some(expected.timestamp_ns) != actual.timestamp_ns
+                        || expected.source_port != actual.source_port
+                        || expected.destination_port != actual.destination_port
                         || Some(ipv4_direction(
                             expected.source_ipv4,
                             expected.destination_ipv4,

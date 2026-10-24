@@ -6,7 +6,7 @@ The checksum equation alone cannot locate the field. If a message has a valid on
 
 To select an intervention-supported candidate, the command also needs:
 
-1. A controlled variable whose exact unsigned field has one candidate matching held-out value annotations from `infer-value`.
+1. A controlled variable whose exact unsigned field has one **shortest** candidate matching held-out value annotations from `infer-value`. Wider encodings can still fit if their extra bytes stay zero.
 2. Two matched trials in the same experiment where that variable changes. Pairs are matched by direction and source order; inspect the pairing before trusting the result.
 3. In every pair, changes occur in both the controlled field and the proposed checksum field, with no other byte changes. The proposed field begins at an even byte offset, the alignment assumption used by this version.
 4. The checksum equation matches every message in the separate validation trial.

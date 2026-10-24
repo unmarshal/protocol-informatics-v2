@@ -1,0 +1,95 @@
+{
+  "format": "Ethernet/IPv4/UDP/DNS",
+  "packet_count": 12,
+  "transport_header_bytes": 8,
+  "dns_transaction_id_span": [
+    0,
+    2
+  ],
+  "cases": [
+    {
+      "transaction_id": 0,
+      "name": "a.example",
+      "response": false,
+      "client_port": 40000,
+      "udp_length": 35
+    },
+    {
+      "transaction_id": 0,
+      "name": "a.example",
+      "response": true,
+      "client_port": 40000,
+      "udp_length": 51
+    },
+    {
+      "transaction_id": 1,
+      "name": "longer.example",
+      "response": false,
+      "client_port": 40001,
+      "udp_length": 40
+    },
+    {
+      "transaction_id": 1,
+      "name": "longer.example",
+      "response": true,
+      "client_port": 40001,
+      "udp_length": 56
+    },
+    {
+      "transaction_id": 2,
+      "name": "x.example",
+      "response": false,
+      "client_port": 40002,
+      "udp_length": 35
+    },
+    {
+      "transaction_id": 2,
+      "name": "x.example",
+      "response": true,
+      "client_port": 40002,
+      "udp_length": 51
+    },
+    {
+      "transaction_id": 255,
+      "name": "delta.example",
+      "response": false,
+      "client_port": 40003,
+      "udp_length": 39
+    },
+    {
+      "transaction_id": 255,
+      "name": "delta.example",
+      "response": true,
+      "client_port": 40003,
+      "udp_length": 55
+    },
+    {
+      "transaction_id": 256,
+      "name": "a.example",
+      "response": false,
+      "client_port": 40004,
+      "udp_length": 35
+    },
+    {
+      "transaction_id": 256,
+      "name": "a.example",
+      "response": true,
+      "client_port": 40004,
+      "udp_length": 51
+    },
+    {
+      "transaction_id": 257,
+      "name": "many-labels.example",
+      "response": false,
+      "client_port": 40005,
+      "udp_length": 45
+    },
+    {
+      "transaction_id": 257,
+      "name": "many-labels.example",
+      "response": true,
+      "client_port": 40005,
+      "udp_length": 61
+    }
+  ]
+}

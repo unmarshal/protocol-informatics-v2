@@ -356,6 +356,105 @@ fn imports_pcapng_through_the_same_investigation_workflow() {
 }
 
 #[test]
+fn agent_can_investigate_dns_over_udp_without_a_dns_specific_decoder() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&["init", root_text, "Where is the DNS transaction ID?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Change transaction ID and query name",
+        "-",
+        "Find a two-byte ID inside UDP payloads",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&["trial", root_text, experiment_id, "sweep", "six queries"]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/dns_udp.pcap");
+    let capture = cli(&["import", root_text, trial_id, "pcap-udp", path(&fixture)]);
+    assert_eq!(capture["event"]["capture"]["observation_count"], 12);
+    assert_eq!(capture["event"]["observations"][0]["source_offset"], 82);
+    assert_eq!(capture["event"]["observations"][0]["source_port"], 40000);
+    assert_eq!(capture["event"]["observations"][0]["destination_port"], 53);
+    assert_eq!(capture["event"]["observations"][1]["source_port"], 53);
+    let page = cli(&["observations", root_text, trial_id, "0", "1"]);
+    assert_eq!(page["observations"][0]["source_port"], 40000);
+    let span = cli(&["span", root_text, "obs-000004-0000", "0", "2"]);
+    assert_eq!(span["bytes_hex"], "0000");
+    assert_eq!(span["source_file_offset"], 82);
+    let groups = cli(&["cluster", root_text, trial_id, "respect"]);
+    assert_eq!(groups["clusters"].as_array().unwrap().len(), 2);
+    assert!(
+        groups["clusters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|cluster| cluster["member_count"] == 6)
+    );
+    let request_group = groups["clusters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|cluster| cluster["split_rules"][0]["value"] == "192.0.2.10 -> 192.0.2.53")
+        .unwrap();
+    let aligned = cli(&[
+        "analyze-cluster",
+        root_text,
+        request_group["id"].as_str().unwrap(),
+        trial_id,
+        "respect",
+    ]);
+    assert_eq!(
+        aligned["event"]["analysis"]["observation_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        6
+    );
+    for (index, value) in [(0, 0), (2, 1), (4, 2), (6, 255)] {
+        let id = format!("obs-000004-{index:04}");
+        cli(&[
+            "value",
+            root_text,
+            &id,
+            "transaction_id",
+            &value.to_string(),
+            "discovery",
+        ]);
+    }
+    for (index, value) in [(8, 256), (10, 257)] {
+        let id = format!("obs-000004-{index:04}");
+        cli(&[
+            "value",
+            root_text,
+            &id,
+            "transaction_id",
+            &value.to_string(),
+            "validation",
+        ]);
+    }
+    let inferred = cli(&["infer-value", root_text, "transaction_id"]);
+    assert_eq!(inferred["candidate_count"], 2);
+    assert_eq!(inferred["validated_candidate_count"], 1);
+    assert_eq!(inferred["preferred_candidate_count"], 1);
+    assert_eq!(inferred["candidates"][0]["start"], 0);
+    assert_eq!(inferred["candidates"][0]["end"], 2);
+    assert_eq!(inferred["candidates"][0]["byte_order"], "big_endian");
+    assert_eq!(inferred["candidates"][0]["validation_matches"], 2);
+    assert_eq!(inferred["candidates"][0]["preferred"], true);
+    assert_eq!(inferred["candidates"][1]["start"], 1);
+    assert_eq!(inferred["candidates"][1]["end"], 2);
+    assert_eq!(inferred["candidates"][1]["validation_matches"], 0);
+    let report = root.join("dns-report.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("UDP ports"));
+    assert!(html.contains("transaction_id"));
+    assert_eq!(cli(&["verify", root_text])["observations"], 12);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn annotated_icmp_values_locate_sequence_on_held_out_packets() {
     let root = workspace();
     let root_text = path(&root);

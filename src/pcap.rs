@@ -1,22 +1,44 @@
-//! Minimal classic-pcap ingestion for Ethernet/IPv4/ICMP baseline captures.
-//! Other link types and protocols can be added through extractors later.
+//! Ethernet/IPv4 transport extraction from classic pcap and pcapng.
+//! ICMP messages and UDP application payloads share capture parsing and retain exact
+//! byte offsets into the original capture.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IcmpMessage {
+pub struct TransportMessage {
     pub packet_index: usize,
     pub timestamp_ns: u64,
-    /// Offset of the ICMP message in the original pcap file.
+    /// Offset of the extracted bytes in the original capture file.
     pub source_offset: usize,
     pub source_ipv4: [u8; 4],
     pub destination_ipv4: [u8; 4],
+    pub source_port: Option<u16>,
+    pub destination_port: Option<u16>,
     pub bytes: Vec<u8>,
 }
 
-struct IcmpSlice<'a> {
+pub type IcmpMessage = TransportMessage;
+
+struct TransportSlice<'a> {
     offset: usize,
     source_ipv4: [u8; 4],
     destination_ipv4: [u8; 4],
+    source_port: Option<u16>,
+    destination_port: Option<u16>,
     bytes: &'a [u8],
+}
+
+#[derive(Clone, Copy)]
+enum Transport {
+    Icmp,
+    Udp,
+}
+
+impl Transport {
+    fn ipv4_protocol(self) -> u8 {
+        match self {
+            Self::Icmp => 1,
+            Self::Udp => 17,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -51,7 +73,18 @@ impl Endian {
     }
 }
 
-pub fn extract_icmp_messages(data: &[u8]) -> Result<Vec<IcmpMessage>, String> {
+pub fn extract_icmp_messages(data: &[u8]) -> Result<Vec<TransportMessage>, String> {
+    extract_pcap_messages(data, Transport::Icmp)
+}
+
+pub fn extract_udp_messages(data: &[u8]) -> Result<Vec<TransportMessage>, String> {
+    extract_pcap_messages(data, Transport::Udp)
+}
+
+fn extract_pcap_messages(
+    data: &[u8],
+    transport: Transport,
+) -> Result<Vec<TransportMessage>, String> {
     if data.len() < 24 {
         return Err("pcap global header is truncated".into());
     }
@@ -98,12 +131,13 @@ pub fn extract_icmp_messages(data: &[u8]) -> Result<Vec<IcmpMessage>, String> {
             .checked_mul(1_000_000_000)
             .and_then(|seconds| seconds.checked_add(fraction_ns))
             .ok_or("packet timestamp overflow")?;
-        push_ethernet_icmp(
+        push_ethernet_transport(
             &mut messages,
             frame,
             frame_start,
             packet_index,
             timestamp_ns,
+            transport,
         )?;
         offset = frame_end;
         packet_index += 1;
@@ -121,7 +155,18 @@ struct PcapngInterface {
 /// Extract Ethernet/IPv4/ICMP messages from pcapng Enhanced Packet Blocks.
 /// Section headers and interface timestamp resolutions are honored; other
 /// block types are skipped only when they cannot contain packet bytes.
-pub fn extract_pcapng_icmp_messages(data: &[u8]) -> Result<Vec<IcmpMessage>, String> {
+pub fn extract_pcapng_icmp_messages(data: &[u8]) -> Result<Vec<TransportMessage>, String> {
+    extract_pcapng_messages(data, Transport::Icmp)
+}
+
+pub fn extract_pcapng_udp_messages(data: &[u8]) -> Result<Vec<TransportMessage>, String> {
+    extract_pcapng_messages(data, Transport::Udp)
+}
+
+fn extract_pcapng_messages(
+    data: &[u8],
+    transport: Transport,
+) -> Result<Vec<TransportMessage>, String> {
     let mut offset = 0_usize;
     let mut section_endian = None;
     let mut interfaces = Vec::<PcapngInterface>::new();
@@ -210,12 +255,13 @@ pub fn extract_pcapng_icmp_messages(data: &[u8]) -> Result<Vec<IcmpMessage>, Str
                 let timestamp_ns =
                     u64::try_from(timestamp_ns).map_err(|_| "pcapng timestamp out of range")?;
                 let frame_start = offset + 28;
-                push_ethernet_icmp(
+                push_ethernet_transport(
                     &mut messages,
                     &body[20..20 + captured_length],
                     frame_start,
                     packet_index,
                     timestamp_ns,
+                    transport,
                 )?;
                 packet_index += 1;
             }
@@ -281,27 +327,33 @@ fn timestamp_options(options: &[u8], endian: Endian) -> Result<(u128, i64), Stri
     Ok((units, offset_seconds))
 }
 
-fn push_ethernet_icmp(
-    messages: &mut Vec<IcmpMessage>,
+fn push_ethernet_transport(
+    messages: &mut Vec<TransportMessage>,
     frame: &[u8],
     frame_start: usize,
     packet_index: usize,
     timestamp_ns: u64,
+    transport: Transport,
 ) -> Result<(), String> {
-    if let Some(icmp) = extract_ethernet_icmp(frame)? {
-        messages.push(IcmpMessage {
+    if let Some(message) = extract_ethernet_transport(frame, transport)? {
+        messages.push(TransportMessage {
             packet_index,
             timestamp_ns,
-            source_offset: frame_start + icmp.offset,
-            source_ipv4: icmp.source_ipv4,
-            destination_ipv4: icmp.destination_ipv4,
-            bytes: icmp.bytes.to_vec(),
+            source_offset: frame_start + message.offset,
+            source_ipv4: message.source_ipv4,
+            destination_ipv4: message.destination_ipv4,
+            source_port: message.source_port,
+            destination_port: message.destination_port,
+            bytes: message.bytes.to_vec(),
         });
     }
     Ok(())
 }
 
-fn extract_ethernet_icmp(frame: &[u8]) -> Result<Option<IcmpSlice<'_>>, String> {
+fn extract_ethernet_transport(
+    frame: &[u8],
+    transport: Transport,
+) -> Result<Option<TransportSlice<'_>>, String> {
     if frame.len() < 14 {
         return Err("truncated Ethernet frame".into());
     }
@@ -322,20 +374,50 @@ fn extract_ethernet_icmp(frame: &[u8]) -> Result<Option<IcmpSlice<'_>>, String> 
         return Err("truncated IPv4 payload".into());
     }
     let fragment_bits = u16::from_be_bytes([ip[6], ip[7]]);
-    if ip[9] != 1 || fragment_bits & 0x3fff != 0 {
+    if ip[9] != transport.ipv4_protocol() || fragment_bits & 0x3fff != 0 {
         return Ok(None);
     }
-    let icmp = &ip[header_length..total_length];
-    if icmp.len() < 8 {
-        return Err("truncated ICMP message".into());
-    }
+    let payload = &ip[header_length..total_length];
+    let (bytes, source_port, destination_port) = match transport {
+        Transport::Icmp => {
+            if payload.len() < 8 {
+                return Err("truncated ICMP message".into());
+            }
+            (payload, None, None)
+        }
+        Transport::Udp => {
+            if payload.len() < 8 {
+                return Err("truncated UDP header".into());
+            }
+            let length = u16::from_be_bytes([payload[4], payload[5]]) as usize;
+            if length < 8 || length > payload.len() {
+                return Err("invalid UDP datagram length".into());
+            }
+            if length == 8 {
+                return Ok(None);
+            }
+            (
+                &payload[8..length],
+                Some(u16::from_be_bytes([payload[0], payload[1]])),
+                Some(u16::from_be_bytes([payload[2], payload[3]])),
+            )
+        }
+    };
     let source_ipv4 = ip[12..16].try_into().expect("validated IPv4 header");
     let destination_ipv4 = ip[16..20].try_into().expect("validated IPv4 header");
-    Ok(Some(IcmpSlice {
-        offset: 14 + header_length,
+    Ok(Some(TransportSlice {
+        offset: 14
+            + header_length
+            + if matches!(transport, Transport::Udp) {
+                8
+            } else {
+                0
+            },
         source_ipv4,
         destination_ipv4,
-        bytes: icmp,
+        source_port,
+        destination_port,
+        bytes,
     }))
 }
 
@@ -374,6 +456,66 @@ mod tests {
             );
             assert_eq!(icmp_checksum(&message.bytes), 0);
         }
+    }
+
+    #[test]
+    fn dns_udp_fixture_preserves_datagrams_ports_and_source_offsets() {
+        let raw = include_bytes!("../examples/dns_udp.pcap");
+        let classic = extract_udp_messages(raw).unwrap();
+        let enhanced_raw = include_bytes!("../examples/dns_udp.pcapng");
+        let enhanced = extract_pcapng_udp_messages(enhanced_raw).unwrap();
+        let truth: serde_json::Value =
+            serde_json::from_str(include_str!("../examples/dns_udp.truth.json")).unwrap();
+        assert_eq!(classic.len(), 12);
+        assert_eq!(enhanced.len(), classic.len());
+        for ((left, right), case) in classic
+            .iter()
+            .zip(&enhanced)
+            .zip(truth["cases"].as_array().unwrap())
+        {
+            assert_eq!(left.bytes, right.bytes);
+            assert_eq!(left.timestamp_ns, right.timestamp_ns);
+            assert_eq!(left.source_port, right.source_port);
+            assert_eq!(left.destination_port, right.destination_port);
+            assert_eq!(
+                left.bytes.len() as u64 + 8,
+                case["udp_length"].as_u64().unwrap()
+            );
+            assert_eq!(
+                u16::from_be_bytes([left.bytes[0], left.bytes[1]]) as u64,
+                case["transaction_id"].as_u64().unwrap()
+            );
+            assert_eq!(
+                left.source_port == Some(53),
+                case["response"].as_bool().unwrap()
+            );
+            assert_eq!(
+                &raw[left.source_offset..left.source_offset + left.bytes.len()],
+                left.bytes
+            );
+            assert_eq!(
+                &enhanced_raw[right.source_offset..right.source_offset + right.bytes.len()],
+                right.bytes
+            );
+        }
+        assert!(extract_icmp_messages(raw).unwrap().is_empty());
+        let mut bad_length = raw.to_vec();
+        bad_length[classic[0].source_offset - 8 + 4..classic[0].source_offset - 8 + 6]
+            .copy_from_slice(&0xffff_u16.to_be_bytes());
+        assert!(
+            extract_udp_messages(&bad_length)
+                .unwrap_err()
+                .contains("invalid UDP datagram length")
+        );
+        let first_frame_length = u32::from_le_bytes(raw[32..36].try_into().unwrap()) as usize;
+        let mut no_payload = raw[40..40 + first_frame_length].to_vec();
+        no_payload[16..18].copy_from_slice(&28_u16.to_be_bytes());
+        no_payload[38..40].copy_from_slice(&8_u16.to_be_bytes());
+        assert!(
+            extract_ethernet_transport(&no_payload, Transport::Udp)
+                .unwrap()
+                .is_none()
+        );
     }
 
     fn icmp_checksum(input: &[u8]) -> u16 {

@@ -44,9 +44,9 @@ For a controlled comparison, the generator also writes `icmp_baseline_255.pcap` 
 
 The `evaluate` score is supplied by the analyst or agent. The program validates its range and evidence IDs, but does **not** calculate a probability that the hypothesis is true. `analyze-investigation` stores a separate descriptive alignment result; it does not evaluate the semantic claim.
 
-`value` records an externally known unsigned value for an observation, in decimal or `0x` hex. `infer-value` searches fixed offsets for exact 1, 2, 4, or 8-byte encodings in both byte orders. It fits only the `discovery` examples, then reports matches and counterexamples from the `validation` examples. The ICMP sweep yields one candidate: `[6, 8)` in big-endian order, matching both held-out packets. This is evidence for a field location, not proof of its protocol meaning. A corrected annotation appends a new event and supersedes the earlier value in the current view.
+`value` records an externally known unsigned value for an observation, in decimal or `0x` hex. `infer-value` searches fixed offsets for exact 1, 2, 4, or 8-byte encodings in both byte orders. It fits only the `discovery` examples, then reports matches and counterexamples from the `validation` examples. The ICMP sweep yields one candidate: `[6, 8)` in big-endian order, matching both held-out packets. When several candidates pass validation, the shortest is marked `preferred` only if it is unique at that width; wider encodings remain visible because zero padding can make them equally consistent with observed values. This is evidence for a field location, not proof of its protocol meaning or full width. A corrected annotation appends a new event and supersedes the earlier value in the current view.
 
-`infer-checksum <dir> <discovery-trial> <validation-trial> <baseline-trial> <variant-trial> <controlled-variable>` tests a whole-message 16-bit Internet checksum model. It uses a unique held-out numeric field candidate and controlled trial comparison to distinguish a dependent checksum candidate from other words that satisfy the checksum equation. With the ICMP sweep, new holdout capture, controlled 255→256 pair, and annotated `sequence`, it reports six equation matches but only one intervention-supported field: `[2, 4)` big-endian. The [checksum method](docs/checksum-method.md) explains why the equation alone is ambiguous and lists the assumptions.
+`infer-checksum <dir> <discovery-trial> <validation-trial> <baseline-trial> <variant-trial> <controlled-variable>` tests a whole-message 16-bit Internet checksum model. It uses a unique shortest held-out numeric field candidate and controlled trial comparison to distinguish a dependent checksum candidate from other words that satisfy the checksum equation. With the ICMP sweep, new holdout capture, controlled 255→256 pair, and annotated `sequence`, it reports six equation matches but only one intervention-supported field: `[2, 4)` big-endian. The [checksum method](docs/checksum-method.md) explains why the equation alone is ambiguous and lists the assumptions.
 
 `cluster` returns provisional format groups with member IDs, a representative message, stable header bytes, and members farthest from the representative. It separates ICMP request and reply directions into two groups. `cluster <dir> - ignore` ignores direction metadata. Pass a returned cluster ID to `analyze-cluster <dir> <cluster-id> [trial-id|-] [respect|ignore]` to align only that group. The analysis record retains its group scope and method version. Group IDs are hashes of their member IDs and can change when new observations arrive. The [clustering method](docs/clustering-method.md) explains its evidence rule and limits.
 
@@ -60,7 +60,31 @@ cargo run -- capture-command /tmp/pi-icmp trial-000004 pcap-icmp -- cat examples
 
 The command runs locally, must exit successfully, and is stopped if output exceeds 32 MiB. It is a generic acquisition hook, not yet a managed network capture service. Capture commands should be chosen with care because they execute as the current user.
 
-The generated report is a self-contained, read-only HTML view with experiments, actions, hypotheses, decisions, candidate format groups, observation filters, tags, candidate fields, and a byte inspector. A unique candidate that matches held-out values is outlined at its original byte offsets. Regenerate the report after new events. The append-only source record is `/tmp/pi-icmp/.pi/events.jsonl`; immutable raw captures and analysis JSON live under `/tmp/pi-icmp/.pi/artifacts/` with SHA-256 names. Keep the whole directory to preserve provenance.
+The generated report is a self-contained, read-only HTML view with experiments, actions, hypotheses, decisions, candidate format groups, observation filters, tags, candidate fields, and a byte inspector. A unique shortest candidate that matches held-out values is outlined at its original byte offsets. Regenerate the report after new events. The append-only source record is `/tmp/pi-icmp/.pi/events.jsonl`; immutable raw captures and analysis JSON live under `/tmp/pi-icmp/.pi/artifacts/` with SHA-256 names. Keep the whole directory to preserve provenance.
+
+## Second format: DNS over UDP
+
+`examples/generate_dns_fixture.py` writes 12 DNS query and reply packets to classic PCAP and pcapng, with an independent truth manifest. The fixture follows [RFC 1035's message structure](https://www.rfc-editor.org/rfc/rfc1035.html); the importer extracts UDP application payloads without DNS-specific decoding. It keeps source and destination ports as metadata, plus timestamps and exact payload offsets in the capture. The controlled DNS transaction ID appears at payload offset `[0, 2)`.
+
+```sh
+python3 examples/generate_dns_fixture.py
+cargo run -- init /tmp/pi-dns 'Where is the transaction ID?'
+cargo run -- experiment /tmp/pi-dns 'Vary transaction ID and name' - 'Locate the ID'
+cargo run -- trial /tmp/pi-dns exp-000002 sweep 'six query/reply pairs'
+cargo run -- import /tmp/pi-dns trial-000003 pcap-udp examples/dns_udp.pcap
+cargo run -- cluster /tmp/pi-dns trial-000003 respect
+cargo run -- observations /tmp/pi-dns trial-000003 0 4
+cargo run -- value /tmp/pi-dns obs-000004-0000 transaction_id 0 discovery
+cargo run -- value /tmp/pi-dns obs-000004-0002 transaction_id 1 discovery
+cargo run -- value /tmp/pi-dns obs-000004-0004 transaction_id 2 discovery
+cargo run -- value /tmp/pi-dns obs-000004-0006 transaction_id 255 discovery
+cargo run -- value /tmp/pi-dns obs-000004-0008 transaction_id 256 validation
+cargo run -- value /tmp/pi-dns obs-000004-0010 transaction_id 257 validation
+cargo run -- infer-value /tmp/pi-dns transaction_id
+cargo run -- report /tmp/pi-dns /tmp/pi-dns-report.html
+```
+
+The two-byte candidate `[0, 2)` passes both held-out values. A one-byte `[1, 2)` candidate fits only the discovery values below 256 and fails the held-out examples. Use `pcapng-udp` with `examples/dns_udp.pcapng` for the equivalent pcapng capture.
 
 ## One-shot analysis
 
@@ -73,7 +97,7 @@ Hex input has one extracted message per line; spaces and colons are allowed. Bla
 
 ## Current scope and next work
 
-Classic PCAP and pcapng ingestion currently support Ethernet, unfragmented IPv4, and ICMP messages. The pcapng reader accepts Enhanced Packet Blocks and rejects legacy packet blocks. It does not support VLANs, IPv6, TCP stream reassembly, file-format record boundaries, or managed live capture. The HTML view is read-only. Local event writers use file locks and assign IDs at commit time; the concurrent CLI test covers simultaneous hypotheses and imports. Distributed coordination, idempotent action handles, and interrupted-write recovery remain open work. The fixture tests parsing, exact source offsets, checksums, and the alignment strategy against independent known answers.
+Classic PCAP and pcapng ingestion currently support Ethernet, unfragmented IPv4, ICMP messages, and UDP application payloads. The pcapng reader accepts Enhanced Packet Blocks and rejects legacy packet blocks. UDP extraction checks the declared datagram length but does not verify its checksum or parse its application payload. It does not support VLANs, IPv6, TCP stream reassembly, file-format record boundaries, or managed live capture. The HTML view is read-only. Local event writers use file locks and assign IDs at commit time; the concurrent CLI test covers simultaneous hypotheses and imports. Distributed coordination, idempotent action handles, and interrupted-write recovery remain open work. The fixtures test parsing, exact source offsets, ICMP checksums, and the alignment strategy against independent known answers.
 
 The next inference step is to measure cluster stability across new captures, then test candidate lengths and request/response relations on held-out examples. See the [workflow](docs/iterative-workflow.md), [interface design](docs/interface-design.md), and [experiment lifecycle](docs/experiment-lifecycle.md) for the fuller direction. GPU acceleration can wait for representative CPU profiles.
 

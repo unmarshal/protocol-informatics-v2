@@ -196,14 +196,11 @@ pub fn infer_internet_checksum(
     let confirmed_fields: Vec<_> = known_field
         .candidates
         .iter()
-        .filter(|candidate| {
-            candidate.validation_total > 0
-                && candidate.validation_matches == candidate.validation_total
-        })
+        .filter(|candidate| candidate.preferred)
         .collect();
     if confirmed_fields.len() != 1 {
         return Err(format!(
-            "{controlled_variable} needs exactly one unsigned field candidate matching held-out values"
+            "{controlled_variable} needs exactly one shortest unsigned field candidate matching held-out values"
         ));
     }
     let controlled_field = confirmed_fields[0];

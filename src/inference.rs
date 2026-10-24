@@ -29,6 +29,7 @@ pub struct FieldCandidate {
     pub validation_matches: usize,
     pub validation_total: usize,
     pub counterexample_observation_ids: Vec<String>,
+    pub preferred: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -44,6 +45,8 @@ pub struct FieldInference {
     pub validation_observation_ids: Vec<String>,
     pub max_search_bytes: usize,
     pub candidate_count: usize,
+    pub validated_candidate_count: usize,
+    pub preferred_candidate_count: usize,
     pub truncated: bool,
     pub candidates: Vec<FieldCandidate>,
 }
@@ -150,6 +153,7 @@ pub fn infer_unsigned_field(state: &State, variable: &str) -> Result<FieldInfere
                     validation_matches: validation.len() - counterexample_observation_ids.len(),
                     validation_total: validation.len(),
                     counterexample_observation_ids,
+                    preferred: false,
                 });
             }
         }
@@ -166,6 +170,32 @@ pub fn infer_unsigned_field(state: &State, variable: &str) -> Result<FieldInfere
             },
         )
     });
+    let validated_candidate_count = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.validation_total > 0
+                && candidate.validation_matches == candidate.validation_total
+        })
+        .count();
+    if let Some(minimum_width) = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.validation_total > 0
+                && candidate.validation_matches == candidate.validation_total
+        })
+        .map(|candidate| candidate.width)
+        .min()
+    {
+        for candidate in &mut candidates {
+            candidate.preferred = candidate.width == minimum_width
+                && candidate.validation_total > 0
+                && candidate.validation_matches == candidate.validation_total;
+        }
+    }
+    let preferred_candidate_count = candidates
+        .iter()
+        .filter(|candidate| candidate.preferred)
+        .count();
     let candidate_count = candidates.len();
     candidates.truncate(MAX_RETURNED_CANDIDATES);
     Ok(FieldInference {
@@ -186,6 +216,8 @@ pub fn infer_unsigned_field(state: &State, variable: &str) -> Result<FieldInfere
             .collect(),
         max_search_bytes: MAX_SEARCH_BYTES,
         candidate_count,
+        validated_candidate_count,
+        preferred_candidate_count,
         truncated: candidate_count > MAX_RETURNED_CANDIDATES,
         candidates,
     })
@@ -217,6 +249,8 @@ mod tests {
                 source_offset: None,
                 timestamp_ns: None,
                 direction: None,
+                source_port: None,
+                destination_port: None,
                 bytes_hex: format!("aa{value:02x}{duplicate:02x}"),
             });
             state.known_values.push(KnownValue {
@@ -234,5 +268,57 @@ mod tests {
         assert_eq!(result.candidates[1].start, 2);
         assert_eq!(result.candidates[1].validation_matches, 0);
         assert_eq!(result.candidates[1].counterexample_observation_ids.len(), 2);
+    }
+
+    #[test]
+    fn keeps_zero_extended_width_ambiguity_visible() {
+        let mut state = crate::workflow::create_test_state();
+        for (index, (value, set)) in [
+            (0, ValueSet::Discovery),
+            (1, ValueSet::Discovery),
+            (255, ValueSet::Discovery),
+            (256, ValueSet::Validation),
+            (257, ValueSet::Validation),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = format!("obs-{index}");
+            state.observations.push(Observation {
+                id: id.clone(),
+                capture_id: "capture".into(),
+                source_index: index,
+                source_offset: None,
+                timestamp_ns: None,
+                direction: None,
+                source_port: None,
+                destination_port: None,
+                bytes_hex: format!("0000{value:04x}"),
+            });
+            state.known_values.push(KnownValue {
+                id: format!("value-{index}"),
+                observation_id: id,
+                variable: "number".into(),
+                value,
+                set,
+            });
+        }
+        let result = infer_unsigned_field(&state, "number").unwrap();
+        assert_eq!(result.validated_candidate_count, 2);
+        assert_eq!(result.preferred_candidate_count, 1);
+        let preferred = result
+            .candidates
+            .iter()
+            .find(|candidate| candidate.preferred)
+            .unwrap();
+        assert_eq!((preferred.start, preferred.end), (2, 4));
+        assert!(
+            result
+                .candidates
+                .iter()
+                .any(|candidate| (candidate.start, candidate.end) == (0, 4)
+                    && candidate.validation_matches == 2
+                    && !candidate.preferred)
+        );
     }
 }

@@ -96,9 +96,9 @@ const clusterById = new Map((state.cluster_report?.clusters||[]).map(x=>[x.id,x]
 const tagsFor = id => state.tags.filter(x=>x.observation_id===id);
 const valuesFor = id => state.known_values.filter(x=>x.observation_id===id);
 const fieldOverlays = state.field_inferences.flatMap(inference => {
-  const passed=inference.candidates.filter(candidate=>candidate.validation_total>0&&candidate.validation_matches===candidate.validation_total);
+  const preferred=inference.candidates.filter(candidate=>candidate.preferred);
   const observationIds=new Set(state.known_values.filter(value=>value.variable===inference.variable).map(value=>value.observation_id));
-  return !inference.truncated&&passed.length===1 ? [{variable:inference.variable,observationIds,...passed[0]}] : [];
+  return !inference.truncated&&inference.preferred_candidate_count===1 ? [{variable:inference.variable,observationIds,...preferred[0]}] : [];
 });
 byId('revision').textContent=state.revision;
 byId('question').textContent=state.question;
@@ -110,8 +110,8 @@ for(const h of state.hypotheses) {
 }
 for(const inference of state.field_inferences) {
   const row=node('div','', 'row');
-  row.append(node('strong',inference.variable),node('div',inference.discovery_count+' discovery values · '+inference.validation_count+' held-out values · '+inference.candidate_count+' candidate(s)','small muted'));
-  for(const candidate of inference.candidates.slice(0,5)) row.append(node('div','['+candidate.start+', '+candidate.end+') '+candidate.byte_order+' · held-out '+candidate.validation_matches+'/'+candidate.validation_total,'small'));
+  row.append(node('strong',inference.variable),node('div',inference.discovery_count+' discovery values · '+inference.validation_count+' held-out values · '+inference.candidate_count+' candidate(s) · '+inference.preferred_candidate_count+' shortest validated','small muted'));
+  for(const candidate of inference.candidates.slice(0,5)) row.append(node('div','['+candidate.start+', '+candidate.end+') '+candidate.byte_order+' · held-out '+candidate.validation_matches+'/'+candidate.validation_total+(candidate.preferred?' · shortest validated':''),'small'));
   byId('fieldCandidates').append(row);
 }
 if(!state.field_inferences.length) byId('fieldCandidates').append(node('div','Annotate controlled values to search for exact numeric fields.','small muted'));
@@ -176,7 +176,7 @@ function showDetail(observation) {
   const detail=byId('detail'); detail.replaceChildren();
   detail.append(node('strong',observation.id),node('div','Trial '+trial.id+' ('+trial.role+') · capture '+capture.id,'small'));
   detail.append(node('div','Source '+capture.source+' · '+capture.format+' · source index '+observation.source_index+(observation.source_offset===null?'':' · file offset '+observation.source_offset),'small muted'));
-  if(observation.direction) detail.append(node('div',observation.direction,'small muted'));
+  if(observation.direction) detail.append(node('div',observation.direction+(observation.source_port===null?'':' · UDP ports '+observation.source_port+' → '+observation.destination_port),'small muted'));
   for(const tag of tagsFor(observation.id)) detail.append(node('span',tag.phase+': '+tag.label,'pill'));
   for(const value of valuesFor(observation.id)) detail.append(node('span',value.variable+'='+value.value+' ('+value.set+')','pill'));
   const bytes=node('div','', 'bytes');
@@ -187,14 +187,14 @@ function showDetail(observation) {
     bytes.append(cell);
   }
   detail.append(bytes);
-  detail.append(node('div','Green outline marks a unique candidate that matched held-out values; it still needs protocol-level confirmation.','small muted legend'));
+  detail.append(node('div','Green outline marks the unique shortest candidate matching held-out values. Longer encodings may also fit; boundaries and meaning need protocol-level confirmation.','small muted legend'));
 }
 function renderObservations() {
   const selected=byId('trialFilter').value, cluster=clusterById.get(byId('clusterFilter').value), search=byId('search').value.toLowerCase();
   const list=byId('observations'); list.replaceChildren();
-  const matches=state.observations.filter(o=>{ const c=captureById.get(o.capture_id); const labels=tagsFor(o.id).map(t=>t.label+' '+t.phase).join(' ')+valuesFor(o.id).map(v=>v.variable+'='+v.value).join(' '); return (!selected||c.trial_id===selected) && (!cluster||cluster.member_observation_ids.includes(o.id)) && (o.id+' '+o.bytes_hex+' '+(o.direction||'')+' '+labels).toLowerCase().includes(search); });
+  const matches=state.observations.filter(o=>{ const c=captureById.get(o.capture_id); const labels=tagsFor(o.id).map(t=>t.label+' '+t.phase).join(' ')+valuesFor(o.id).map(v=>v.variable+'='+v.value).join(' '); return (!selected||c.trial_id===selected) && (!cluster||cluster.member_observation_ids.includes(o.id)) && (o.id+' '+o.bytes_hex+' '+(o.direction||'')+' '+(o.source_port??'')+' '+(o.destination_port??'')+' '+labels).toLowerCase().includes(search); });
   list.append(node('div',matches.length+' of '+state.observations.length+' observations','small muted'));
-  for(const o of matches) { const row=node('div','', 'row'); const button=node('button',o.id+' · '+o.bytes_hex.match(/../g).join(' ').slice(0,100)); button.onclick=()=>showDetail(o); row.append(button,node('div',(o.direction||'')+' '+tagsFor(o.id).map(t=>'['+t.phase+': '+t.label+']').join(' '),'small muted')); list.append(row); }
+  for(const o of matches) { const row=node('div','', 'row'); const button=node('button',o.id+' · '+o.bytes_hex.match(/../g).join(' ').slice(0,100)); button.onclick=()=>showDetail(o); row.append(button,node('div',(o.direction||'')+(o.source_port===null?'':' · '+o.source_port+' → '+o.destination_port)+' '+tagsFor(o.id).map(t=>'['+t.phase+': '+t.label+']').join(' '),'small muted')); list.append(row); }
 }
 byId('trialFilter').onchange=renderObservations; byId('clusterFilter').onchange=renderObservations; byId('search').oninput=renderObservations; renderObservations();
 if(state.observations.length) showDetail(state.observations[0]);

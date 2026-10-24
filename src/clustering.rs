@@ -404,6 +404,8 @@ mod tests {
                 source_offset: None,
                 timestamp_ns: None,
                 direction: None,
+                source_port: None,
+                destination_port: None,
                 bytes_hex: bytes.into(),
             });
         }
@@ -432,6 +434,8 @@ mod tests {
                 source_offset: None,
                 timestamp_ns: None,
                 direction: None,
+                source_port: None,
+                destination_port: None,
                 bytes_hex: format!("aa{index:02x}55"),
             });
         }
