@@ -80,8 +80,18 @@ def main() -> None:
     (HERE / "icmp_echo.pcapng").write_bytes(capture_ng)
     (HERE / "icmp_baseline_255.pcap").write_bytes(isolated[255])
     (HERE / "icmp_variant_256.pcap").write_bytes(isolated[256])
+    holdout = bytearray(header)
+    for index, sequence in enumerate((3, 258, 4097)):
+        payload = bytes([0xA0 + index, 0xB0, 0xC0 + index]) + bytes(range(index))
+        for icmp_type in (8, 0):
+            frame = packet(icmp_type, 0x3456, sequence, payload)
+            timestamp_us = index * 1_000_000 + (0 if icmp_type == 8 else 50_000)
+            holdout.extend(struct.pack("<IIII", 1_710_000_000 + timestamp_us // 1_000_000,
+                                      timestamp_us % 1_000_000, len(frame), len(frame)) + frame)
+    (HERE / "icmp_holdout.pcap").write_bytes(holdout)
     truth = {"capture_format": "pcap", "alternate_capture_format": "pcapng",
              "linktype": 1, "packet_count": len(cases),
+             "holdout_capture": "icmp_holdout.pcap",
              "controlled_pair": ["icmp_baseline_255.pcap", "icmp_variant_256.pcap"],
              "icmp_fields": {"type": [0, 1], "code": [1, 2],
                              "checksum": [2, 4], "identifier": [4, 6],

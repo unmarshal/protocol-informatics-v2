@@ -424,6 +424,105 @@ fn annotated_icmp_values_locate_sequence_on_held_out_packets() {
 }
 
 #[test]
+fn controlled_intervention_locates_checksum_candidate_on_new_packets() {
+    let root = workspace();
+    let root_text = path(&root);
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    cli(&[
+        "init",
+        root_text,
+        "Which field compensates for a sequence change?",
+    ]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Change only the sequence",
+        "-",
+        "A dependent field also changes",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    for (role, factor) in [
+        ("baseline", "sequence=255"),
+        ("variant", "sequence=256"),
+        ("discovery", "many sequences and payloads"),
+        ("validation", "new identifier and payloads"),
+    ] {
+        cli(&["trial", root_text, experiment_id, role, factor]);
+    }
+    for (trial, file) in [
+        ("trial-000003", "icmp_baseline_255.pcap"),
+        ("trial-000004", "icmp_variant_256.pcap"),
+        ("trial-000005", "icmp_echo.pcap"),
+        ("trial-000006", "icmp_holdout.pcap"),
+    ] {
+        cli(&[
+            "import",
+            root_text,
+            trial,
+            "pcap-icmp",
+            path(&examples.join(file)),
+        ]);
+    }
+    for (index, value) in [(0, 0), (2, 1), (4, 2), (8, 255), (10, 256)] {
+        let id = format!("obs-000009-{index:04}");
+        cli(&[
+            "value",
+            root_text,
+            &id,
+            "sequence",
+            &value.to_string(),
+            "discovery",
+        ]);
+    }
+    for (index, value) in [(12, 257), (22, 65535)] {
+        let id = format!("obs-000009-{index:04}");
+        cli(&[
+            "value",
+            root_text,
+            &id,
+            "sequence",
+            &value.to_string(),
+            "validation",
+        ]);
+    }
+    let result = cli(&[
+        "infer-checksum",
+        root_text,
+        "trial-000005",
+        "trial-000006",
+        "trial-000003",
+        "trial-000004",
+        "sequence",
+    ]);
+    assert_eq!(result["discovery_count"], 24);
+    assert_eq!(result["validation_count"], 6);
+    assert_eq!(result["duplicate_validation_count"], 0);
+    assert!(result["candidate_count"].as_u64().unwrap() > 1);
+    assert_eq!(result["intervention_supported_count"], 1);
+    assert_eq!(result["candidates"][0]["start"], 2);
+    assert_eq!(result["candidates"][0]["end"], 4);
+    assert_eq!(result["candidates"][0]["byte_order"], "big_endian");
+    assert_eq!(result["candidates"][0]["validation_matches"], 6);
+    assert_eq!(result["candidates"][0]["intervention_pair_matches"], 2);
+    let reused_holdout = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "infer-checksum",
+            root_text,
+            "trial-000005",
+            "trial-000003",
+            "trial-000003",
+            "trial-000004",
+            "sequence",
+        ])
+        .output()
+        .unwrap();
+    assert!(!reused_holdout.status.success());
+    assert!(String::from_utf8_lossy(&reused_holdout.stderr).contains("no new message bytes"));
+    assert_eq!(cli(&["verify", root_text])["observations"], 34);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn replays_v1_log_and_appends_v2_events() {
     let root = workspace();
     let events = root.join(".pi/events.jsonl");

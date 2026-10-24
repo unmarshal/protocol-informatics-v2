@@ -1,9 +1,11 @@
 //! Evidence-oriented analysis of unknown byte-oriented message formats.
 //!
-//! Capture decoding, experiment records, conservative grouping, and exact
-//! controlled-value field inference build on the byte alignment core.
+//! Capture decoding, experiment records, conservative grouping, and
+//! intervention-tested numeric and checksum candidates build on the byte
+//! alignment core.
 
 mod alignment;
+pub mod checksum;
 pub mod clustering;
 pub mod inference;
 mod input;

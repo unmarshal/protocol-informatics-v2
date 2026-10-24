@@ -3,6 +3,7 @@
   "alternate_capture_format": "pcapng",
   "linktype": 1,
   "packet_count": 24,
+  "holdout_capture": "icmp_holdout.pcap",
   "controlled_pair": [
     "icmp_baseline_255.pcap",
     "icmp_variant_256.pcap"

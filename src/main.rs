@@ -52,6 +52,9 @@ fn print_help() {
     println!("  tag <dir> <obs-id> <phase> <label>");
     println!("  value <dir> <obs-id> <variable> <unsigned> <discovery|validation>");
     println!("  infer-value <dir> <variable>         find exact unsigned field candidates");
+    println!(
+        "  infer-checksum <dir> <discovery-trial> <validation-trial> <baseline-trial> <variant-trial> <controlled-variable>"
+    );
     println!("  analyze-investigation <dir> [trial-id]");
     println!("  cluster <dir> [trial-id|-] [respect|ignore]");
     println!("  analyze-cluster <dir> <cluster-id> [trial-id|-] [respect|ignore]");
@@ -329,6 +332,13 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             let state = workflow::load(root)?;
             print_json(&protocol_informatics_v2::inference::infer_unsigned_field(
                 &state, &args[2],
+            )?)
+        }
+        "infer-checksum" => {
+            require_len(args, 7)?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::checksum::infer_internet_checksum(
+                &state, &args[2], &args[3], &args[4], &args[5], &args[6],
             )?)
         }
         "analyze-investigation" => {

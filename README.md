@@ -8,6 +8,8 @@ The repository includes a deterministic, 24-packet Ethernet/IPv4/ICMP echo captu
 
 The same packets are available in `examples/icmp_echo.pcapng`; replace `pcap-icmp examples/icmp_echo.pcap` with `pcapng-icmp examples/icmp_echo.pcapng` in the commands below to exercise that reader. The pcapng reader handles Section Header, Interface Description, and Enhanced Packet Blocks, including interface timestamp resolution and offset. Its field interpretation follows the [IETF pcapng draft](https://www.ietf.org/ietf-ftp/internet-drafts/draft-ietf-opsawg-pcapng-06.html).
 
+`examples/icmp_holdout.pcap` contains six additional packets with a new identifier, payloads, and sequence values. Use it as a separate validation trial for inference.
+
 ```sh
 cargo test --offline
 cargo run -- init /tmp/pi-icmp 'Where is the ICMP sequence number?'
@@ -44,6 +46,8 @@ The `evaluate` score is supplied by the analyst or agent. The program validates 
 
 `value` records an externally known unsigned value for an observation, in decimal or `0x` hex. `infer-value` searches fixed offsets for exact 1, 2, 4, or 8-byte encodings in both byte orders. It fits only the `discovery` examples, then reports matches and counterexamples from the `validation` examples. The ICMP sweep yields one candidate: `[6, 8)` in big-endian order, matching both held-out packets. This is evidence for a field location, not proof of its protocol meaning. A corrected annotation appends a new event and supersedes the earlier value in the current view.
 
+`infer-checksum <dir> <discovery-trial> <validation-trial> <baseline-trial> <variant-trial> <controlled-variable>` tests a whole-message 16-bit Internet checksum model. It uses a unique held-out numeric field candidate and controlled trial comparison to distinguish a dependent checksum candidate from other words that satisfy the checksum equation. With the ICMP sweep, new holdout capture, controlled 255→256 pair, and annotated `sequence`, it reports six equation matches but only one intervention-supported field: `[2, 4)` big-endian. The [checksum method](docs/checksum-method.md) explains why the equation alone is ambiguous and lists the assumptions.
+
 `cluster` returns provisional format groups with member IDs, a representative message, stable header bytes, and members farthest from the representative. It separates ICMP request and reply directions into two groups. `cluster <dir> - ignore` ignores direction metadata. Pass a returned cluster ID to `analyze-cluster <dir> <cluster-id> [trial-id|-] [respect|ignore]` to align only that group. The analysis record retains its group scope and method version. Group IDs are hashes of their member IDs and can change when new observations arrive. The [clustering method](docs/clustering-method.md) explains its evidence rule and limits.
 
 The JSON CLI is the current agent interface. `observations` returns at most 100 previews per call, with an offset for paging. `span` reads at most 4096 bytes from one observation, using half-open `[start, end)` message-byte offsets and reporting the original PCAP file offset when available. `diff` shows changed contiguous byte ranges at original message offsets. `resume` returns the current investigation summary; `changes` returns up to 100 events after a revision. `verify` replays the log, checks artifact hashes, and compares extracted observations with original capture bytes. Every record carries a stable ID and the event log has monotonically increasing revisions.
@@ -71,7 +75,7 @@ Hex input has one extracted message per line; spaces and colons are allowed. Bla
 
 Classic PCAP and pcapng ingestion currently support Ethernet, unfragmented IPv4, and ICMP messages. The pcapng reader accepts Enhanced Packet Blocks and rejects legacy packet blocks. It does not support VLANs, IPv6, TCP stream reassembly, file-format record boundaries, or managed live capture. The HTML view is read-only. Local event writers use file locks and assign IDs at commit time; the concurrent CLI test covers simultaneous hypotheses and imports. Distributed coordination, idempotent action handles, and interrupted-write recovery remain open work. The fixture tests parsing, exact source offsets, checksums, and the alignment strategy against independent known answers.
 
-The next inference step is to measure cluster stability across new captures, then test candidate lengths, checksums, and request/response relations on held-out examples. See the [workflow](docs/iterative-workflow.md), [interface design](docs/interface-design.md), and [experiment lifecycle](docs/experiment-lifecycle.md) for the fuller direction. GPU acceleration can wait for representative CPU profiles.
+The next inference step is to measure cluster stability across new captures, then test candidate lengths and request/response relations on held-out examples. See the [workflow](docs/iterative-workflow.md), [interface design](docs/interface-design.md), and [experiment lifecycle](docs/experiment-lifecycle.md) for the fuller direction. GPU acceleration can wait for representative CPU profiles.
 
 ## Licensing
 
