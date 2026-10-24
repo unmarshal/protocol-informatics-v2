@@ -208,6 +208,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
     <section class="panel"><h2>Experiments and trials</h2><div id="experiments"></div></section>
     <section class="panel"><h2>Capture command runs</h2><div id="captureRuns"></div></section>
     <section class="panel"><h2>Tagged action windows</h2><div id="tagWindows"></div></section>
+    <section class="panel"><h2>Capture scope tags</h2><div id="captureTags"></div></section>
     <section class="panel"><h2>Candidate format groups</h2><div id="clusters"></div></section>
     <section class="panel"><h2>Held-out grouping</h2><div id="clusterValidation"></div></section>
     <section class="panel"><h2>Candidate fields</h2><div id="fieldCandidates"></div></section>
@@ -363,6 +364,12 @@ for(const window of state.window_tags) {
   byId('tagWindows').append(row);
 }
 if(!state.window_tags.length) byId('tagWindows').append(node('div','No action windows tagged.','small muted'));
+for(const batch of state.capture_tag_batches||[]) {
+  const row=node('div','', 'row');
+  row.append(node('strong',batch.id+' · '+batch.key),node('div',batch.phase+': '+batch.label+' · '+batch.observation_ids.length+' observation(s)','small'),node('div','Action '+batch.action_id+' · capture '+batch.capture_id,'small muted'));
+  byId('captureTags').append(row);
+}
+if(!(state.capture_tag_batches||[]).length) byId('captureTags').append(node('div','No captures tagged to an action.','small muted'));
 if(state.cluster_report) {
   for(const cluster of state.cluster_report.clusters) {
     const row=node('div','', 'row');

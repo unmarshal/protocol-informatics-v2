@@ -17,7 +17,7 @@ use crate::pcap::{
 use crate::reassembly::{SourceSpan, reassemble_tcp_segments};
 use crate::varint::{VarintConfig, probe_varint};
 
-const SCHEMA_VERSION: u32 = 10;
+const SCHEMA_VERSION: u32 = 11;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 const MAX_RECOVERY_TAIL_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -225,6 +225,18 @@ pub struct WindowTag {
     pub observation_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureTagBatch {
+    pub id: String,
+    pub key: String,
+    pub action_id: String,
+    pub capture_id: String,
+    pub phase: String,
+    pub label: String,
+    pub observation_ids: Vec<String>,
+    pub tag_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ValueSet {
@@ -258,6 +270,8 @@ pub struct Action {
     pub detail: String,
     #[serde(default)]
     pub timestamp_ns: Option<u64>,
+    #[serde(default)]
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -344,6 +358,10 @@ pub enum Event {
         window: WindowTag,
         tags: Vec<Tag>,
     },
+    CaptureTagged {
+        batch: CaptureTagBatch,
+        tags: Vec<Tag>,
+    },
     ValueAnnotated {
         known_value: KnownValue,
     },
@@ -413,6 +431,13 @@ impl Event {
                     tag.id = format!("tag-{revision:06}-{index:04}");
                 }
             }
+            Self::CaptureTagged { batch, tags } => {
+                batch.id = format!("capture-tags-{revision:06}");
+                for (index, tag) in tags.iter_mut().enumerate() {
+                    tag.id = format!("tag-{revision:06}-{index:04}");
+                }
+                batch.tag_ids = tags.iter().map(|tag| tag.id.clone()).collect();
+            }
             Self::ValueAnnotated { known_value } => {
                 known_value.id = format!("value-{revision:06}");
             }
@@ -453,6 +478,7 @@ pub struct State {
     pub actions: Vec<Action>,
     pub tags: Vec<Tag>,
     pub window_tags: Vec<WindowTag>,
+    pub capture_tag_batches: Vec<CaptureTagBatch>,
     pub known_values: Vec<KnownValue>,
     pub frame_known_values: Vec<FrameKnownValue>,
     pub analyses: Vec<AnalysisRecord>,
@@ -495,6 +521,7 @@ impl State {
             actions: Vec::new(),
             tags: Vec::new(),
             window_tags: Vec::new(),
+            capture_tag_batches: Vec::new(),
             known_values: Vec::new(),
             frame_known_values: Vec::new(),
             analyses: Vec::new(),
@@ -784,6 +811,16 @@ impl State {
                 if action.kind.trim().is_empty() || self.actions.iter().any(|a| a.id == action.id) {
                     return Err("empty or duplicate action".into());
                 }
+                if let Some(key) = &action.key
+                    && (record.schema_version < 11
+                        || key.is_empty()
+                        || key.len() > 128
+                        || key.chars().any(char::is_control)
+                        || action.timestamp_ns.is_none()
+                        || self.actions.iter().any(|old| old.key.as_ref() == Some(key)))
+                {
+                    return Err("invalid or duplicate keyed action".into());
+                }
                 self.actions.push(action.clone());
             }
             Event::ObservationTagged { tag } => {
@@ -852,6 +889,66 @@ impl State {
                     }
                 }
                 self.window_tags.push(window.clone());
+                self.tags.extend(tags.clone());
+            }
+            Event::CaptureTagged { batch, tags } => {
+                if record.schema_version < 11 {
+                    return Err("capture tags require schema version 11".into());
+                }
+                let action = self
+                    .actions
+                    .iter()
+                    .find(|action| action.id == batch.action_id)
+                    .ok_or_else(|| format!("unknown action {}", batch.action_id))?;
+                let capture = self
+                    .captures
+                    .iter()
+                    .find(|capture| capture.id == batch.capture_id)
+                    .ok_or_else(|| format!("unknown capture {}", batch.capture_id))?;
+                if capture.trial_id != action.trial_id
+                    || batch.id != format!("capture-tags-{:06}", record.revision)
+                    || batch.key.is_empty()
+                    || batch.key.len() > 128
+                    || batch.key.chars().any(char::is_control)
+                    || batch.phase.trim().is_empty()
+                    || batch.label.trim().is_empty()
+                    || self.capture_tag_batches.iter().any(|old| {
+                        old.key == batch.key
+                            || old.id == batch.id
+                            || (old.action_id == batch.action_id
+                                && old.capture_id == batch.capture_id
+                                && old.phase == batch.phase
+                                && old.label == batch.label)
+                    })
+                    || tags.is_empty()
+                    || tags.len() > 1000
+                    || tags.len() != batch.observation_ids.len()
+                    || batch.tag_ids.len() != tags.len()
+                {
+                    return Err("invalid or duplicate capture tag batch".into());
+                }
+                let selected: Vec<_> = self
+                    .observations
+                    .iter()
+                    .filter(|observation| observation.capture_id == batch.capture_id)
+                    .map(|observation| observation.id.clone())
+                    .collect();
+                if selected != batch.observation_ids {
+                    return Err("capture tag selection does not match source observations".into());
+                }
+                for (index, tag) in tags.iter().enumerate() {
+                    if tag.id != format!("tag-{:06}-{index:04}", record.revision)
+                        || tag.observation_id != selected[index]
+                        || batch.tag_ids[index] != tag.id
+                        || tag.phase != batch.phase
+                        || tag.label != batch.label
+                        || tag.action_id.as_deref() != Some(batch.action_id.as_str())
+                        || self.tags.iter().any(|old| old.id == tag.id)
+                    {
+                        return Err("invalid capture tag".into());
+                    }
+                }
+                self.capture_tag_batches.push(batch.clone());
                 self.tags.extend(tags.clone());
             }
             Event::ValueAnnotated { known_value } => {

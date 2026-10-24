@@ -184,7 +184,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     assert_eq!(summary["observation_count"], 48);
     assert_eq!(summary["hypotheses"][0]["score"], 0.9);
     let corpus = cli(&["summary", root_text]);
-    assert_eq!(corpus["schema_version"], 10);
+    assert_eq!(corpus["schema_version"], 11);
     assert_eq!(corpus["revision"], 13);
     assert_eq!(corpus["counts"]["captures"], 2);
     assert_eq!(corpus["counts"]["observations"], 48);
@@ -210,7 +210,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
         serde_json::json!({"trial_id":"trial-000004","direction":direction,"offset":2,"limit":3})
             .to_string();
     let matches = cli(&["search-observations", root_text, &direction_query]);
-    assert_eq!(matches["schema_version"], 10);
+    assert_eq!(matches["schema_version"], 11);
     assert_eq!(matches["total"], 24);
     assert_eq!(matches["observations"].as_array().unwrap().len(), 3);
     assert_eq!(matches["next_offset"], 5);
@@ -2630,7 +2630,7 @@ fn replays_v1_log_and_appends_v9_events() {
         "Old investigation"
     );
     let appended = cli(&["hypothesis", path(&root), "A new claim"]);
-    assert_eq!(appended["schema_version"], 10);
+    assert_eq!(appended["schema_version"], 11);
     assert_eq!(appended["revision"], 2);
     assert_eq!(
         cli(&["changes", path(&root), "0"])
@@ -2996,5 +2996,285 @@ fn recovery_preserves_a_complete_first_event_and_refuses_to_discard_a_partial_on
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("first event is incomplete"));
     assert_eq!(fs::read(&event_path).unwrap(), partial);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn keyed_action_and_capture_tags_link_untimed_agent_capture_without_duplicate_events() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&[
+        "init",
+        root_text,
+        "Which generated messages came from this experiment step?",
+    ]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Vary an input",
+        "-",
+        "Capture scope is traceable",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "discovery",
+        "first input",
+    ]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let source = root.join("messages.hex");
+    fs::write(&source, "aabb01\naabb02\n").unwrap();
+    let marked = cli(&[
+        "mark-keyed",
+        root_text,
+        trial_id,
+        "stimulus",
+        "first input",
+        "step-a",
+        "1000",
+    ]);
+    assert_eq!(marked["replayed"], false);
+    assert_eq!(marked["action"]["timestamp_ns"], 1000);
+    let action_id = marked["action"]["id"].as_str().unwrap();
+    let repeated_mark = cli(&[
+        "mark-keyed",
+        root_text,
+        trial_id,
+        "stimulus",
+        "first input",
+        "step-a",
+    ]);
+    assert_eq!(repeated_mark["replayed"], true);
+    assert_eq!(repeated_mark["action"]["id"], action_id);
+    let conflicting_mark = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "mark-keyed",
+            root_text,
+            trial_id,
+            "stimulus",
+            "different input",
+            "step-a",
+        ])
+        .output()
+        .unwrap();
+    assert!(!conflicting_mark.status.success());
+    let captured = cli(&[
+        "capture-command",
+        root_text,
+        trial_id,
+        "hex",
+        "step-a-capture",
+        "2000",
+        "--",
+        "/bin/cat",
+        path(&source),
+    ]);
+    assert_eq!(captured["status"], "completed");
+    let capture_id = captured["capture"]["id"].as_str().unwrap();
+    assert_eq!(captured["observation_ids"].as_array().unwrap().len(), 2);
+    let revision_before = cli(&["resume", root_text])["revision"].as_u64().unwrap();
+    let tagged = cli(&[
+        "tag-capture",
+        root_text,
+        action_id,
+        capture_id,
+        "capture_scope",
+        "first input",
+        "step-a-tags",
+    ]);
+    assert_eq!(tagged["replayed"], false);
+    assert_eq!(tagged["revision"], revision_before + 1);
+    assert_eq!(
+        tagged["batch"]["observation_ids"],
+        captured["observation_ids"]
+    );
+    assert_eq!(tagged["batch"]["tag_ids"].as_array().unwrap().len(), 2);
+    let repeated_tag = cli(&[
+        "tag-capture",
+        root_text,
+        action_id,
+        capture_id,
+        "capture_scope",
+        "first input",
+        "step-a-tags",
+    ]);
+    assert_eq!(repeated_tag["replayed"], true);
+    assert_eq!(repeated_tag["revision"], tagged["revision"]);
+    assert_eq!(
+        cli(&["capture-tag-status", root_text, "step-a-tags"])["batch"],
+        tagged["batch"]
+    );
+    let corpus = cli(&["summary", root_text]);
+    assert_eq!(corpus["counts"]["capture_tag_batches"], 1);
+    assert_eq!(corpus["counts"]["tagged_observations"], 2);
+    let resumed = cli(&["resume", root_text]);
+    assert_eq!(resumed["capture_tag_batches"][0]["key"], "step-a-tags");
+    let conflict = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "tag-capture",
+            root_text,
+            action_id,
+            capture_id,
+            "capture_scope",
+            "different input",
+            "step-a-tags",
+        ])
+        .output()
+        .unwrap();
+    assert!(!conflict.status.success());
+    let other_trial = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "validation",
+        "other input",
+    ]);
+    let other_trial_id = other_trial["event"]["trial"]["id"].as_str().unwrap();
+    let imported = cli(&["import", root_text, other_trial_id, "hex", path(&source)]);
+    let other_capture_id = imported["event"]["capture"]["id"].as_str().unwrap();
+    let wrong_trial = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "tag-capture",
+            root_text,
+            action_id,
+            other_capture_id,
+            "capture_scope",
+            "first input",
+            "wrong-trial",
+        ])
+        .output()
+        .unwrap();
+    assert!(!wrong_trial.status.success());
+    assert!(String::from_utf8_lossy(&wrong_trial.stderr).contains("same trial"));
+    let report = root.join("capture-tags.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("Capture scope tags"));
+    assert!(html.contains("step-a-tags"));
+    assert_eq!(cli(&["verify", root_text])["observations"], 4);
+    let events_path = root.join(".pi/events.jsonl");
+    let original_events = fs::read_to_string(&events_path).unwrap();
+    let tampered = original_events
+        .lines()
+        .map(|line| {
+            let mut event: Value = serde_json::from_str(line).unwrap();
+            if event["event"]["type"] == "capture_tagged" {
+                event["event"]["batch"]["observation_ids"][0] = serde_json::json!("obs-wrong");
+            }
+            serde_json::to_string(&event).unwrap()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(&events_path, tampered).unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["verify", root_text])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("capture tag selection"));
+    fs::write(&events_path, original_events).unwrap();
+    assert_eq!(cli(&["verify", root_text])["observations"], 4);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn capture_step_retries_after_capture_and_does_not_repeat_completed_work() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&[
+        "init",
+        root_text,
+        "Can an agent repeat one capture step safely?",
+    ]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Change payload",
+        "-",
+        "Capture each variation",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "discovery",
+        "payload one",
+    ]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let source = root.join("step.hex");
+    fs::write(&source, "aabb01\naabb02\n").unwrap();
+    cli(&[
+        "mark-keyed",
+        root_text,
+        trial_id,
+        "stimulus",
+        "payload one",
+        "sweep-1:action",
+    ]);
+    cli(&[
+        "capture-command",
+        root_text,
+        trial_id,
+        "hex",
+        "sweep-1:capture",
+        "2000",
+        "--",
+        "/bin/cat",
+        path(&source),
+    ]);
+    let arguments = [
+        "capture-step",
+        root_text,
+        trial_id,
+        "stimulus",
+        "payload one",
+        "capture_scope",
+        "payload one",
+        "sweep-1",
+        "hex",
+        "2000",
+        "--",
+        "/bin/cat",
+        path(&source),
+    ];
+    let completed = cli(&arguments);
+    assert_eq!(completed["status"], "completed");
+    assert_eq!(completed["replayed"], false);
+    assert_eq!(completed["observation_ids"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        completed["tag_batch"]["observation_ids"],
+        completed["observation_ids"]
+    );
+    let revision = completed["revision"].as_u64().unwrap();
+    let repeated = cli(&arguments);
+    assert_eq!(repeated["replayed"], true);
+    assert_eq!(repeated["revision"], revision);
+    assert_eq!(repeated["capture"]["id"], completed["capture"]["id"]);
+    let direct = cli(&[
+        "capture-step",
+        root_text,
+        trial_id,
+        "stimulus",
+        "payload two",
+        "capture_scope",
+        "payload two",
+        "sweep-2",
+        "hex",
+        "2000",
+        "--",
+        "/bin/cat",
+        path(&source),
+    ]);
+    assert_eq!(direct["status"], "completed");
+    assert_eq!(direct["replayed"], false);
+    let corpus = cli(&["summary", root_text]);
+    assert_eq!(corpus["counts"]["captures"], 2);
+    assert_eq!(corpus["counts"]["actions"], 2);
+    assert_eq!(corpus["counts"]["capture_tag_batches"], 2);
+    assert_eq!(cli(&["verify", root_text])["observations"], 4);
     fs::remove_dir_all(root).unwrap();
 }

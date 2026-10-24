@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 use std::os::unix::process::CommandExt;
 
 use protocol_informatics_v2::workflow::{
-    self, Action, AnalysisRecord, AnalysisScope, CaptureRun, CaptureRunStatus, Decision, Event,
-    Experiment, FrameKnownValue, Hypothesis, KnownValue, Observation, Tag, Trial, ValueSet,
-    WindowTag,
+    self, Action, AnalysisRecord, AnalysisScope, CaptureRun, CaptureRunStatus, CaptureTagBatch,
+    Decision, Event, Experiment, FrameKnownValue, Hypothesis, KnownValue, Observation, Tag, Trial,
+    ValueSet, WindowTag,
 };
 use protocol_informatics_v2::{CpuAligner, analyze_best, parse_hex_samples};
 use serde::Serialize;
@@ -53,13 +53,19 @@ fn print_help() {
     println!(
         "  capture-command <dir> <trial-id> <format> <key> <timeout-ms> -- <program> [args...]"
     );
+    println!(
+        "  capture-step <dir> <trial-id> <kind> <detail> <phase> <label> <step-key> <format> <timeout-ms> -- <program> [args...]"
+    );
     println!("  capture-start <dir> <trial-id> <format> <key> <timeout-ms> -- <program> [args...]");
     println!("  capture-stop <dir> <key>             request a running capture to stop");
     println!("  capture-status <dir> <key>           inspect a reserved capture command");
     println!("  mark <dir> <trial-id> <kind> <detail>");
+    println!("  mark-keyed <dir> <trial-id> <kind> <detail> <key> [timestamp-ns]");
     println!("  mark-at <dir> <trial-id> <timestamp-ns> <kind> <detail>");
     println!("  tag <dir> <obs-id> <phase> <label>");
     println!("  tag-window <dir> <action-id> <end-ns> <phase> <label> <key>");
+    println!("  tag-capture <dir> <action-id> <capture-id> <phase> <label> <key>");
+    println!("  capture-tag-status <dir> <key>    inspect a completed capture tag batch");
     println!("  window-status <dir> <key>             inspect a completed tag window");
     println!("  value <dir> <obs-id> <variable> <unsigned> <discovery|validation>");
     println!("  infer-value <dir> <variable>         find exact unsigned field candidates");
@@ -413,6 +419,102 @@ fn capture_command(root: &Path, args: &[String]) -> Result<(), String> {
     print_json(&capture_run_view(&updated, run, None))
 }
 
+fn invoke_local_json(args: &[String]) -> Result<serde_json::Value, String> {
+    let output = Command::new(env::current_exe().map_err(|error| error.to_string())?)
+        .args(args)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "{} failed: {}",
+            args[0],
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("{} returned invalid JSON: {error}", args[0]))
+}
+
+fn capture_step(root: &Path, args: &[String]) -> Result<(), String> {
+    if args.len() < 12 || args[10] != "--" {
+        return Err("expected trial, action kind/detail, phase/label, step key, format, timeout, --, and a program".into());
+    }
+    let step_key = &args[7];
+    if step_key.is_empty() || step_key.len() > 120 || step_key.chars().any(char::is_control) {
+        return Err(
+            "step key must be nonempty, at most 120 bytes, and contain no control characters"
+                .into(),
+        );
+    }
+    if !workflow::valid_capture_format(&args[8]) {
+        return Err("unknown capture format".into());
+    }
+    let timeout_ms: u64 = args[9]
+        .parse()
+        .map_err(|_| "timeout must be an unsigned number of milliseconds".to_string())?;
+    if timeout_ms == 0 || timeout_ms > protocol_informatics_v2::capture::MAX_TIMEOUT_MS {
+        return Err("timeout must be between 1 and 600000 ms".into());
+    }
+    if args[3].trim().is_empty()
+        || args[4].trim().is_empty()
+        || args[5].trim().is_empty()
+        || args[6].trim().is_empty()
+    {
+        return Err("action kind/detail and tag phase/label must be nonempty".into());
+    }
+    let directory = args[1].clone();
+    let trial_id = args[2].clone();
+    let action_args = vec![
+        "mark-keyed".into(),
+        directory.clone(),
+        trial_id.clone(),
+        args[3].clone(),
+        args[4].clone(),
+        format!("{step_key}:action"),
+    ];
+    let marked = invoke_local_json(&action_args)?;
+    let action_id = marked["action"]["id"]
+        .as_str()
+        .ok_or("mark-keyed returned no action ID")?;
+    let mut capture_args = vec![
+        "capture-command".into(),
+        directory.clone(),
+        trial_id,
+        args[8].clone(),
+        format!("{step_key}:capture"),
+        args[9].clone(),
+        "--".into(),
+    ];
+    capture_args.extend_from_slice(&args[11..]);
+    let captured = invoke_local_json(&capture_args)?;
+    if captured["status"] != "completed" {
+        return print_json(&json!({
+            "revision": workflow::load(root)?.revision, "step_key": step_key,
+            "status": captured["status"], "action": marked["action"],
+            "capture_run": captured,
+        }));
+    }
+    let capture_id = captured["capture"]["id"]
+        .as_str()
+        .ok_or("capture-command returned no capture ID")?;
+    let tag_args = vec![
+        "tag-capture".into(),
+        directory,
+        action_id.into(),
+        capture_id.into(),
+        args[5].clone(),
+        args[6].clone(),
+        format!("{step_key}:tags"),
+    ];
+    let tagged = invoke_local_json(&tag_args)?;
+    print_json(&json!({
+        "revision": tagged["revision"], "step_key": step_key, "status": "completed",
+        "action": marked["action"], "capture": captured["capture"],
+        "observation_ids": captured["observation_ids"], "tag_batch": tagged["batch"],
+        "replayed": tagged["replayed"],
+    }))
+}
+
 fn capture_start(root: &Path, args: &[String]) -> Result<(), String> {
     if args.len() < 8 || args[6] != "--" {
         return Err(
@@ -599,6 +701,176 @@ fn tag_window(root: &Path, args: &[String]) -> Result<(), String> {
     Err(appended
         .err()
         .unwrap_or_else(|| "window event was not recorded".into()))
+}
+
+fn mark_keyed(root: &Path, args: &[String]) -> Result<(), String> {
+    if args.len() < 6 || args.len() > 7 {
+        return Err("expected trial, kind, detail, key, and optional UTC nanoseconds".into());
+    }
+    let key = &args[5];
+    if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
+        return Err(
+            "action key must be nonempty, at most 128 bytes, and contain no control characters"
+                .into(),
+        );
+    }
+    let supplied_timestamp = args
+        .get(6)
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| "timestamp must be UTC nanoseconds as an unsigned integer".to_string())
+        })
+        .transpose()?;
+    let matches_request = |action: &Action| {
+        action.trial_id == args[2]
+            && action.kind == args[3]
+            && action.detail == args[4]
+            && supplied_timestamp.is_none_or(|timestamp| action.timestamp_ns == Some(timestamp))
+    };
+    let state = workflow::load(root)?;
+    if let Some(action) = state
+        .actions
+        .iter()
+        .find(|action| action.key.as_ref() == Some(key))
+    {
+        return if matches_request(action) {
+            print_json(&json!({"revision": state.revision, "action": action, "replayed": true}))
+        } else {
+            Err(format!(
+                "action key {key} was used with different arguments"
+            ))
+        };
+    }
+    let action = Action {
+        id: String::new(),
+        trial_id: args[2].clone(),
+        kind: args[3].clone(),
+        detail: args[4].clone(),
+        timestamp_ns: Some(supplied_timestamp.unwrap_or(workflow::now_ns()?)),
+        key: Some(key.clone()),
+    };
+    let appended = workflow::append(root, Event::ActionMarked { action });
+    let updated = workflow::load(root)?;
+    if let Some(action) = updated
+        .actions
+        .iter()
+        .find(|action| action.key.as_ref() == Some(key))
+    {
+        return if matches_request(action) {
+            print_json(
+                &json!({"revision": updated.revision, "action": action, "replayed": appended.is_err()}),
+            )
+        } else {
+            Err(format!(
+                "action key {key} was used with different arguments"
+            ))
+        };
+    }
+    Err(appended
+        .err()
+        .unwrap_or_else(|| "keyed action was not recorded".into()))
+}
+
+fn tag_capture(root: &Path, args: &[String]) -> Result<(), String> {
+    require_len(args, 7)?;
+    let action_id = &args[2];
+    let capture_id = &args[3];
+    let phase = &args[4];
+    let label = &args[5];
+    let key = &args[6];
+    if key.is_empty()
+        || key.len() > 128
+        || key.chars().any(char::is_control)
+        || phase.trim().is_empty()
+        || label.trim().is_empty()
+    {
+        return Err(
+            "capture tag key, phase, and label must be nonempty; key has a 128-byte limit".into(),
+        );
+    }
+    let matches_request = |batch: &CaptureTagBatch| {
+        &batch.action_id == action_id
+            && &batch.capture_id == capture_id
+            && &batch.phase == phase
+            && &batch.label == label
+    };
+    let state = workflow::load(root)?;
+    if let Some(batch) = state
+        .capture_tag_batches
+        .iter()
+        .find(|batch| &batch.key == key)
+    {
+        return if matches_request(batch) {
+            print_json(&json!({"revision": state.revision, "batch": batch, "replayed": true}))
+        } else {
+            Err(format!(
+                "capture tag key {key} was used with different arguments"
+            ))
+        };
+    }
+    let action = state
+        .actions
+        .iter()
+        .find(|action| &action.id == action_id)
+        .ok_or_else(|| format!("unknown action {action_id}"))?;
+    let capture = state
+        .captures
+        .iter()
+        .find(|capture| &capture.id == capture_id)
+        .ok_or_else(|| format!("unknown capture {capture_id}"))?;
+    if action.trial_id != capture.trial_id {
+        return Err("action and capture must belong to the same trial".into());
+    }
+    let observation_ids: Vec<_> = state
+        .observations
+        .iter()
+        .filter(|observation| &observation.capture_id == capture_id)
+        .map(|observation| observation.id.clone())
+        .collect();
+    if observation_ids.is_empty() || observation_ids.len() > 1000 {
+        return Err("capture tag batch needs 1 to 1000 observations".into());
+    }
+    let tags = observation_ids
+        .iter()
+        .map(|observation_id| Tag {
+            id: String::new(),
+            observation_id: observation_id.clone(),
+            phase: phase.clone(),
+            label: label.clone(),
+            action_id: Some(action_id.clone()),
+        })
+        .collect();
+    let batch = CaptureTagBatch {
+        id: String::new(),
+        key: key.clone(),
+        action_id: action_id.clone(),
+        capture_id: capture_id.clone(),
+        phase: phase.clone(),
+        label: label.clone(),
+        observation_ids,
+        tag_ids: Vec::new(),
+    };
+    let appended = workflow::append(root, Event::CaptureTagged { batch, tags });
+    let updated = workflow::load(root)?;
+    if let Some(batch) = updated
+        .capture_tag_batches
+        .iter()
+        .find(|batch| &batch.key == key)
+    {
+        return if matches_request(batch) {
+            print_json(
+                &json!({"revision": updated.revision, "batch": batch, "replayed": appended.is_err()}),
+            )
+        } else {
+            Err(format!(
+                "capture tag key {key} was used with different arguments"
+            ))
+        };
+    }
+    Err(appended
+        .err()
+        .unwrap_or_else(|| "capture tag batch was not recorded".into()))
 }
 
 fn parse_framing_config(
@@ -813,6 +1085,7 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             )?)
         }
         "capture-command" => capture_command(root, args),
+        "capture-step" => capture_step(root, args),
         "capture-start" => capture_start(root, args),
         "capture-stop" => {
             require_len(args, 3)?;
@@ -837,9 +1110,11 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 kind: args[3].clone(),
                 detail: args[4].clone(),
                 timestamp_ns: Some(workflow::now_ns()?),
+                key: None,
             };
             print_json(&workflow::append(root, Event::ActionMarked { action })?)
         }
+        "mark-keyed" => mark_keyed(root, args),
         "mark-at" => {
             require_len(args, 6)?;
             let timestamp_ns = args[3].parse().map_err(|_| {
@@ -851,6 +1126,7 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 kind: args[4].clone(),
                 detail: args[5].clone(),
                 timestamp_ns: Some(timestamp_ns),
+                key: None,
             };
             print_json(&workflow::append(root, Event::ActionMarked { action })?)
         }
@@ -866,6 +1142,17 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             print_json(&workflow::append(root, Event::ObservationTagged { tag })?)
         }
         "tag-window" => tag_window(root, args),
+        "tag-capture" => tag_capture(root, args),
+        "capture-tag-status" => {
+            require_len(args, 3)?;
+            let state = workflow::load(root)?;
+            let batch = state
+                .capture_tag_batches
+                .iter()
+                .find(|batch| batch.key == args[2])
+                .ok_or_else(|| format!("unknown capture tag key {}", args[2]))?;
+            print_json(&json!({"revision": state.revision, "batch": batch}))
+        }
         "window-status" => {
             require_len(args, 3)?;
             let state = workflow::load(root)?;
@@ -1206,6 +1493,7 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 "framing_runs": state.framing_runs,
                 "varint_runs": state.varint_runs,
                 "actions": state.actions, "window_tags": state.window_tags,
+                "capture_tag_batches": state.capture_tag_batches,
                 "observation_count": state.observations.len(), "tag_count": state.tags.len(),
                 "known_value_count": state.known_values.len(),
                 "frame_known_value_count": state.frame_known_values.len(),
