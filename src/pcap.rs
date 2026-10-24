@@ -26,11 +26,27 @@ enum Endian {
 }
 
 impl Endian {
+    fn u16(self, input: &[u8]) -> u16 {
+        let bytes: [u8; 2] = input.try_into().expect("validated two-byte field");
+        match self {
+            Self::Little => u16::from_le_bytes(bytes),
+            Self::Big => u16::from_be_bytes(bytes),
+        }
+    }
+
     fn u32(self, input: &[u8]) -> u32 {
         let bytes: [u8; 4] = input.try_into().expect("validated four-byte field");
         match self {
             Self::Little => u32::from_le_bytes(bytes),
             Self::Big => u32::from_be_bytes(bytes),
+        }
+    }
+
+    fn i64(self, input: &[u8]) -> i64 {
+        let bytes: [u8; 8] = input.try_into().expect("validated eight-byte field");
+        match self {
+            Self::Little => i64::from_le_bytes(bytes),
+            Self::Big => i64::from_be_bytes(bytes),
         }
     }
 }
@@ -82,20 +98,207 @@ pub fn extract_icmp_messages(data: &[u8]) -> Result<Vec<IcmpMessage>, String> {
             .checked_mul(1_000_000_000)
             .and_then(|seconds| seconds.checked_add(fraction_ns))
             .ok_or("packet timestamp overflow")?;
-        if let Some(icmp) = extract_ethernet_icmp(frame)? {
-            messages.push(IcmpMessage {
-                packet_index,
-                timestamp_ns,
-                source_offset: frame_start + icmp.offset,
-                source_ipv4: icmp.source_ipv4,
-                destination_ipv4: icmp.destination_ipv4,
-                bytes: icmp.bytes.to_vec(),
-            });
-        }
+        push_ethernet_icmp(
+            &mut messages,
+            frame,
+            frame_start,
+            packet_index,
+            timestamp_ns,
+        )?;
         offset = frame_end;
         packet_index += 1;
     }
     Ok(messages)
+}
+
+#[derive(Clone, Copy)]
+struct PcapngInterface {
+    linktype: u16,
+    timestamp_units_per_second: u128,
+    timestamp_offset_seconds: i64,
+}
+
+/// Extract Ethernet/IPv4/ICMP messages from pcapng Enhanced Packet Blocks.
+/// Section headers and interface timestamp resolutions are honored; other
+/// block types are skipped only when they cannot contain packet bytes.
+pub fn extract_pcapng_icmp_messages(data: &[u8]) -> Result<Vec<IcmpMessage>, String> {
+    let mut offset = 0_usize;
+    let mut section_endian = None;
+    let mut interfaces = Vec::<PcapngInterface>::new();
+    let mut messages = Vec::new();
+    let mut packet_index = 0;
+    while offset < data.len() {
+        if data.len() - offset < 12 {
+            return Err(format!("truncated pcapng block at byte {offset}"));
+        }
+        let is_section_header = data[offset..offset + 4] == [0x0a, 0x0d, 0x0d, 0x0a];
+        let endian = if is_section_header {
+            if data.len() - offset < 28 {
+                return Err("truncated pcapng section header".into());
+            }
+            match &data[offset + 8..offset + 12] {
+                [0x4d, 0x3c, 0x2b, 0x1a] => Endian::Little,
+                [0x1a, 0x2b, 0x3c, 0x4d] => Endian::Big,
+                _ => return Err("invalid pcapng byte-order magic".into()),
+            }
+        } else {
+            section_endian.ok_or("pcapng must start with a section header")?
+        };
+        let block_length = endian.u32(&data[offset + 4..offset + 8]) as usize;
+        if block_length < 12 || !block_length.is_multiple_of(4) {
+            return Err(format!("invalid pcapng block length at byte {offset}"));
+        }
+        let end = offset
+            .checked_add(block_length)
+            .ok_or("pcapng block length overflow")?;
+        if end > data.len() {
+            return Err(format!("truncated pcapng block at byte {offset}"));
+        }
+        if endian.u32(&data[end - 4..end]) as usize != block_length {
+            return Err(format!(
+                "pcapng block length trailer mismatch at byte {offset}"
+            ));
+        }
+        let block_type = endian.u32(&data[offset..offset + 4]);
+        let body = &data[offset + 8..end - 4];
+        match block_type {
+            0x0a0d0d0a => {
+                if body.len() < 16 || endian.u16(&body[4..6]) != 1 {
+                    return Err("unsupported pcapng section header".into());
+                }
+                section_endian = Some(endian);
+                interfaces.clear();
+            }
+            1 => {
+                if body.len() < 8 {
+                    return Err("truncated pcapng interface description".into());
+                }
+                let (timestamp_units_per_second, timestamp_offset_seconds) =
+                    timestamp_options(&body[8..], endian)?;
+                interfaces.push(PcapngInterface {
+                    linktype: endian.u16(&body[..2]),
+                    timestamp_units_per_second,
+                    timestamp_offset_seconds,
+                });
+            }
+            6 => {
+                if body.len() < 20 {
+                    return Err("truncated pcapng enhanced packet".into());
+                }
+                let interface_id = endian.u32(&body[..4]) as usize;
+                let interface = interfaces
+                    .get(interface_id)
+                    .ok_or_else(|| format!("unknown pcapng interface {interface_id}"))?;
+                if interface.linktype != 1 {
+                    return Err(format!(
+                        "unsupported pcapng link type {} on interface {interface_id}",
+                        interface.linktype
+                    ));
+                }
+                let captured_length = endian.u32(&body[12..16]) as usize;
+                let original_length = endian.u32(&body[16..20]) as usize;
+                if original_length < captured_length || captured_length > body.len() - 20 {
+                    return Err("invalid pcapng captured packet length".into());
+                }
+                let ticks =
+                    ((endian.u32(&body[4..8]) as u64) << 32) | endian.u32(&body[8..12]) as u64;
+                let ticks_ns =
+                    (u128::from(ticks) * 1_000_000_000) / interface.timestamp_units_per_second;
+                let timestamp_ns = i128::try_from(ticks_ns)
+                    .map_err(|_| "pcapng timestamp overflow")?
+                    + i128::from(interface.timestamp_offset_seconds) * 1_000_000_000;
+                let timestamp_ns =
+                    u64::try_from(timestamp_ns).map_err(|_| "pcapng timestamp out of range")?;
+                let frame_start = offset + 28;
+                push_ethernet_icmp(
+                    &mut messages,
+                    &body[20..20 + captured_length],
+                    frame_start,
+                    packet_index,
+                    timestamp_ns,
+                )?;
+                packet_index += 1;
+            }
+            2 | 3 => return Err("pcapng legacy packet blocks are not supported".into()),
+            _ => {}
+        }
+        offset = end;
+    }
+    if section_endian.is_none() {
+        return Err("pcapng has no section header".into());
+    }
+    Ok(messages)
+}
+
+fn timestamp_options(options: &[u8], endian: Endian) -> Result<(u128, i64), String> {
+    let mut position = 0;
+    let mut units = 1_000_000_u128;
+    let mut offset_seconds = 0_i64;
+    while position < options.len() {
+        if options.len() - position < 4 {
+            return Err("truncated pcapng interface option".into());
+        }
+        let code = endian.u16(&options[position..position + 2]);
+        let length = endian.u16(&options[position + 2..position + 4]) as usize;
+        let data_start = position + 4;
+        let data_end = data_start
+            .checked_add(length)
+            .ok_or("pcapng option length overflow")?;
+        if data_end > options.len() {
+            return Err("truncated pcapng interface option".into());
+        }
+        if code == 0 {
+            if length != 0 {
+                return Err("invalid pcapng end-of-options".into());
+            }
+            break;
+        }
+        if code == 9 {
+            if length != 1 {
+                return Err("invalid pcapng timestamp resolution".into());
+            }
+            let value = options[data_start];
+            units = if value & 0x80 == 0 {
+                10_u128
+                    .checked_pow(u32::from(value))
+                    .ok_or("pcapng timestamp resolution overflow")?
+            } else {
+                2_u128
+                    .checked_pow(u32::from(value & 0x7f))
+                    .ok_or("pcapng timestamp resolution overflow")?
+            };
+        } else if code == 14 {
+            if length != 8 {
+                return Err("invalid pcapng timestamp offset".into());
+            }
+            offset_seconds = endian.i64(&options[data_start..data_end]);
+        }
+        position = (data_end + 3) & !3;
+        if position > options.len() {
+            return Err("truncated pcapng option padding".into());
+        }
+    }
+    Ok((units, offset_seconds))
+}
+
+fn push_ethernet_icmp(
+    messages: &mut Vec<IcmpMessage>,
+    frame: &[u8],
+    frame_start: usize,
+    packet_index: usize,
+    timestamp_ns: u64,
+) -> Result<(), String> {
+    if let Some(icmp) = extract_ethernet_icmp(frame)? {
+        messages.push(IcmpMessage {
+            packet_index,
+            timestamp_ns,
+            source_offset: frame_start + icmp.offset,
+            source_ipv4: icmp.source_ipv4,
+            destination_ipv4: icmp.destination_ipv4,
+            bytes: icmp.bytes.to_vec(),
+        });
+    }
+    Ok(())
 }
 
 fn extract_ethernet_icmp(frame: &[u8]) -> Result<Option<IcmpSlice<'_>>, String> {
@@ -188,5 +391,121 @@ mod tests {
     fn rejects_truncated_packet_without_returning_partial_evidence() {
         let data = include_bytes!("../examples/icmp_echo.pcap");
         assert!(extract_icmp_messages(&data[..data.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn pcapng_matches_classic_capture_and_preserves_source_spans() {
+        let classic = extract_icmp_messages(include_bytes!("../examples/icmp_echo.pcap")).unwrap();
+        let raw = include_bytes!("../examples/icmp_echo.pcapng");
+        let enhanced = extract_pcapng_icmp_messages(raw).unwrap();
+        assert_eq!(enhanced.len(), 24);
+        for (left, right) in classic.iter().zip(&enhanced) {
+            assert_eq!(left.packet_index, right.packet_index);
+            assert_eq!(left.timestamp_ns, right.timestamp_ns);
+            assert_eq!(left.source_ipv4, right.source_ipv4);
+            assert_eq!(left.destination_ipv4, right.destination_ipv4);
+            assert_eq!(left.bytes, right.bytes);
+            assert_eq!(
+                &raw[right.source_offset..right.source_offset + right.bytes.len()],
+                right.bytes
+            );
+        }
+        assert!(extract_pcapng_icmp_messages(&raw[..raw.len() - 1]).is_err());
+    }
+
+    fn block_le(block_type: u32, body: &[u8]) -> Vec<u8> {
+        let mut padded = body.to_vec();
+        padded.resize(padded.len().div_ceil(4) * 4, 0);
+        let length = (12 + padded.len()) as u32;
+        let mut block = Vec::new();
+        block.extend(block_type.to_le_bytes());
+        block.extend(length.to_le_bytes());
+        block.extend(padded);
+        block.extend(length.to_le_bytes());
+        block
+    }
+
+    fn block_be(block_type: u32, body: &[u8]) -> Vec<u8> {
+        let mut padded = body.to_vec();
+        padded.resize(padded.len().div_ceil(4) * 4, 0);
+        let length = (12 + padded.len()) as u32;
+        let mut block = Vec::new();
+        block.extend(block_type.to_be_bytes());
+        block.extend(length.to_be_bytes());
+        block.extend(padded);
+        block.extend(length.to_be_bytes());
+        block
+    }
+
+    #[test]
+    fn pcapng_honors_nanosecond_resolution_and_interface_offset() {
+        let classic = include_bytes!("../examples/icmp_echo.pcap");
+        let frame_length = u32::from_le_bytes(classic[32..36].try_into().unwrap()) as usize;
+        let frame = &classic[40..40 + frame_length];
+        let mut section = Vec::new();
+        section.extend(0x1a2b3c4d_u32.to_le_bytes());
+        section.extend(1_u16.to_le_bytes());
+        section.extend(0_u16.to_le_bytes());
+        section.extend((-1_i64).to_le_bytes());
+        let mut idb = Vec::new();
+        idb.extend(1_u16.to_le_bytes());
+        idb.extend(0_u16.to_le_bytes());
+        idb.extend(65535_u32.to_le_bytes());
+        idb.extend(9_u16.to_le_bytes());
+        idb.extend(1_u16.to_le_bytes());
+        idb.extend([9, 0, 0, 0]);
+        idb.extend(14_u16.to_le_bytes());
+        idb.extend(8_u16.to_le_bytes());
+        idb.extend(1_i64.to_le_bytes());
+        let ticks = 1_700_000_000_000_000_123_u64;
+        let mut epb = Vec::new();
+        epb.extend(0_u32.to_le_bytes());
+        epb.extend(((ticks >> 32) as u32).to_le_bytes());
+        epb.extend((ticks as u32).to_le_bytes());
+        epb.extend((frame_length as u32).to_le_bytes());
+        epb.extend((frame_length as u32).to_le_bytes());
+        epb.extend(frame);
+        let raw = [
+            block_le(0x0a0d0d0a, &section),
+            block_le(1, &idb),
+            block_le(6, &epb),
+        ]
+        .concat();
+        let messages = extract_pcapng_icmp_messages(&raw).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].timestamp_ns, ticks + 1_000_000_000);
+        assert_eq!(messages[0].bytes[0], 8);
+    }
+
+    #[test]
+    fn pcapng_resets_interfaces_across_big_endian_section() {
+        let classic = include_bytes!("../examples/icmp_echo.pcap");
+        let frame_length = u32::from_le_bytes(classic[32..36].try_into().unwrap()) as usize;
+        let frame = &classic[40..40 + frame_length];
+        let mut section = Vec::new();
+        section.extend(0x1a2b3c4d_u32.to_be_bytes());
+        section.extend(1_u16.to_be_bytes());
+        section.extend(0_u16.to_be_bytes());
+        section.extend((-1_i64).to_be_bytes());
+        let mut idb = Vec::new();
+        idb.extend(1_u16.to_be_bytes());
+        idb.extend(0_u16.to_be_bytes());
+        idb.extend(65535_u32.to_be_bytes());
+        let mut epb = Vec::new();
+        epb.extend(0_u32.to_be_bytes());
+        epb.extend(0_u32.to_be_bytes());
+        epb.extend(2_000_000_u32.to_be_bytes());
+        epb.extend((frame_length as u32).to_be_bytes());
+        epb.extend((frame_length as u32).to_be_bytes());
+        epb.extend(frame);
+        let mut raw = include_bytes!("../examples/icmp_echo.pcapng").to_vec();
+        raw.extend(block_be(0x0a0d0d0a, &section));
+        raw.extend(block_be(1, &idb));
+        raw.extend(block_be(6, &epb));
+        let messages = extract_pcapng_icmp_messages(&raw).unwrap();
+        assert_eq!(messages.len(), 25);
+        assert_eq!(messages[24].packet_index, 24);
+        assert_eq!(messages[24].timestamp_ns, 2_000_000_000);
+        assert_eq!(messages[24].bytes[0], 8);
     }
 }

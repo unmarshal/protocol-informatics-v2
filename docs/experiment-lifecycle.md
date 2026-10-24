@@ -53,4 +53,4 @@ Show the experiment as a timeline: capture intervals, marked actions, message bu
 
 ## First implementation slice
 
-Experiment, trial, capture, action, and tag records are implemented for hex lines and classic Ethernet/IPv4/ICMP PCAP. `capture-command` is a bounded synchronous acquisition hook. Next add pcapng and TCP extraction, then a managed `dumpcap` adapter with explicit start, status, and stop operations. Capture metadata such as loss, filter, and interface still needs to be recorded.
+Experiment, trial, capture, action, and tag records are implemented for hex lines and Ethernet/IPv4/ICMP messages in classic PCAP or pcapng. `capture-command` is an output-limited synchronous acquisition hook. Next add TCP extraction, then a managed `dumpcap` adapter with explicit start, status, and stop operations. Capture metadata such as loss, filter, and interface still needs to be recorded.

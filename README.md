@@ -6,6 +6,8 @@ A new Rust implementation inspired by [Marshall Beddoe's Protocol Informatics](h
 
 The repository includes a deterministic, 24-packet Ethernet/IPv4/ICMP echo capture. `examples/generate_icmp_fixture.py` regenerates the PCAP and a separate known-answer manifest. The sequence numbers cross the `255 → 256` boundary, which makes byte order and field width visible.
 
+The same packets are available in `examples/icmp_echo.pcapng`; replace `pcap-icmp examples/icmp_echo.pcap` with `pcapng-icmp examples/icmp_echo.pcapng` in the commands below to exercise that reader. The pcapng reader handles Section Header, Interface Description, and Enhanced Packet Blocks, including interface timestamp resolution and offset. Its field interpretation follows the [IETF pcapng draft](https://www.ietf.org/ietf-ftp/internet-drafts/draft-ietf-opsawg-pcapng-06.html).
+
 ```sh
 cargo test --offline
 cargo run -- init /tmp/pi-icmp 'Where is the ICMP sequence number?'
@@ -54,7 +56,7 @@ Hex input has one extracted message per line; spaces and colons are allowed. Bla
 
 ## Current scope and next work
 
-Classic PCAP ingestion currently supports Ethernet, unfragmented IPv4, and ICMP messages. It does not support pcapng, VLANs, IPv6, TCP stream reassembly, file-format record boundaries, or managed live capture. The HTML view is read-only. The event log is intended for one writer; parallel agents need a transactional writer and stable action handles. The fixture tests parsing, exact source offsets, checksums, and the alignment strategy against independent known answers.
+Classic PCAP and pcapng ingestion currently support Ethernet, unfragmented IPv4, and ICMP messages. The pcapng reader accepts Enhanced Packet Blocks and rejects legacy packet blocks. It does not support VLANs, IPv6, TCP stream reassembly, file-format record boundaries, or managed live capture. The HTML view is read-only. Local event writers use file locks and assign IDs at commit time; the concurrent CLI test covers simultaneous hypotheses and imports. Distributed coordination, idempotent action handles, and interrupted-write recovery remain open work. The fixture tests parsing, exact source offsets, checksums, and the alignment strategy against independent known answers.
 
 The next inference step is to compare controlled baseline and variant trials, cluster message roles before alignment, then test candidate lengths, counters, checksums, and request/response relations on held-out examples. See the [workflow](docs/iterative-workflow.md), [interface design](docs/interface-design.md), and [experiment lifecycle](docs/experiment-lifecycle.md) for the fuller direction. GPU acceleration can wait for representative CPU profiles.
 

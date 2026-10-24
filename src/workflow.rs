@@ -7,7 +7,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::pcap::extract_icmp_messages;
+use crate::pcap::{extract_icmp_messages, extract_pcapng_icmp_messages};
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -126,6 +126,47 @@ pub enum Event {
     DecisionRecorded {
         decision: Decision,
     },
+}
+
+impl Event {
+    /// IDs are assigned at commit time so concurrent writers cannot reuse a
+    /// revision they observed before acquiring the event-file lock.
+    fn assign_ids(&mut self, revision: u64) {
+        match self {
+            Self::Created { .. } | Self::HypothesisEvaluated { .. } => {}
+            Self::HypothesisAdded { hypothesis } => {
+                hypothesis.id = format!("hyp-{revision:06}");
+            }
+            Self::ExperimentCreated { experiment } => {
+                experiment.id = format!("exp-{revision:06}");
+            }
+            Self::TrialCreated { trial } => {
+                trial.id = format!("trial-{revision:06}");
+            }
+            Self::CaptureImported {
+                capture,
+                observations,
+            } => {
+                capture.id = format!("cap-{revision:06}");
+                for (index, observation) in observations.iter_mut().enumerate() {
+                    observation.id = format!("obs-{revision:06}-{index:04}");
+                    observation.capture_id = capture.id.clone();
+                }
+            }
+            Self::ActionMarked { action } => {
+                action.id = format!("action-{revision:06}");
+            }
+            Self::ObservationTagged { tag } => {
+                tag.id = format!("tag-{revision:06}");
+            }
+            Self::AnalysisRecorded { analysis } => {
+                analysis.id = format!("analysis-{revision:06}");
+            }
+            Self::DecisionRecorded { decision } => {
+                decision.id = format!("decision-{revision:06}");
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -358,14 +399,20 @@ pub fn create(root: &Path, question: &str) -> Result<EventRecord, String> {
         .create_new(true)
         .open(path)
         .map_err(|error| error.to_string())?;
+    file.lock().map_err(|error| error.to_string())?;
     write_record(&mut file, &record)?;
     Ok(record)
 }
 
 pub fn load(root: &Path) -> Result<State, String> {
     let path = event_path(root);
-    let file =
+    let mut file =
         fs::File::open(path).map_err(|error| format!("cannot open investigation: {error}"))?;
+    file.lock_shared().map_err(|error| error.to_string())?;
+    load_from_file(&mut file)
+}
+
+fn load_from_file(file: &mut fs::File) -> Result<State, String> {
     let mut state = State::empty();
     for (index, line) in BufReader::new(file).lines().enumerate() {
         let line = line.map_err(|error| error.to_string())?;
@@ -380,24 +427,34 @@ pub fn load(root: &Path) -> Result<State, String> {
 }
 
 pub fn changes_since(root: &Path, revision: u64, limit: usize) -> Result<Vec<EventRecord>, String> {
-    let current = load(root)?.revision;
-    if revision > current {
+    let file = fs::File::open(event_path(root)).map_err(|error| error.to_string())?;
+    file.lock_shared().map_err(|error| error.to_string())?;
+    let mut state = State::empty();
+    let mut changes = Vec::new();
+    for (index, line) in BufReader::new(&file).lines().enumerate() {
+        let line = line.map_err(|error| error.to_string())?;
+        let record: EventRecord = serde_json::from_str(&line)
+            .map_err(|error| format!("event line {}: {error}", index + 1))?;
+        state.apply(&record)?;
+        if record.revision > revision && changes.len() < limit {
+            changes.push(record);
+        }
+    }
+    if revision > state.revision {
         return Err("revision is newer than investigation".into());
     }
-    let file = fs::File::open(event_path(root)).map_err(|error| error.to_string())?;
-    BufReader::new(file)
-        .lines()
-        .skip(revision as usize)
-        .take(limit)
-        .map(|line| {
-            let line = line.map_err(|error| error.to_string())?;
-            serde_json::from_str(&line).map_err(|error| error.to_string())
-        })
-        .collect()
+    Ok(changes)
 }
 
-pub fn append(root: &Path, event: Event) -> Result<EventRecord, String> {
-    let state = load(root)?;
+pub fn append(root: &Path, mut event: Event) -> Result<EventRecord, String> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .append(true)
+        .open(event_path(root))
+        .map_err(|error| error.to_string())?;
+    file.lock().map_err(|error| error.to_string())?;
+    let state = load_from_file(&mut file)?;
+    event.assign_ids(state.revision + 1);
     let record = EventRecord {
         schema_version: SCHEMA_VERSION,
         revision: state.revision + 1,
@@ -406,10 +463,6 @@ pub fn append(root: &Path, event: Event) -> Result<EventRecord, String> {
     };
     let mut prospective = state;
     prospective.apply(&record)?;
-    let mut file = OpenOptions::new()
-        .append(true)
-        .open(event_path(root))
-        .map_err(|error| error.to_string())?;
     write_record(&mut file, &record)?;
     Ok(record)
 }
@@ -447,7 +500,39 @@ pub fn store_artifact(
         }
     } else {
         fs::create_dir_all(artifact_dir(root)).map_err(|error| error.to_string())?;
-        fs::write(&path, bytes).map_err(|error| error.to_string())?;
+        // Stage inside the same directory so a reader sees either no artifact
+        // or the complete content-addressed file after rename.
+        let mut staged = None;
+        for attempt in 0..100 {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_nanos();
+            let candidate = artifact_dir(root)
+                .join(format!(".pending-{}-{nonce}-{attempt}", std::process::id()));
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => {
+                    staged = Some((candidate, file));
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        let (staged_path, mut file) = staged.ok_or("could not stage artifact")?;
+        let result = (|| {
+            file.write_all(bytes).map_err(|error| error.to_string())?;
+            file.sync_all().map_err(|error| error.to_string())?;
+            fs::rename(&staged_path, &path).map_err(|error| error.to_string())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&staged_path);
+        }
+        result?;
     }
     Ok((digest, relative))
 }
@@ -463,28 +548,40 @@ pub fn import_capture(
     let capture_id = format!("cap-{revision:06}");
     let observations = match format {
         "hex" => parse_hex_observations(raw, &capture_id)?,
-        "pcap-icmp" => extract_icmp_messages(raw)?
-            .into_iter()
-            .enumerate()
-            .map(|(index, message)| Observation {
-                id: format!("obs-{revision:06}-{index:04}"),
-                capture_id: capture_id.clone(),
-                source_index: message.packet_index,
-                source_offset: Some(message.source_offset),
-                timestamp_ns: Some(message.timestamp_ns),
-                direction: Some(ipv4_direction(
-                    message.source_ipv4,
-                    message.destination_ipv4,
-                )),
-                bytes_hex: to_hex(&message.bytes),
-            })
-            .collect(),
-        _ => return Err("format must be hex or pcap-icmp".into()),
+        "pcap-icmp" | "pcapng-icmp" => {
+            let messages = if format == "pcap-icmp" {
+                extract_icmp_messages(raw)?
+            } else {
+                extract_pcapng_icmp_messages(raw)?
+            };
+            messages
+                .into_iter()
+                .enumerate()
+                .map(|(index, message)| Observation {
+                    id: format!("obs-{revision:06}-{index:04}"),
+                    capture_id: capture_id.clone(),
+                    source_index: message.packet_index,
+                    source_offset: Some(message.source_offset),
+                    timestamp_ns: Some(message.timestamp_ns),
+                    direction: Some(ipv4_direction(
+                        message.source_ipv4,
+                        message.destination_ipv4,
+                    )),
+                    bytes_hex: to_hex(&message.bytes),
+                })
+                .collect()
+        }
+        _ => return Err("format must be hex, pcap-icmp, or pcapng-icmp".into()),
     };
     if observations.is_empty() {
         return Err("capture produced no supported messages".into());
     }
-    let extension = if format == "hex" { "hex" } else { "pcap" };
+    let extension = match format {
+        "hex" => "hex",
+        "pcap-icmp" => "pcap",
+        "pcapng-icmp" => "pcapng",
+        _ => unreachable!("format validated above"),
+    };
     let (sha256, artifact) = store_artifact(root, raw, extension)?;
     let capture = Capture {
         id: capture_id,
@@ -598,8 +695,12 @@ pub fn verify(root: &Path) -> Result<Verification, String> {
                     }
                 }
             }
-            "pcap-icmp" => {
-                let expected = extract_icmp_messages(&raw)?;
+            "pcap-icmp" | "pcapng-icmp" => {
+                let expected = if capture.format == "pcap-icmp" {
+                    extract_icmp_messages(&raw)?
+                } else {
+                    extract_pcapng_icmp_messages(&raw)?
+                };
                 if expected.len() != actual.len() {
                     return Err(format!("capture {} extraction count mismatch", capture.id));
                 }

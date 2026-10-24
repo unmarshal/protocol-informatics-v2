@@ -1,5 +1,6 @@
 {
   "capture_format": "pcap",
+  "alternate_capture_format": "pcapng",
   "linktype": 1,
   "packet_count": 24,
   "controlled_pair": [

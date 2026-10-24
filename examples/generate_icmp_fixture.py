@@ -42,9 +42,18 @@ def packet(icmp_type: int, identifier: int, sequence: int, payload: bytes) -> by
     return ethernet + ip_header + icmp
 
 
+def pcapng_block(block_type: int, body: bytes) -> bytes:
+    body += b"\0" * (-len(body) % 4)
+    length = 12 + len(body)
+    return struct.pack("<II", block_type, length) + body + struct.pack("<I", length)
+
+
 def main() -> None:
     header = struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1)
     capture = bytearray(header)
+    section = pcapng_block(0x0A0D0D0A, struct.pack("<IHHq", 0x1A2B3C4D, 1, 0, -1))
+    interface = pcapng_block(1, struct.pack("<HHI", 1, 0, 65535))
+    capture_ng = bytearray(section + interface)
     isolated = {255: bytearray(header), 256: bytearray(header)}
     cases = []
     for index, sequence in enumerate(SEQUENCES):
@@ -60,14 +69,19 @@ def main() -> None:
             record = struct.pack("<IIII", 1_700_000_000 + timestamp_us // 1_000_000,
                                  timestamp_us % 1_000_000, len(frame), len(frame)) + frame
             capture.extend(record)
+            ticks = 1_700_000_000 * 1_000_000 + timestamp_us
+            capture_ng.extend(pcapng_block(6, struct.pack("<IIIII", 0, ticks >> 32,
+                                                          ticks & 0xFFFFFFFF, len(frame), len(frame)) + frame))
             if sequence in isolated:
                 isolated[sequence].extend(record)
             cases.append({"type": icmp_type, "identifier": identifier,
                           "sequence": sequence, "payload_length": len(payload)})
     (HERE / "icmp_echo.pcap").write_bytes(capture)
+    (HERE / "icmp_echo.pcapng").write_bytes(capture_ng)
     (HERE / "icmp_baseline_255.pcap").write_bytes(isolated[255])
     (HERE / "icmp_variant_256.pcap").write_bytes(isolated[256])
-    truth = {"capture_format": "pcap", "linktype": 1, "packet_count": len(cases),
+    truth = {"capture_format": "pcap", "alternate_capture_format": "pcapng",
+             "linktype": 1, "packet_count": len(cases),
              "controlled_pair": ["icmp_baseline_255.pcap", "icmp_variant_256.pcap"],
              "icmp_fields": {"type": [0, 1], "code": [1, 2],
                              "checksum": [2, 4], "identifier": [4, 6],
