@@ -1647,12 +1647,81 @@ fn agent_can_probe_and_validate_length_prefixed_binary_records() {
     assert_eq!(inferred["candidate_count"], 1);
     assert_eq!(inferred["candidates"][0]["config"], probe["config"]);
     assert_eq!(inferred["candidates"][0]["validation_matches"], 2);
+    let revision_before = cli(&["resume", root_text])["revision"].as_u64().unwrap();
+    let committed = cli(&[
+        "commit-framing",
+        root_text,
+        first,
+        "4",
+        "1",
+        "2",
+        "big",
+        "payload",
+        "2",
+        "discovery-a-v1",
+    ]);
+    assert_eq!(committed["replayed"], false);
+    assert_eq!(committed["revision"], revision_before + 1);
+    assert_eq!(committed["run"]["records"].as_array().unwrap().len(), 3);
+    let frame_id = committed["run"]["records"][1]["id"].as_str().unwrap();
+    let replayed = cli(&[
+        "commit-framing",
+        root_text,
+        first,
+        "4",
+        "1",
+        "2",
+        "big",
+        "payload",
+        "2",
+        "discovery-a-v1",
+    ]);
+    assert_eq!(replayed["replayed"], true);
+    assert_eq!(replayed["revision"], committed["revision"]);
+    assert_eq!(
+        cli(&["framing-status", root_text, "discovery-a-v1"])["run"],
+        committed["run"]
+    );
+    let page = cli(&["frames", root_text, "discovery-a-v1", "1", "1"]);
+    assert_eq!(page["total"], 3);
+    assert_eq!(page["frames"][0]["id"], frame_id);
+    assert_eq!(page["next_offset"], 2);
+    let span = cli(&["frame-span", root_text, frame_id, "0", "8"]);
+    let original = fs::read(examples.join("records_discovery_a.bin")).unwrap();
+    assert_eq!(span["coordinate_system"], "frame_bytes");
+    assert_eq!(span["frame_length"], 8);
+    assert_eq!(span["logical_length"], 7);
+    assert_eq!(span["observation_start"], 8);
+    assert_eq!(span["source_file_offset"], 8);
+    assert_eq!(
+        span["bytes_hex"],
+        protocol_informatics_v2::workflow::to_hex(&original[8..16])
+    );
+    let conflicting = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "commit-framing",
+            root_text,
+            first,
+            "4",
+            "1",
+            "2",
+            "little",
+            "payload",
+            "2",
+            "discovery-a-v1",
+        ])
+        .output()
+        .unwrap();
+    assert!(!conflicting.status.success());
+    assert!(String::from_utf8_lossy(&conflicting.stderr).contains("different arguments"));
     let report = root.join("framing-report.html");
     cli(&["report", root_text, path(&report)]);
     let html = fs::read_to_string(&report).unwrap();
     assert!(html.contains("Candidate record framing"));
     assert!(html.contains("framing_previews"));
     assert!(html.contains("framing_inferences"));
+    assert!(html.contains("Committed frames"));
+    assert!(html.contains(frame_id));
 
     let mut corrupted = fs::read(examples.join("records_validation_a.bin")).unwrap();
     corrupted[5] = 0xff;
@@ -1680,6 +1749,100 @@ fn agent_can_probe_and_validate_length_prefixed_binary_records() {
         "truncated_record"
     );
     assert_eq!(cli(&["verify", root_text])["observations"], 5);
+    let event_path = root.join(".pi/events.jsonl");
+    let original_events = fs::read_to_string(&event_path).unwrap();
+    let tampered = original_events
+        .lines()
+        .map(|line| {
+            let mut event: Value = serde_json::from_str(line).unwrap();
+            if event["event"]["type"] == "framing_committed" {
+                event["event"]["run"]["records"][1]["logical_end"] = Value::from(14);
+            }
+            serde_json::to_string(&event).unwrap()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(&event_path, tampered).unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["resume", root_text])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr)
+            .contains("committed frame does not match source bytes")
+    );
+    fs::write(&event_path, original_events).unwrap();
+    assert_eq!(cli(&["verify", root_text])["observations"], 5);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn committed_tcp_frames_trace_bytes_across_packets() {
+    let root = workspace();
+    let root_text = path(&root);
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/framed_tcp.pcap");
+    let raw = fs::read(&fixture).unwrap();
+    cli(&["init", root_text, "Where are TCP application records?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Split records",
+        "-",
+        "Length prefix tracks packet split",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "discovery",
+        "two packets",
+    ]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let imported = cli(&[
+        "import",
+        root_text,
+        trial_id,
+        "pcap-tcp-stream",
+        path(&fixture),
+    ]);
+    assert_eq!(imported["event"]["capture"]["observation_count"], 1);
+    let observation = &imported["event"]["observations"][0];
+    assert_eq!(observation["bytes_hex"], "03616263026465");
+    assert_eq!(observation["source_spans"].as_array().unwrap().len(), 2);
+    let observation_id = observation["id"].as_str().unwrap();
+    let committed = cli(&[
+        "commit-framing",
+        root_text,
+        observation_id,
+        "0",
+        "0",
+        "1",
+        "big",
+        "payload",
+        "1",
+        "tcp-two-records",
+    ]);
+    assert_eq!(committed["run"]["records"].as_array().unwrap().len(), 2);
+    let first_id = committed["run"]["records"][0]["id"].as_str().unwrap();
+    let span = cli(&["frame-span", root_text, first_id, "0", "4"]);
+    assert_eq!(span["bytes_hex"], "03616263");
+    assert_eq!(span["source_file_offset"], Value::Null);
+    let sources = span["source_spans"].as_array().unwrap();
+    assert_eq!(sources.len(), 2);
+    assert_eq!(sources[0]["message_start"], 0);
+    assert_eq!(sources[0]["message_end"], 3);
+    assert_eq!(sources[1]["message_start"], 3);
+    assert_eq!(sources[1]["message_end"], 4);
+    for source in sources {
+        let start = source["message_start"].as_u64().unwrap() as usize;
+        let end = source["message_end"].as_u64().unwrap() as usize;
+        let offset = source["file_offset"].as_u64().unwrap() as usize;
+        assert_eq!(&raw[offset..offset + end - start], &b"\x03abc"[start..end]);
+    }
+    assert_eq!(cli(&["verify", root_text])["artifacts_verified"], 1);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1851,7 +2014,7 @@ fn controlled_intervention_locates_checksum_candidate_on_new_packets() {
 }
 
 #[test]
-fn replays_v1_log_and_appends_v7_events() {
+fn replays_v1_log_and_appends_v8_events() {
     let root = workspace();
     let events = root.join(".pi/events.jsonl");
     fs::create_dir_all(events.parent().unwrap()).unwrap();
@@ -1865,7 +2028,7 @@ fn replays_v1_log_and_appends_v7_events() {
         "Old investigation"
     );
     let appended = cli(&["hypothesis", path(&root), "A new claim"]);
-    assert_eq!(appended["schema_version"], 7);
+    assert_eq!(appended["schema_version"], 8);
     assert_eq!(appended["revision"], 2);
     assert_eq!(
         cli(&["changes", path(&root), "0"])

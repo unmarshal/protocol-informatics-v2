@@ -1,7 +1,7 @@
 //! Bounded length-prefix framing probes and held-out structural inference.
 //! A structural fit is a candidate boundary model, not proof of field meaning.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 use crate::reassembly::SourceSpan;
@@ -13,7 +13,7 @@ const MAX_INFERENCE_OBSERVATIONS: usize = 16;
 const MAX_INFERENCE_BYTES: usize = 64 * 1024;
 const MAX_REPORTED_CANDIDATES: usize = 100;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ByteOrder {
     BigEndian,
@@ -30,7 +30,7 @@ impl ByteOrder {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LengthMode {
     Total,
@@ -47,7 +47,7 @@ impl LengthMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct FramingConfig {
     pub start_offset: usize,
     pub prefix_offset: usize,
@@ -540,7 +540,7 @@ mod tests {
             })
             .collect();
         let state = State {
-            schema_version: 7,
+            schema_version: 8,
             revision: 1,
             question: "test".into(),
             hypotheses: Vec::new(),
@@ -562,6 +562,7 @@ mod tests {
                 source_spans: spans,
                 bytes_hex: to_hex(&bytes),
             }],
+            framing_runs: Vec::new(),
             actions: Vec::new(),
             tags: Vec::new(),
             window_tags: Vec::new(),

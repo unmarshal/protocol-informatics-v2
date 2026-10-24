@@ -126,6 +126,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
     <section class="panel"><h2>Candidate format groups</h2><div id="clusters"></div></section>
     <section class="panel"><h2>Candidate fields</h2><div id="fieldCandidates"></div></section>
     <section class="panel"><h2>Candidate record framing</h2><div id="framingCandidates"></div></section>
+    <section class="panel"><h2>Committed frames</h2><div id="committedFrames"></div></section>
     <section class="panel"><h2>Analyses</h2><div id="analyses"></div></section>
     <section class="panel"><h2>Decisions</h2><div id="decisions"></div></section>
   </div>
@@ -143,6 +144,7 @@ const captureById = new Map(state.captures.map(x=>[x.id,x]));
 const trialById = new Map(state.trials.map(x=>[x.id,x]));
 const clusterById = new Map((state.cluster_report?.clusters||[]).map(x=>[x.id,x]));
 const framingPreviewById = new Map((state.framing_previews||[]).map(x=>[x.probe.observation_id,x.probe]));
+for(const run of state.framing_runs||[]) framingPreviewById.set(run.observation_id,{records:run.records,committed:true,key:run.key});
 const tagsFor = id => state.tags.filter(x=>x.observation_id===id);
 const valuesFor = id => state.known_values.filter(x=>x.observation_id===id);
 const fieldOverlays = state.field_inferences.flatMap(inference => {
@@ -181,6 +183,15 @@ for(const item of state.framing_inferences||[]) {
   byId('framingCandidates').append(row);
 }
 if(!(state.framing_inferences||[]).length) byId('framingCandidates').append(node('div','Use discovery and validation trials to test length-prefix record boundaries.','small muted'));
+for(const run of state.framing_runs||[]) {
+  const row=node('div','', 'row');
+  row.append(node('strong',run.id+' · '+run.key),node('div',run.observation_id+' · '+run.records.length+' frames · '+run.config.prefix_width+' byte '+run.config.byte_order+' '+run.config.length_mode+' length · alignment '+run.config.alignment,'small muted'));
+  for(const frame of run.records.slice(0,20)) row.append(node('div',frame.id+' ['+frame.start+', '+frame.end+')'+(frame.logical_end<frame.end?' · padding ['+frame.logical_end+', '+frame.end+')':''),'small'));
+  if(run.records.length>20) row.append(node('div','Additional frames are available through the frames command.','small muted'));
+  const button=node('button','Inspect source bytes','small'); button.onclick=()=>{const observation=state.observations.find(x=>x.id===run.observation_id); if(observation) showDetail(observation);}; row.append(button);
+  byId('committedFrames').append(row);
+}
+if(!(state.framing_runs||[]).length) byId('committedFrames').append(node('div','Commit a complete framing model to preserve record boundaries and stable frame IDs.','small muted'));
 for(const experiment of state.experiments) {
   const row=node('div','', 'row'); row.append(node('strong',experiment.id+' · '+experiment.question),node('div','Prediction: '+experiment.prediction,'small muted'));
   for(const trial of state.trials.filter(x=>x.experiment_id===experiment.id)) {
@@ -277,7 +288,7 @@ function showDetail(observation) {
   }
   for(const tag of tagsFor(observation.id)) detail.append(node('span',tag.phase+': '+tag.label+(tag.action_id?' · '+tag.action_id:''),'pill'));
   for(const value of valuesFor(observation.id)) detail.append(node('span',value.variable+'='+value.value+' ('+value.set+')','pill'));
-  if(framing) detail.append(node('div','Candidate record spans: '+framing.records.map(record=>'['+record.start+', '+record.end+')').join(' '),'small muted'));
+  if(framing) detail.append(node('div',(framing.committed?'Committed':'Candidate')+' record spans: '+framing.records.map(record=>'['+record.start+', '+record.end+')').join(' '),'small muted'));
   const total=observation.bytes_hex.length/2, pageSize=256;
   const bytes=node('div','', 'bytes'); const navigation=node('div','', 'byte-nav small');
   const previous=node('button','Previous'), next=node('button','Next'), status=node('span','');
@@ -290,7 +301,7 @@ function showDetail(observation) {
       const packetStart=source&&source.message_start===offset&&offset!==0;
       const recordStart=framing?.records.find(record=>record.start===offset);
       const cell=node('span',observation.bytes_hex.slice(2*offset,2*offset+2),(overlay?'byte candidate':'byte')+(packetStart?' packet-start':'')+(recordStart?' record-start':''));
-      cell.title=(overlay?overlay.variable+' candidate ['+overlay.start+', '+overlay.end+')':'byte '+offset)+(recordStart?' · proposed record '+recordStart.index:'')+(source?' · packet '+source.packet_index+' · file offset '+(source.file_offset+offset-source.message_start):'');
+      cell.title=(overlay?overlay.variable+' candidate ['+overlay.start+', '+overlay.end+')':'byte '+offset)+(recordStart?' · '+(framing.committed?'committed':'proposed')+' record '+recordStart.index:'')+(source?' · packet '+source.packet_index+' · file offset '+(source.file_offset+offset-source.message_start):'');
       bytes.append(cell);
     }
     status.textContent='Bytes ['+start+', '+end+') of '+total; previous.disabled=page===0; next.disabled=end>=total;
@@ -299,7 +310,7 @@ function showDetail(observation) {
   if(total>pageSize) { navigation.append(previous,status,next); detail.append(navigation); }
   detail.append(bytes); draw();
   if(observation.source_spans?.length>1) detail.append(node('div','Blue left edge marks the first byte contributed by another packet. Hover a byte for its source offset.','small muted legend'));
-  if(framing) detail.append(node('div','Gold left edge marks a proposed record boundary supported by the held-out framing check.','small muted legend'));
+  if(framing) detail.append(node('div','Gold left edge marks a '+(framing.committed?'committed record boundary.':'proposed record boundary supported by the held-out framing check.'),'small muted legend'));
   detail.append(node('div','Green outline marks the unique shortest candidate matching held-out values. Longer encodings may also fit; boundaries and meaning need protocol-level confirmation.','small muted legend'));
 }
 function renderObservations() {

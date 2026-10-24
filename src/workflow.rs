@@ -8,6 +8,7 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::framing::{FramingConfig, FramingStatus, probe_observation};
 use crate::pcap::{
     extract_icmp_messages, extract_icmpv6_messages, extract_pcapng_icmp_messages,
     extract_pcapng_icmpv6_messages, extract_pcapng_tcp_segments, extract_pcapng_udp_messages,
@@ -15,7 +16,7 @@ use crate::pcap::{
 };
 use crate::reassembly::{SourceSpan, reassemble_tcp_segments};
 
-const SCHEMA_VERSION: u32 = 7;
+const SCHEMA_VERSION: u32 = 8;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +99,62 @@ pub struct Observation {
     #[serde(default)]
     pub source_spans: Vec<SourceSpan>,
     pub bytes_hex: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FramingRecord {
+    pub id: String,
+    pub index: usize,
+    pub start: usize,
+    pub logical_end: usize,
+    pub end: usize,
+    pub length_field_start: usize,
+    pub length_field_end: usize,
+    pub length_value: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FramingRun {
+    pub id: String,
+    pub key: String,
+    pub observation_id: String,
+    pub config: FramingConfig,
+    pub records: Vec<FramingRecord>,
+}
+
+pub fn framing_run_from_probe(
+    key: String,
+    observation_id: String,
+    config: FramingConfig,
+    state: &State,
+) -> Result<FramingRun, String> {
+    let probe = probe_observation(state, &observation_id, config)?;
+    if probe.status != FramingStatus::Complete || probe.records.len() < 2 {
+        return Err(format!(
+            "framing must consume the observation with at least two records; stopped at {} ({:?})",
+            probe.next_offset, probe.status
+        ));
+    }
+    Ok(FramingRun {
+        id: String::new(),
+        key,
+        observation_id,
+        config,
+        records: probe
+            .records
+            .into_iter()
+            .map(|record| FramingRecord {
+                id: String::new(),
+                index: record.index,
+                start: record.start,
+                logical_end: record.logical_end,
+                end: record.end,
+                length_field_start: record.length_field_start,
+                length_field_end: record.length_field_end,
+                length_value: record.length_value,
+            })
+            .collect(),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +263,9 @@ pub enum Event {
         capture: Capture,
         observations: Vec<Observation>,
     },
+    FramingCommitted {
+        run: FramingRun,
+    },
     CaptureRunReserved {
         run: CaptureRun,
     },
@@ -265,6 +325,12 @@ impl Event {
                     observation.capture_id = capture.id.clone();
                 }
             }
+            Self::FramingCommitted { run } => {
+                run.id = format!("framing-{revision:06}");
+                for (index, record) in run.records.iter_mut().enumerate() {
+                    record.id = format!("frame-{revision:06}-{index:04}");
+                }
+            }
             Self::CaptureRunReserved { run } => {
                 run.id = format!("run-{revision:06}");
             }
@@ -312,6 +378,7 @@ pub struct State {
     pub captures: Vec<Capture>,
     pub capture_runs: Vec<CaptureRun>,
     pub observations: Vec<Observation>,
+    pub framing_runs: Vec<FramingRun>,
     pub actions: Vec<Action>,
     pub tags: Vec<Tag>,
     pub window_tags: Vec<WindowTag>,
@@ -332,6 +399,7 @@ impl State {
             captures: Vec::new(),
             capture_runs: Vec::new(),
             observations: Vec::new(),
+            framing_runs: Vec::new(),
             actions: Vec::new(),
             tags: Vec::new(),
             window_tags: Vec::new(),
@@ -474,6 +542,47 @@ impl State {
                     self.capture_runs[index].status = CaptureRunStatus::Completed;
                     self.capture_runs[index].capture_id = Some(capture.id.clone());
                 }
+            }
+            Event::FramingCommitted { run } => {
+                if run.key.is_empty()
+                    || run.key.len() > 128
+                    || run.key.chars().any(char::is_control)
+                    || run.id != format!("framing-{:06}", record.revision)
+                    || self
+                        .framing_runs
+                        .iter()
+                        .any(|old| old.key == run.key || old.id == run.id)
+                    || run.config.validate()? != run.config
+                {
+                    return Err("invalid or duplicate framing run".into());
+                }
+                let expected = framing_run_from_probe(
+                    run.key.clone(),
+                    run.observation_id.clone(),
+                    run.config,
+                    self,
+                )?;
+                if expected.records.len() != run.records.len() {
+                    return Err("committed frame count does not match source bytes".into());
+                }
+                for (actual, expected) in run.records.iter().zip(&expected.records) {
+                    if actual.id != format!("frame-{:06}-{:04}", record.revision, expected.index)
+                        || self
+                            .framing_runs
+                            .iter()
+                            .any(|old| old.records.iter().any(|record| record.id == actual.id))
+                        || actual.index != expected.index
+                        || actual.start != expected.start
+                        || actual.logical_end != expected.logical_end
+                        || actual.end != expected.end
+                        || actual.length_field_start != expected.length_field_start
+                        || actual.length_field_end != expected.length_field_end
+                        || actual.length_value != expected.length_value
+                    {
+                        return Err("committed frame does not match source bytes".into());
+                    }
+                }
+                self.framing_runs.push(run.clone());
             }
             Event::CaptureRunReserved { run } => {
                 if !self.trials.iter().any(|trial| trial.id == run.trial_id) {

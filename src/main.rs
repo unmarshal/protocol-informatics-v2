@@ -67,6 +67,12 @@ fn print_help() {
     );
     println!("  infer-framing <dir> <discovery-trial> <validation-trial>");
     println!(
+        "  commit-framing <dir> <obs-id> <start> <field-offset> <width> <big|little> <total|payload> <alignment> <key>"
+    );
+    println!("  framing-status <dir> <key>         inspect a committed framing run");
+    println!("  frames <dir> <key> [offset] [limit<=100]");
+    println!("  frame-span <dir> <frame-id> <start> <end>  read half-open frame byte span");
+    println!(
         "  infer-checksum <dir> <discovery-trial> <validation-trial> <baseline-trial> <variant-trial> <controlled-variable>"
     );
     println!("  analyze-investigation <dir> [trial-id]");
@@ -575,6 +581,67 @@ fn tag_window(root: &Path, args: &[String]) -> Result<(), String> {
         .unwrap_or_else(|| "window event was not recorded".into()))
 }
 
+fn parse_framing_config(
+    args: &[String],
+) -> Result<protocol_informatics_v2::framing::FramingConfig, String> {
+    let parse = |value: &str, name: &str| {
+        value
+            .parse::<usize>()
+            .map_err(|_| format!("{name} must be an unsigned integer"))
+    };
+    Ok(protocol_informatics_v2::framing::FramingConfig {
+        start_offset: parse(&args[3], "start offset")?,
+        prefix_offset: parse(&args[4], "length field offset")?,
+        prefix_width: parse(&args[5], "length field width")?,
+        byte_order: protocol_informatics_v2::framing::ByteOrder::parse(&args[6])?,
+        length_mode: protocol_informatics_v2::framing::LengthMode::parse(&args[7])?,
+        alignment: parse(&args[8], "record alignment")?,
+    })
+}
+
+fn commit_framing(root: &Path, args: &[String]) -> Result<(), String> {
+    require_len(args, 10)?;
+    let observation_id = &args[2];
+    let config = parse_framing_config(args)?;
+    let key = &args[9];
+    if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
+        return Err(
+            "framing key must be nonempty, at most 128 bytes, and contain no control characters"
+                .into(),
+        );
+    }
+    let matches_request =
+        |run: &workflow::FramingRun| &run.observation_id == observation_id && run.config == config;
+    let state = workflow::load(root)?;
+    if let Some(existing) = state.framing_runs.iter().find(|run| &run.key == key) {
+        return if matches_request(existing) {
+            print_json(&json!({"revision": state.revision, "run": existing, "replayed": true}))
+        } else {
+            Err(format!(
+                "framing key {key} was used with different arguments"
+            ))
+        };
+    }
+    let run =
+        workflow::framing_run_from_probe(key.clone(), observation_id.clone(), config, &state)?;
+    let appended = workflow::append(root, Event::FramingCommitted { run });
+    let updated = workflow::load(root)?;
+    if let Some(existing) = updated.framing_runs.iter().find(|run| &run.key == key) {
+        return if matches_request(existing) {
+            print_json(
+                &json!({"revision": updated.revision, "run": existing, "replayed": appended.is_err()}),
+            )
+        } else {
+            Err(format!(
+                "framing key {key} was used with different arguments"
+            ))
+        };
+    }
+    Err(appended
+        .err()
+        .unwrap_or_else(|| "framing run was not recorded".into()))
+}
+
 fn run_investigation_command(args: &[String]) -> Result<(), String> {
     let command = args[0].as_str();
     if args.len() < 2 {
@@ -738,23 +805,101 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
         }
         "probe-framing" => {
             require_len(args, 9)?;
-            let parse = |value: &str, name: &str| {
-                value
-                    .parse::<usize>()
-                    .map_err(|_| format!("{name} must be an unsigned integer"))
-            };
-            let config = protocol_informatics_v2::framing::FramingConfig {
-                start_offset: parse(&args[3], "start offset")?,
-                prefix_offset: parse(&args[4], "length field offset")?,
-                prefix_width: parse(&args[5], "length field width")?,
-                byte_order: protocol_informatics_v2::framing::ByteOrder::parse(&args[6])?,
-                length_mode: protocol_informatics_v2::framing::LengthMode::parse(&args[7])?,
-                alignment: parse(&args[8], "record alignment")?,
-            };
+            let config = parse_framing_config(args)?;
             let state = workflow::load(root)?;
             print_json(&protocol_informatics_v2::framing::probe_observation(
                 &state, &args[2], config,
             )?)
+        }
+        "commit-framing" => commit_framing(root, args),
+        "framing-status" => {
+            require_len(args, 3)?;
+            let state = workflow::load(root)?;
+            let run = state
+                .framing_runs
+                .iter()
+                .find(|run| run.key == args[2])
+                .ok_or_else(|| format!("unknown framing key {}", args[2]))?;
+            print_json(&json!({"revision": state.revision, "run": run}))
+        }
+        "frames" => {
+            if args.len() < 3 || args.len() > 5 {
+                return Err("expected framing key, optional offset and limit".into());
+            }
+            let state = workflow::load(root)?;
+            let run = state
+                .framing_runs
+                .iter()
+                .find(|run| run.key == args[2])
+                .ok_or_else(|| format!("unknown framing key {}", args[2]))?;
+            let offset: usize = args.get(3).map_or(Ok(0), |value| {
+                value.parse().map_err(|_| "offset must be an integer")
+            })?;
+            let limit: usize = args.get(4).map_or(Ok(50), |value| {
+                value.parse().map_err(|_| "limit must be an integer")
+            })?;
+            if limit == 0 || limit > 100 {
+                return Err("limit must be between 1 and 100".into());
+            }
+            let total = run.records.len();
+            let records: Vec<_> = run.records.iter().skip(offset).take(limit).collect();
+            let next_offset = (offset.saturating_add(limit) < total).then_some(offset + limit);
+            print_json(
+                &json!({"revision": state.revision, "framing_id": run.id, "key": run.key,
+                "observation_id": run.observation_id, "coordinate_system": "observation_bytes",
+                "total": total, "offset": offset, "next_offset": next_offset, "frames": records}),
+            )
+        }
+        "frame-span" => {
+            require_len(args, 5)?;
+            let start: usize = args[3].parse().map_err(|_| "start must be an integer")?;
+            let end: usize = args[4].parse().map_err(|_| "end must be an integer")?;
+            let state = workflow::load(root)?;
+            let (run, frame) = state
+                .framing_runs
+                .iter()
+                .find_map(|run| {
+                    run.records
+                        .iter()
+                        .find(|frame| frame.id == args[2])
+                        .map(|frame| (run, frame))
+                })
+                .ok_or_else(|| format!("unknown frame {}", args[2]))?;
+            let length = frame.end - frame.start;
+            if start >= end || end > length || end - start > 4096 {
+                return Err(format!(
+                    "invalid frame span [{start}, {end}); frame has {length} bytes and maximum span is 4096"
+                ));
+            }
+            let absolute_start = frame.start + start;
+            let absolute_end = frame.start + end;
+            let span = protocol_informatics_v2::query::read_span(
+                &state,
+                &run.observation_id,
+                absolute_start,
+                absolute_end,
+            )?;
+            let source_spans: Vec<_> = span
+                .source_spans
+                .iter()
+                .map(|source| {
+                    json!({
+                        "message_start": source.message_start - frame.start,
+                        "message_end": source.message_end - frame.start,
+                        "packet_index": source.packet_index,
+                        "file_offset": source.file_offset,
+                    })
+                })
+                .collect();
+            print_json(
+                &json!({"revision": state.revision, "frame_id": frame.id, "framing_id": run.id,
+                "observation_id": run.observation_id, "capture_id": span.capture_id, "artifact": span.artifact,
+                "coordinate_system": "frame_bytes", "frame_length": length,
+                "logical_length": frame.logical_end-frame.start, "start": start, "end": end,
+                "observation_start": absolute_start, "observation_end": absolute_end,
+                "source_file_offset": span.source_file_offset, "source_spans": source_spans,
+                "bytes_hex": span.bytes_hex}),
+            )
         }
         "infer-framing" => {
             require_len(args, 4)?;
@@ -866,6 +1011,7 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 "hypotheses": state.hypotheses, "experiments": state.experiments,
                 "trials": state.trials, "captures": state.captures,
                 "capture_runs": state.capture_runs,
+                "framing_runs": state.framing_runs,
                 "actions": state.actions, "window_tags": state.window_tags,
                 "observation_count": state.observations.len(), "tag_count": state.tags.len(),
                 "known_value_count": state.known_values.len(),
