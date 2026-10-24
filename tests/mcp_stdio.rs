@@ -127,6 +127,7 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
+    assert_eq!(names.len(), 41);
     assert!(names.contains(&"summary"));
     assert!(names.contains(&"capture_step"));
     assert!(names.contains(&"validate_exchanges"));
@@ -134,6 +135,10 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
     assert!(names.contains(&"infer_value"));
     assert!(names.contains(&"record_decision"));
     assert!(names.contains(&"verify"));
+    assert!(names.contains(&"commit_framing"));
+    assert!(names.contains(&"commit_varint"));
+    assert!(names.contains(&"frame_span"));
+    assert!(names.contains(&"infer_frame_value"));
     assert!(names.contains(&"experiments"));
     assert!(names.contains(&"hypotheses"));
     assert!(names.contains(&"decisions"));
@@ -343,6 +348,7 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
     );
     let validation_id = validation["event"]["trial"]["id"].as_str().unwrap();
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let mut record_observations = Vec::new();
     for (trial_id, key, filename) in [
         (discovery_id, "mcp-record-d1", "records_discovery_a.bin"),
         (discovery_id, "mcp-record-d2", "records_discovery_b.bin"),
@@ -355,6 +361,12 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
         );
         assert_eq!(capture["status"], "completed");
         assert_eq!(capture["observation_count"], 1);
+        record_observations.push(
+            capture["first_observation_ids"][0]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
     }
     let framing = client.tool(
         "infer_framing",
@@ -373,6 +385,59 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
         tlv["candidates"][0]["validation_elements_with_seen_types"],
         6
     );
+    let framing_config = |observation_id: &str, key: &str| json!({"observation_id":observation_id,"start_offset":4,"prefix_offset":1,"prefix_width":2,"byte_order":"big","length_mode":"payload","alignment":2,"key":key});
+    let mut proposed_input = framing_config(&record_observations[0], "ignored");
+    proposed_input.as_object_mut().unwrap().remove("key");
+    let proposed = client.tool("probe_framing", proposed_input);
+    assert_eq!(proposed["status"], "complete");
+    assert_eq!(proposed["record_count"], 3);
+    let typed = client.tool(
+        "probe_tlv",
+        json!({"observation_id":record_observations[0],"start_offset":4,"type_width":1,"length_width":2,"byte_order":"big","length_mode":"payload","alignment":2}),
+    );
+    assert_eq!(typed["status"], "complete");
+    let discovery_commit = client.tool(
+        "commit_framing",
+        framing_config(&record_observations[0], "mcp-frames-discovery"),
+    );
+    let replayed = client.tool(
+        "commit_framing",
+        framing_config(&record_observations[0], "mcp-frames-discovery"),
+    );
+    assert_eq!(replayed["replayed"], true);
+    assert_eq!(replayed["run"]["id"], discovery_commit["run"]["id"]);
+    let validation_commit = client.tool(
+        "commit_framing",
+        framing_config(&record_observations[3], "mcp-frames-validation"),
+    );
+    let status = client.tool("frame_run_status", json!({"key":"mcp-frames-discovery"}));
+    assert_eq!(status["model"], "fixed_width");
+    let page = client.tool("frames", json!({"key":"mcp-frames-discovery","limit":1}));
+    assert_eq!(page["total"], 3);
+    assert_eq!(page["frames"].as_array().unwrap().len(), 1);
+    assert_eq!(page["next_offset"], 1);
+    let first_frame = page["frames"][0]["id"].as_str().unwrap();
+    let span = client.tool(
+        "frame_span",
+        json!({"frame_id":first_frame,"start":0,"end":4}),
+    );
+    assert_eq!(span["coordinate_system"], "frame_bytes");
+    assert_eq!(span["bytes_hex"], "a0000130");
+    for (set, run) in [
+        ("discovery", &discovery_commit),
+        ("validation", &validation_commit),
+    ] {
+        for (index, value) in [160, 161, 162].into_iter().enumerate() {
+            client.tool(
+                "annotate_frame_value",
+                json!({"frame_id":run["run"]["records"][index]["id"],"variable":"mcp_record_type","value":value.to_string(),"set":set}),
+            );
+        }
+    }
+    let frame_field = client.tool("infer_frame_value", json!({"variable":"mcp_record_type"}));
+    assert_eq!(frame_field["candidate_count"], 1);
+    assert_eq!(frame_field["candidates"][0]["start"], 0);
+    assert_eq!(frame_field["candidates"][0]["validation_matches"], 3);
     let delimiter_experiment = client.tool(
         "create_experiment",
         json!({"question":"Which delimiter survives changed line endings?","prediction":"LF validates both held-out files."}),
@@ -460,8 +525,40 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
                     && candidate["validation_matches"] == 1
             })
     );
+    let varint_experiment = client.tool(
+        "create_experiment",
+        json!({"question":"Where do variable-width records end?","prediction":"The unsigned LEB128 layout consumes the sample."}),
+    );
+    let varint_trial = client.tool(
+        "create_trial",
+        json!({"experiment_id":varint_experiment["event"]["experiment"]["id"],"role":"discovery","changed_factor":"prefix width"}),
+    );
+    let varint_capture = client.tool(
+        "capture_step",
+        json!({"trial_id":varint_trial["event"]["trial"]["id"],"kind":"fixture","detail":"varint_discovery_a.bin","phase":"stimulus","label":"varint sample","step_key":"mcp-varint-d1","format":"binary","timeout_ms":5000,"command":["/bin/cat",fixtures.join("varint_discovery_a.bin").to_str().unwrap()]}),
+    );
+    let varint_observation = varint_capture["first_observation_ids"][0].as_str().unwrap();
+    let varint_config = json!({"observation_id":varint_observation,"start_offset":4,"field_offset":1,"length_mode":"payload","alignment":2,"key":"mcp-varint-frames"});
+    let mut varint_probe_input = varint_config.clone();
+    varint_probe_input.as_object_mut().unwrap().remove("key");
+    let varint_probe = client.tool("probe_varint", varint_probe_input);
+    assert_eq!(varint_probe["status"], "complete");
+    assert_eq!(varint_probe["record_count"], 3);
+    let varint_committed = client.tool("commit_varint", varint_config.clone());
+    assert_eq!(
+        varint_committed["run"]["records"].as_array().unwrap().len(),
+        3
+    );
+    assert_eq!(
+        client.tool("commit_varint", varint_config)["replayed"],
+        true
+    );
+    let varint_status = client.tool("frame_run_status", json!({"key":"mcp-varint-frames"}));
+    assert_eq!(varint_status["model"], "unsigned_leb128");
+    let varint_page = client.tool("frames", json!({"key":"mcp-varint-frames","limit":1}));
+    assert_eq!(varint_page["total"], 3);
     let verification = client.tool("verify", json!({}));
-    assert_eq!(verification["captures"], 8);
+    assert_eq!(verification["captures"], 9);
     client.stop();
     fs::remove_dir_all(root).unwrap();
 }

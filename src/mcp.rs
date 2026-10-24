@@ -148,6 +148,85 @@ struct DelimiterProbeInput {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct FramingProbeInput {
+    observation_id: String,
+    start_offset: usize,
+    prefix_offset: usize,
+    prefix_width: usize,
+    byte_order: String,
+    length_mode: String,
+    alignment: usize,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct FramingCommitInput {
+    observation_id: String,
+    start_offset: usize,
+    prefix_offset: usize,
+    prefix_width: usize,
+    byte_order: String,
+    length_mode: String,
+    alignment: usize,
+    key: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct TlvProbeInput {
+    observation_id: String,
+    start_offset: usize,
+    type_width: usize,
+    length_width: usize,
+    byte_order: String,
+    length_mode: String,
+    alignment: usize,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct VarintProbeInput {
+    observation_id: String,
+    start_offset: usize,
+    field_offset: usize,
+    length_mode: String,
+    alignment: usize,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct VarintCommitInput {
+    observation_id: String,
+    start_offset: usize,
+    field_offset: usize,
+    length_mode: String,
+    alignment: usize,
+    key: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct FrameSpanInput {
+    frame_id: String,
+    start: usize,
+    end: usize,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct FramePageInput {
+    key: String,
+    #[serde(default)]
+    offset: usize,
+    #[serde(default = "default_page_limit")]
+    limit: usize,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct FrameValueInput {
+    frame_id: String,
+    variable: String,
+    /// Exact unsigned decimal or 0x-prefixed integer, supplied as text to preserve 64-bit values.
+    value: String,
+    /// Discovery or validation.
+    set: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct ChecksumInput {
     discovery_trial_id: String,
     validation_trial_id: String,
@@ -509,6 +588,201 @@ impl InvestigationServer {
             &self.load()?,
             &input.discovery_trial_id,
             &input.validation_trial_id,
+        )?)
+    }
+
+    #[tool(
+        description = "Probe fixed-width length-prefix records on one observation; offsets and source spans are exact.",
+        annotations(read_only_hint = true)
+    )]
+    async fn probe_framing(
+        &self,
+        Parameters(input): Parameters<FramingProbeInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke(
+            "probe-framing",
+            vec![
+                input.observation_id,
+                input.start_offset.to_string(),
+                input.prefix_offset.to_string(),
+                input.prefix_width.to_string(),
+                input.byte_order,
+                input.length_mode,
+                input.alignment.to_string(),
+            ],
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Probe typed length-value records on one observation with raw type recurrence and exact source spans.",
+        annotations(read_only_hint = true)
+    )]
+    async fn probe_tlv(
+        &self,
+        Parameters(input): Parameters<TlvProbeInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke(
+            "probe-tlv",
+            vec![
+                input.observation_id,
+                input.start_offset.to_string(),
+                input.type_width.to_string(),
+                input.length_width.to_string(),
+                input.byte_order,
+                input.length_mode,
+                input.alignment.to_string(),
+            ],
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Probe unsigned LEB128 length-prefix records on one observation with exact source spans.",
+        annotations(read_only_hint = true)
+    )]
+    async fn probe_varint(
+        &self,
+        Parameters(input): Parameters<VarintProbeInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke(
+            "probe-varint",
+            vec![
+                input.observation_id,
+                input.start_offset.to_string(),
+                input.field_offset.to_string(),
+                input.length_mode,
+                input.alignment.to_string(),
+            ],
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Commit complete fixed-width record boundaries with a retry-safe key and replay-checked frame IDs.",
+        annotations(idempotent_hint = true)
+    )]
+    async fn commit_framing(
+        &self,
+        Parameters(input): Parameters<FramingCommitInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke(
+            "commit-framing",
+            vec![
+                input.observation_id,
+                input.start_offset.to_string(),
+                input.prefix_offset.to_string(),
+                input.prefix_width.to_string(),
+                input.byte_order,
+                input.length_mode,
+                input.alignment.to_string(),
+                input.key,
+            ],
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Commit complete unsigned LEB128 record boundaries with a retry-safe key and replay-checked frame IDs.",
+        annotations(idempotent_hint = true)
+    )]
+    async fn commit_varint(
+        &self,
+        Parameters(input): Parameters<VarintCommitInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke(
+            "commit-varint",
+            vec![
+                input.observation_id,
+                input.start_offset.to_string(),
+                input.field_offset.to_string(),
+                input.length_mode,
+                input.alignment.to_string(),
+                input.key,
+            ],
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Inspect a committed fixed-width or unsigned LEB128 frame run by retry key.",
+        annotations(read_only_hint = true)
+    )]
+    fn frame_run_status(
+        &self,
+        Parameters(input): Parameters<KeyInput>,
+    ) -> Result<CallToolResult, String> {
+        let state = self.load()?;
+        if let Some(run) = state.framing_runs.iter().find(|run| run.key == input.key) {
+            return Self::json(json!({"revision":state.revision,"model":"fixed_width","run":run}));
+        }
+        if let Some(run) = state.varint_runs.iter().find(|run| run.key == input.key) {
+            return Self::json(
+                json!({"revision":state.revision,"model":"unsigned_leb128","run":run}),
+            );
+        }
+        Err(format!("unknown frame run key {}", input.key))
+    }
+
+    #[tool(
+        description = "Page stable frame IDs and boundaries for a committed run.",
+        annotations(read_only_hint = true)
+    )]
+    async fn frames(
+        &self,
+        Parameters(input): Parameters<FramePageInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke(
+            "frames",
+            vec![input.key, input.offset.to_string(), input.limit.to_string()],
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Read a half-open frame byte span (up to 4096 bytes) with parent observation offsets and original source provenance.",
+        annotations(read_only_hint = true)
+    )]
+    async fn frame_span(
+        &self,
+        Parameters(input): Parameters<FrameSpanInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke(
+            "frame-span",
+            vec![
+                input.frame_id,
+                input.start.to_string(),
+                input.end.to_string(),
+            ],
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Annotate an externally known unsigned value on one committed frame for held-out field inference. This operation is not keyed."
+    )]
+    async fn annotate_frame_value(
+        &self,
+        Parameters(input): Parameters<FrameValueInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke(
+            "frame-value",
+            vec![input.frame_id, input.variable, input.value, input.set],
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Infer exact field offsets in committed frame bytes using separately annotated discovery and validation captures.",
+        annotations(read_only_hint = true)
+    )]
+    fn infer_frame_value(
+        &self,
+        Parameters(input): Parameters<VariableInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(inference::infer_frame_unsigned_field(
+            &self.load()?,
+            &input.variable,
         )?)
     }
 
