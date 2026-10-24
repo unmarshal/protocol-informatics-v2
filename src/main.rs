@@ -75,6 +75,8 @@ fn print_help() {
         "  probe-tlv <dir> <obs-id> <start> <type-width> <length-width> <big|little> <total|payload> <alignment>"
     );
     println!("  infer-tlv <dir> <discovery-trial> <validation-trial>");
+    println!("  probe-varint <dir> <obs-id> <start> <field-offset> <total|payload> <alignment>");
+    println!("  infer-varint <dir> <discovery-trial> <validation-trial>");
     println!(
         "  commit-framing <dir> <obs-id> <start> <field-offset> <width> <big|little> <total|payload> <alignment> <key>"
     );
@@ -624,6 +626,23 @@ fn parse_tlv_config(args: &[String]) -> Result<protocol_informatics_v2::tlv::Tlv
     .validate()
 }
 
+fn parse_varint_config(
+    args: &[String],
+) -> Result<protocol_informatics_v2::varint::VarintConfig, String> {
+    let parse = |value: &str, name: &str| {
+        value
+            .parse::<usize>()
+            .map_err(|_| format!("{name} must be an unsigned integer"))
+    };
+    protocol_informatics_v2::varint::VarintConfig {
+        start_offset: parse(&args[3], "start offset")?,
+        field_offset: parse(&args[4], "length field offset")?,
+        length_mode: protocol_informatics_v2::framing::LengthMode::parse(&args[5])?,
+        alignment: parse(&args[6], "record alignment")?,
+    }
+    .validate()
+}
+
 fn commit_framing(root: &Path, args: &[String]) -> Result<(), String> {
     require_len(args, 10)?;
     let observation_id = &args[2];
@@ -871,6 +890,14 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 &state, &args[2], config,
             )?)
         }
+        "probe-varint" => {
+            require_len(args, 7)?;
+            let config = parse_varint_config(args)?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::varint::probe_varint(
+                &state, &args[2], config,
+            )?)
+        }
         "commit-framing" => commit_framing(root, args),
         "framing-status" => {
             require_len(args, 3)?;
@@ -972,6 +999,13 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             require_len(args, 4)?;
             let state = workflow::load(root)?;
             print_json(&protocol_informatics_v2::tlv::infer_tlv(
+                &state, &args[2], &args[3],
+            )?)
+        }
+        "infer-varint" => {
+            require_len(args, 4)?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::varint::infer_varint(
                 &state, &args[2], &args[3],
             )?)
         }

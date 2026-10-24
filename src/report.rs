@@ -49,6 +49,8 @@ pub fn render(state: &State) -> String {
     let mut framing_inferences = Vec::new();
     let mut framing_previews = Vec::new();
     let mut tlv_inferences = Vec::new();
+    let mut varint_inferences = Vec::new();
+    let mut varint_previews = Vec::new();
     for experiment in state.experiments.iter().take(8) {
         let discovery = state
             .trials
@@ -93,10 +95,40 @@ pub fn render(state: &State) -> String {
                 "inference": inference,
             }));
         }
+        if let Ok(inference) = crate::varint::infer_varint(state, &discovery.id, &validation.id)
+            && inference.candidate_count > 0
+        {
+            let validated: Vec<_> = inference
+                .candidates
+                .iter()
+                .filter(|candidate| candidate.validation_matches == inference.validation_count)
+                .collect();
+            if inference.candidate_count <= inference.reported_candidate_limit
+                && validated.len() == 1
+                && let Some(observation) = state.observations.iter().find(|observation| {
+                    state.captures.iter().any(|capture| {
+                        capture.id == observation.capture_id && capture.trial_id == discovery.id
+                    })
+                })
+                && let Ok(probe) =
+                    crate::varint::probe_varint(state, &observation.id, validated[0].config)
+            {
+                varint_previews.push(serde_json::json!({
+                    "experiment_id": experiment.id,
+                    "probe": probe,
+                }));
+            }
+            varint_inferences.push(serde_json::json!({
+                "experiment_id": experiment.id,
+                "inference": inference,
+            }));
+        }
     }
     view["framing_inferences"] = serde_json::Value::Array(framing_inferences);
     view["framing_previews"] = serde_json::Value::Array(framing_previews);
     view["tlv_inferences"] = serde_json::Value::Array(tlv_inferences);
+    view["varint_inferences"] = serde_json::Value::Array(varint_inferences);
+    view["varint_previews"] = serde_json::Value::Array(varint_previews);
     let data = serde_json::to_string(&view)
         .expect("state is serializable")
         .replace('<', "\\u003c")
@@ -159,6 +191,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
     <section class="panel"><h2>Candidate fields</h2><div id="fieldCandidates"></div></section>
     <section class="panel"><h2>Candidate record framing</h2><div id="framingCandidates"></div></section>
     <section class="panel"><h2>Candidate typed records</h2><div id="tlvCandidates"></div></section>
+    <section class="panel"><h2>Candidate variable-length records</h2><div id="varintCandidates"></div></section>
     <section class="panel"><h2>Committed frames</h2><div id="committedFrames"></div></section>
     <section class="panel"><h2>Frame fields</h2><div id="frameFields"></div></section>
     <section class="panel"><h2>Analyses</h2><div id="analyses"></div></section>
@@ -178,6 +211,7 @@ const captureById = new Map(state.captures.map(x=>[x.id,x]));
 const trialById = new Map(state.trials.map(x=>[x.id,x]));
 const clusterById = new Map((state.cluster_report?.clusters||[]).map(x=>[x.id,x]));
 const framingPreviewById = new Map((state.framing_previews||[]).map(x=>[x.probe.observation_id,x.probe]));
+for(const item of state.varint_previews||[]) if(!framingPreviewById.has(item.probe.observation_id)) framingPreviewById.set(item.probe.observation_id,item.probe);
 for(const run of state.framing_runs||[]) framingPreviewById.set(run.observation_id,{records:run.records,committed:true,key:run.key});
 const frameById = new Map((state.framing_runs||[]).flatMap(run=>run.records.map(frame=>[frame.id,{frame,run}])));
 const tagsFor = id => state.tags.filter(x=>x.observation_id===id);
@@ -248,6 +282,23 @@ for(const item of state.tlv_inferences||[]) {
   byId('tlvCandidates').append(row);
 }
 if(!(state.tlv_inferences||[]).length) byId('tlvCandidates').append(node('div','Probe or infer typed length-value records from controlled trials.','small muted'));
+for(const item of state.varint_inferences||[]) {
+  const inference=item.inference, row=node('div','', 'row');
+  row.append(node('strong',item.experiment_id+' · '+inference.candidate_count+' variable-length model(s)'),node('div',inference.discovery_count+' discovery · '+inference.validation_count+' held-out observations','small muted'));
+  for(const candidate of inference.candidates.slice(0,5)) {
+    const config=candidate.config;
+    row.append(node('div','start '+config.start_offset+' · field +'+config.field_offset+' · unsigned LEB128 '+config.length_mode+' length · align '+config.alignment+' · held-out '+candidate.validation_matches+'/'+inference.validation_count,'small'));
+    row.append(node('div',candidate.discovery_records+' discovery records · '+candidate.discovery_multibyte_prefixes+' multibyte prefixes','small muted'));
+    for(const failed of candidate.validation_counterexamples.slice(0,3)) row.append(node('div','↳ '+failed.observation_id+' stopped at '+failed.next_offset+' ('+failed.status+')','small muted'));
+  }
+  const preview=(state.varint_previews||[]).find(x=>x.experiment_id===item.experiment_id)?.probe;
+  if(preview) {
+    row.append(node('div','Proposed records in '+preview.observation_id+': '+preview.records.map(record=>'['+record.start+', '+record.end+')').join(' '),'small muted'));
+    const button=node('button','Inspect proposed records','small'); button.onclick=()=>{ const observation=state.observations.find(x=>x.id===preview.observation_id); if(observation) showDetail(observation); }; row.append(button);
+  }
+  byId('varintCandidates').append(row);
+}
+if(!(state.varint_inferences||[]).length) byId('varintCandidates').append(node('div','Cross a varint width boundary in discovery trials to test this model.','small muted'));
 for(const run of state.framing_runs||[]) {
   const row=node('div','', 'row');
   row.append(node('strong',run.id+' · '+run.key),node('div',run.observation_id+' · '+run.records.length+' frames · '+run.config.prefix_width+' byte '+run.config.byte_order+' '+run.config.length_mode+' length · alignment '+run.config.alignment,'small muted'));

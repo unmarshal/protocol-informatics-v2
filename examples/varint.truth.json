@@ -1,0 +1,149 @@
+{
+  "preamble_hex": "56493221",
+  "cases": [
+    {
+      "file": "varint_discovery_a.bin",
+      "length": 146,
+      "records": [
+        {
+          "start": 4,
+          "length_field_start": 5,
+          "length_field_end": 6,
+          "prefix_hex": "01",
+          "length": 1,
+          "logical_end": 7,
+          "end": 8,
+          "kind": 145
+        },
+        {
+          "start": 8,
+          "length_field_start": 9,
+          "length_field_end": 10,
+          "prefix_hex": "04",
+          "length": 4,
+          "logical_end": 14,
+          "end": 14,
+          "kind": 146
+        },
+        {
+          "start": 14,
+          "length_field_start": 15,
+          "length_field_end": 17,
+          "prefix_hex": "8001",
+          "length": 128,
+          "logical_end": 145,
+          "end": 146,
+          "kind": 147
+        }
+      ]
+    },
+    {
+      "file": "varint_discovery_b.bin",
+      "length": 150,
+      "records": [
+        {
+          "start": 4,
+          "length_field_start": 5,
+          "length_field_end": 6,
+          "prefix_hex": "02",
+          "length": 2,
+          "logical_end": 8,
+          "end": 8,
+          "kind": 145
+        },
+        {
+          "start": 8,
+          "length_field_start": 9,
+          "length_field_end": 10,
+          "prefix_hex": "07",
+          "length": 7,
+          "logical_end": 17,
+          "end": 18,
+          "kind": 146
+        },
+        {
+          "start": 18,
+          "length_field_start": 19,
+          "length_field_end": 21,
+          "prefix_hex": "8101",
+          "length": 129,
+          "logical_end": 150,
+          "end": 150,
+          "kind": 147
+        }
+      ]
+    },
+    {
+      "file": "varint_validation_a.bin",
+      "length": 152,
+      "records": [
+        {
+          "start": 4,
+          "length_field_start": 5,
+          "length_field_end": 6,
+          "prefix_hex": "03",
+          "length": 3,
+          "logical_end": 9,
+          "end": 10,
+          "kind": 145
+        },
+        {
+          "start": 10,
+          "length_field_start": 11,
+          "length_field_end": 12,
+          "prefix_hex": "05",
+          "length": 5,
+          "logical_end": 17,
+          "end": 18,
+          "kind": 146
+        },
+        {
+          "start": 18,
+          "length_field_start": 19,
+          "length_field_end": 21,
+          "prefix_hex": "8201",
+          "length": 130,
+          "logical_end": 151,
+          "end": 152,
+          "kind": 147
+        }
+      ]
+    },
+    {
+      "file": "varint_validation_b.bin",
+      "length": 156,
+      "records": [
+        {
+          "start": 4,
+          "length_field_start": 5,
+          "length_field_end": 6,
+          "prefix_hex": "04",
+          "length": 4,
+          "logical_end": 10,
+          "end": 10,
+          "kind": 145
+        },
+        {
+          "start": 10,
+          "length_field_start": 11,
+          "length_field_end": 12,
+          "prefix_hex": "09",
+          "length": 9,
+          "logical_end": 21,
+          "end": 22,
+          "kind": 146
+        },
+        {
+          "start": 22,
+          "length_field_start": 23,
+          "length_field_end": 25,
+          "prefix_hex": "8301",
+          "length": 131,
+          "logical_end": 156,
+          "end": 156,
+          "kind": 147
+        }
+      ]
+    }
+  ]
+}

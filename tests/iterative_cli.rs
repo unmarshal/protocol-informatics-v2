@@ -1986,6 +1986,136 @@ fn tlv_probe_supports_two_byte_types_and_rejects_invalid_type_widths() {
 }
 
 #[test]
+fn agent_can_infer_canonical_varint_record_lengths_across_width_boundary() {
+    let root = workspace();
+    let root_text = path(&root);
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let truth: Value = serde_json::from_str(include_str!("../examples/varint.truth.json")).unwrap();
+    cli(&["init", root_text, "Are record lengths unsigned LEB128?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Cross the 127-byte boundary",
+        "-",
+        "Variable-width prefixes predict boundaries",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let discovery = cli(&["trial", root_text, experiment_id, "discovery", "two files"]);
+    let validation = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "validation",
+        "two held-out files",
+    ]);
+    let discovery_id = discovery["event"]["trial"]["id"].as_str().unwrap();
+    let validation_id = validation["event"]["trial"]["id"].as_str().unwrap();
+    let mut observation_ids = Vec::new();
+    for (index, trial_id) in [discovery_id, discovery_id, validation_id, validation_id]
+        .into_iter()
+        .enumerate()
+    {
+        let filename = truth["cases"][index]["file"].as_str().unwrap();
+        let imported = cli(&[
+            "import",
+            root_text,
+            trial_id,
+            "binary",
+            path(&examples.join(filename)),
+        ]);
+        observation_ids.push(
+            imported["event"]["observations"][0]["id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    let probe = cli(&[
+        "probe-varint",
+        root_text,
+        &observation_ids[0],
+        "4",
+        "1",
+        "payload",
+        "2",
+    ]);
+    assert_eq!(probe["status"], "complete");
+    assert_eq!(probe["record_count"], 3);
+    for (record, expected) in probe["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(truth["cases"][0]["records"].as_array().unwrap())
+    {
+        assert_eq!(record["start"], expected["start"]);
+        assert_eq!(record["length_field_start"], expected["length_field_start"]);
+        assert_eq!(record["length_field_end"], expected["length_field_end"]);
+        assert_eq!(record["length_value"], expected["length"]);
+        assert_eq!(record["logical_end"], expected["logical_end"]);
+        assert_eq!(record["end"], expected["end"]);
+        assert_eq!(record["source_file_offset"], expected["start"]);
+    }
+    assert_eq!(
+        probe["records"][2]["length_field_end"].as_u64().unwrap()
+            - probe["records"][2]["length_field_start"].as_u64().unwrap(),
+        2
+    );
+    let inferred = cli(&["infer-varint", root_text, discovery_id, validation_id]);
+    assert_eq!(inferred["discovery_count"], 2);
+    assert_eq!(inferred["validation_count"], 2);
+    assert_eq!(inferred["candidate_count"], 2);
+    assert_eq!(
+        inferred["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|candidate| candidate["validation_matches"] == 2)
+            .count(),
+        1
+    );
+    assert_eq!(inferred["candidates"][0]["config"], probe["config"]);
+    assert_eq!(inferred["candidates"][0]["validation_matches"], 2);
+    assert_eq!(inferred["candidates"][0]["discovery_multibyte_prefixes"], 2);
+    assert_eq!(inferred["candidates"][1]["validation_matches"], 1);
+    assert_eq!(
+        inferred["candidates"][1]["validation_counterexamples"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let report = root.join("varint-report.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(&report).unwrap();
+    assert!(html.contains("Candidate variable-length records"));
+    assert!(html.contains("varint_inferences"));
+    assert!(html.contains("varint_previews"));
+    assert!(html.contains("unsigned LEB128"));
+
+    let mut corrupted = fs::read(examples.join("varint_validation_a.bin")).unwrap();
+    corrupted[5] = 0xff;
+    let corrupted_path = root.join("corrupted-varint.bin");
+    fs::write(&corrupted_path, corrupted).unwrap();
+    let imported = cli(&[
+        "import",
+        root_text,
+        validation_id,
+        "binary",
+        path(&corrupted_path),
+    ]);
+    let corrupted_id = imported["event"]["observations"][0]["id"].as_str().unwrap();
+    let challenged = cli(&["infer-varint", root_text, discovery_id, validation_id]);
+    assert_eq!(challenged["validation_count"], 3);
+    assert_eq!(challenged["candidates"][0]["validation_matches"], 2);
+    assert_eq!(
+        challenged["candidates"][0]["validation_counterexamples"][0]["observation_id"],
+        corrupted_id
+    );
+    assert_eq!(cli(&["verify", root_text])["observations"], 5);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn committed_tcp_frames_trace_bytes_across_packets() {
     let root = workspace();
     let root_text = path(&root);
