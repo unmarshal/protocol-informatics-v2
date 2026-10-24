@@ -67,6 +67,20 @@ pub fn render(state: &State) -> String {
         }
     }
     view["cluster_validations"] = serde_json::Value::Array(cluster_validations);
+    let mut exchange_reports = Vec::new();
+    for capture in state.captures.iter().take(8) {
+        match crate::exchanges::pair_exchanges(state, &capture.id, None, 0, 12) {
+            Ok(result) => exchange_reports.push(serde_json::json!({
+                "capture_id": capture.id,
+                "result": result,
+            })),
+            Err(error) => exchange_reports.push(serde_json::json!({
+                "capture_id": capture.id,
+                "error": error,
+            })),
+        }
+    }
+    view["exchange_reports"] = serde_json::Value::Array(exchange_reports);
     let mut framing_inferences = Vec::new();
     let mut framing_previews = Vec::new();
     let mut tlv_inferences = Vec::new();
@@ -209,6 +223,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
     <section class="panel"><h2>Capture command runs</h2><div id="captureRuns"></div></section>
     <section class="panel"><h2>Tagged action windows</h2><div id="tagWindows"></div></section>
     <section class="panel"><h2>Capture scope tags</h2><div id="captureTags"></div></section>
+    <section class="panel"><h2>Candidate exchanges</h2><div id="exchanges"></div></section>
     <section class="panel"><h2>Candidate format groups</h2><div id="clusters"></div></section>
     <section class="panel"><h2>Held-out grouping</h2><div id="clusterValidation"></div></section>
     <section class="panel"><h2>Candidate fields</h2><div id="fieldCandidates"></div></section>
@@ -371,6 +386,27 @@ for(const batch of state.capture_tag_batches||[]) {
   byId('captureTags').append(row);
 }
 if(!(state.capture_tag_batches||[]).length) byId('captureTags').append(node('div','No captures tagged to an action.','small muted'));
+for(const item of state.exchange_reports||[]) {
+  const row=node('div','', 'row');
+  if(item.error) {
+    row.append(node('strong',item.capture_id),node('div',item.error,'small muted'));
+  } else {
+    const result=item.result;
+    row.append(node('strong',item.capture_id+' · '+result.pair_count+' candidate pair(s)'),node('div',result.ambiguous_count+' ambiguous · '+result.unpaired_count+' unpaired · '+result.max_lag_ms+' ms window','small muted'),node('div','Varying equal bytes are measurements, not confirmed echo fields.','small muted'));
+    for(const group of result.orientation_summaries.slice(0,5)) {
+      const shared=group.varying_equal_ranges.map(range=>'['+range.start+', '+range.end+')').join(', ')||'none';
+      row.append(node('div',group.earlier_direction+' · '+group.pair_count+' pair(s) · varying equal bytes '+shared,'small'));
+    }
+    for(const pair of result.pairs.slice(0,6)) {
+      const button=node('button',pair.earlier_observation_id+' → '+pair.later_observation_id+' · '+pair.lag_ns+' ns','small');
+      button.onclick=()=>{byId('leftCompare').value=pair.earlier_observation_id;byId('rightCompare').value=pair.later_observation_id;renderComparison();byId('comparison').scrollIntoView({behavior:'smooth',block:'nearest'});};
+      row.append(button);
+    }
+    if(result.pair_count>result.pairs.length) row.append(node('div','Use pair-exchanges to page the remaining pairs.','small muted'));
+  }
+  byId('exchanges').append(row);
+}
+if(!(state.exchange_reports||[]).length) byId('exchanges').append(node('div','No captures available for exchange pairing.','small muted'));
 if(state.cluster_report) {
   const sample=state.cluster_report;
   byId('clusters').append(node('div','Analyzed '+sample.observation_count+' of '+sample.selected_observation_count+' selected observations · '+sample.sampling_method+(sample.sampling_strata_count?' · '+sample.sampling_strata_count+' strata':''),'small muted'));

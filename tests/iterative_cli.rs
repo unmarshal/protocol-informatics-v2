@@ -3611,3 +3611,93 @@ fn full_held_out_evaluation_reports_a_rare_late_counterexample() {
     assert_eq!(cli(&["verify", root_text])["observations"], 2049);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn agent_can_page_provisional_exchanges_across_icmp_and_udp() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&["init", root_text, "Which messages may be replies?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Inspect reciprocal traffic",
+        "-",
+        "Time and endpoint metadata identify candidate exchanges",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "discovery",
+        "two captures",
+    ]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let icmp = cli(&[
+        "import",
+        root_text,
+        trial_id,
+        "pcap-icmp",
+        path(&fixtures.join("icmp_sweep_512.pcap")),
+    ]);
+    let icmp_id = icmp["event"]["capture"]["id"].as_str().unwrap();
+    let dns = cli(&[
+        "import",
+        root_text,
+        trial_id,
+        "pcap-udp",
+        path(&fixtures.join("dns_udp.pcap")),
+    ]);
+    let dns_id = dns["event"]["capture"]["id"].as_str().unwrap();
+    let first = cli(&["pair-exchanges", root_text, icmp_id, "1000", "0", "5"]);
+    assert_eq!(first["method"], "unique_reciprocal_predecessor_v1");
+    assert_eq!(first["pair_count"], 512);
+    assert_eq!(first["ambiguous_count"], 0);
+    assert_eq!(first["unpaired_count"], 0);
+    assert_eq!(first["pairs"].as_array().unwrap().len(), 5);
+    assert_eq!(first["next_pair_offset"], 5);
+    assert_eq!(
+        first["pairs"][0]["earlier_observation_id"],
+        "obs-000004-0000"
+    );
+    assert_eq!(first["pairs"][0]["later_observation_id"], "obs-000004-0001");
+    assert_eq!(first["pairs"][0]["lag_ns"], "50000000");
+    assert!(
+        first["orientation_summaries"][0]["varying_equal_ranges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|range| range["start"] == 6 && range["end"] == 8)
+    );
+    let last = cli(&["pair-exchanges", root_text, icmp_id, "1000", "510", "5"]);
+    assert_eq!(last["pairs"].as_array().unwrap().len(), 2);
+    assert!(last["next_pair_offset"].is_null());
+    assert_eq!(
+        last["pairs"][1]["earlier_observation_id"],
+        "obs-000004-1022"
+    );
+    let too_short = cli(&["pair-exchanges", root_text, icmp_id, "10"]);
+    assert_eq!(too_short["pair_count"], 0);
+    assert_eq!(too_short["unpaired_count"], 1024);
+    let dns_pairs = cli(&["pair-exchanges", root_text, dns_id]);
+    assert_eq!(dns_pairs["pair_count"], 6);
+    assert_eq!(dns_pairs["ambiguous_count"], 0);
+    assert_eq!(dns_pairs["pairs"][0]["source_port"], 40000);
+    assert_eq!(dns_pairs["pairs"][0]["destination_port"], 53);
+    assert!(
+        dns_pairs["orientation_summaries"][0]["varying_equal_ranges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|range| range["start"] == 0 && range["end"] == 2)
+    );
+    let report = root.join("exchanges.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("Candidate exchanges"));
+    assert!(html.contains("varying_equal_ranges"));
+    assert!(html.contains(icmp_id));
+    assert_eq!(cli(&["verify", root_text])["observations"], 1036);
+    fs::remove_dir_all(root).unwrap();
+}

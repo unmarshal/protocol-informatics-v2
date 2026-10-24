@@ -8,6 +8,7 @@ mod alignment;
 pub mod capture;
 pub mod checksum;
 pub mod clustering;
+pub mod exchanges;
 pub mod framing;
 pub mod inference;
 mod input;

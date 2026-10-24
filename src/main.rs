@@ -102,6 +102,7 @@ fn print_help() {
     println!("  analyze-investigation <dir> [trial-id]");
     println!("  cluster <dir> [trial-id|-] [respect|ignore]");
     println!("  validate-clusters <dir> <discovery-trial> <validation-trial> [respect|ignore]");
+    println!("  pair-exchanges <dir> <capture-id> [max-lag-ms] [offset] [limit<=100]");
     println!("  analyze-cluster <dir> <cluster-id> [trial-id|-] [respect|ignore]");
     println!("  decide <dir> <decision> [evidence-ids]");
     println!("  summary <dir>                      bounded corpus overview for agents");
@@ -1493,6 +1494,41 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 &args[2],
                 &args[3],
                 direction_mode(args.get(4))?,
+            )?)
+        }
+        "pair-exchanges" => {
+            if args.len() < 3 || args.len() > 6 {
+                return Err("expected capture ID, optional max lag, offset, and page limit".into());
+            }
+            let max_lag_ms = args
+                .get(3)
+                .map(|value| {
+                    value.parse::<u64>().map_err(|_| {
+                        "max lag must be an unsigned number of milliseconds".to_string()
+                    })
+                })
+                .transpose()?;
+            let offset = args
+                .get(4)
+                .map(|value| {
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| "pair offset must be an unsigned integer".to_string())
+                })
+                .transpose()?
+                .unwrap_or(0);
+            let limit = args
+                .get(5)
+                .map(|value| {
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| "pair limit must be an unsigned integer".to_string())
+                })
+                .transpose()?
+                .unwrap_or(20);
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::exchanges::pair_exchanges(
+                &state, &args[2], max_lag_ms, offset, limit,
             )?)
         }
         "analyze-cluster" => {
