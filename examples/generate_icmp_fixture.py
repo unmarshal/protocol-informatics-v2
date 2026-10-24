@@ -96,11 +96,29 @@ def main() -> None:
                 + frame
             )
     (HERE / "icmp_sweep_512.pcap").write_bytes(sweep)
+    sweep_holdout = bytearray(header)
+    for sequence in range(512, 1024):
+        for icmp_type in (8, 0):
+            frame = packet(icmp_type, 0x4567, sequence, bytes.fromhex("11223344"))
+            timestamp_us = (sequence - 512) * 100_000 + (0 if icmp_type == 8 else 50_000)
+            sweep_holdout.extend(
+                struct.pack(
+                    "<IIII",
+                    1_721_000_000 + timestamp_us // 1_000_000,
+                    timestamp_us % 1_000_000,
+                    len(frame),
+                    len(frame),
+                )
+                + frame
+            )
+    (HERE / "icmp_sweep_512_holdout.pcap").write_bytes(sweep_holdout)
     (HERE / "icmp_sweep_512.truth.json").write_text(
         json.dumps(
             {
                 "packet_count": 1024,
                 "sequence_range": [0, 511],
+                "holdout_capture": "icmp_sweep_512_holdout.pcap",
+                "holdout_sequence_range": [512, 1023],
                 "request_type": 8,
                 "reply_type": 0,
                 "identifier": 0x4567,

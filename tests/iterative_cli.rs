@@ -3425,3 +3425,99 @@ fn capture_step_pages_large_capture_tags_and_resumes_after_partial_tagging() {
     assert_eq!(cli(&["verify", root_text])["observations"], 1024);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn large_icmp_trials_disclose_sampling_and_validate_new_sequence_values() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&[
+        "init",
+        root_text,
+        "Do ICMP format groups survive new sequences?",
+    ]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Sweep sequence values",
+        "-",
+        "Request and reply formats persist across the boundary",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let discovery = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "discovery",
+        "sequences 0 through 511",
+    ]);
+    let discovery_id = discovery["event"]["trial"]["id"].as_str().unwrap();
+    let validation = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "validation",
+        "sequences 512 through 1023",
+    ]);
+    let validation_id = validation["event"]["trial"]["id"].as_str().unwrap();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    cli(&[
+        "import",
+        root_text,
+        discovery_id,
+        "pcap-icmp",
+        path(&fixtures.join("icmp_sweep_512.pcap")),
+    ]);
+    cli(&[
+        "import",
+        root_text,
+        validation_id,
+        "pcap-icmp",
+        path(&fixtures.join("icmp_sweep_512_holdout.pcap")),
+    ]);
+    let clustered = cli(&["cluster", root_text, discovery_id, "respect"]);
+    assert_eq!(
+        clustered["method"],
+        "direction_then_correlated_discriminator_v2"
+    );
+    assert_eq!(clustered["selected_observation_count"], 1024);
+    assert_eq!(clustered["observation_count"], 512);
+    assert_eq!(
+        clustered["sampling_method"],
+        "direction_length_stratified_hash_v1"
+    );
+    assert_eq!(clustered["sampling_strata_count"], 2);
+    assert_eq!(clustered["clusters"].as_array().unwrap().len(), 2);
+    for cluster in clustered["clusters"].as_array().unwrap() {
+        assert_eq!(cluster["member_count"], 256);
+    }
+    assert_eq!(
+        cli(&["cluster", root_text, discovery_id, "respect"]),
+        clustered
+    );
+    let checked = cli(&[
+        "validate-clusters",
+        root_text,
+        discovery_id,
+        validation_id,
+        "respect",
+    ]);
+    assert_eq!(checked["method"], "stable_header_and_medoid_held_out_v2");
+    assert_eq!(checked["discovery_total"], 1024);
+    assert_eq!(checked["discovery_count"], 512);
+    assert_eq!(checked["validation_total"], 1024);
+    assert_eq!(checked["validation_count"], 512);
+    assert_eq!(checked["assigned_count"], 512);
+    assert_eq!(checked["ambiguous_count"], 0);
+    assert_eq!(checked["unassigned_count"], 0);
+    assert_eq!(
+        checked["validation_sampling_method"],
+        "direction_length_stratified_hash_v1"
+    );
+    let report = root.join("large-clusters.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("selected observations"));
+    assert!(html.contains("sampled from"));
+    assert_eq!(cli(&["verify", root_text])["observations"], 2048);
+    fs::remove_dir_all(root).unwrap();
+}

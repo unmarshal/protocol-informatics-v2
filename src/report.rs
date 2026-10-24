@@ -372,6 +372,8 @@ for(const batch of state.capture_tag_batches||[]) {
 }
 if(!(state.capture_tag_batches||[]).length) byId('captureTags').append(node('div','No captures tagged to an action.','small muted'));
 if(state.cluster_report) {
+  const sample=state.cluster_report;
+  byId('clusters').append(node('div','Analyzed '+sample.observation_count+' of '+sample.selected_observation_count+' selected observations · '+sample.sampling_method+(sample.sampling_strata_count?' · '+sample.sampling_strata_count+' strata':''),'small muted'));
   for(const cluster of state.cluster_report.clusters) {
     const row=node('div','', 'row');
     row.append(node('strong',cluster.id+' · '+cluster.member_count+' observation(s)'),node('div','Representative '+cluster.representative_observation_id+' · lengths '+cluster.minimum_length+'–'+cluster.maximum_length,'small muted'));
@@ -385,7 +387,7 @@ if(state.cluster_report) {
 } else byId('clusters').append(node('div',state.cluster_error||'No groups available.','small muted'));
 for(const item of state.cluster_validations||[]) {
   const result=item.result, row=node('div','', 'row');
-  row.append(node('strong',item.experiment_id+' · '+result.cluster_count+' discovery group(s)'),node('div',result.assigned_count+' assigned · '+result.ambiguous_count+' ambiguous · '+result.unassigned_count+' unassigned of '+result.validation_count+' held-out observations','small muted'));
+  row.append(node('strong',item.experiment_id+' · '+result.cluster_count+' discovery group(s)'),node('div',result.assigned_count+' assigned · '+result.ambiguous_count+' ambiguous · '+result.unassigned_count+' unassigned of '+result.validation_count+' sampled from '+result.validation_total+' held-out observations','small muted'),node('div','Discovery '+result.discovery_count+'/'+result.discovery_total+' ('+result.discovery_sampling_method+') · validation '+result.validation_sampling_method,'small muted'));
   for(const observation of result.observations.slice(0,12)) {
     const label=observation.assigned_cluster_id||observation.candidates.map(candidate=>candidate.cluster_id).join(', ')||'no compatible group';
     row.append(node('div',observation.observation_id+' · '+observation.status+' · '+label,'small'));

@@ -6,7 +6,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::workflow::{State, from_hex};
+use crate::workflow::{Observation, State, from_hex};
 
 const MAX_OBSERVATIONS: usize = 512;
 const MAX_CLUSTERS: usize = 32;
@@ -62,7 +62,10 @@ pub struct ClusterReport {
     pub provisional: bool,
     pub direction_mode: &'static str,
     pub trial_id: Option<String>,
+    pub selected_observation_count: usize,
     pub observation_count: usize,
+    pub sampling_method: &'static str,
+    pub sampling_strata_count: usize,
     pub maximum_observations: usize,
     pub maximum_header_bytes: usize,
     pub maximum_distance_bytes: usize,
@@ -114,7 +117,11 @@ pub struct ClusterValidation {
     pub validation_trial_id: String,
     pub direction_mode: &'static str,
     pub discovery_count: usize,
+    pub discovery_total: usize,
+    pub discovery_sampling_method: &'static str,
     pub validation_count: usize,
+    pub validation_total: usize,
+    pub validation_sampling_method: &'static str,
     pub cluster_count: usize,
     pub assigned_count: usize,
     pub ambiguous_count: usize,
@@ -159,11 +166,11 @@ pub fn validate_clusters(
             })
         })
         .collect();
-    if validation.is_empty() || validation.len() > MAX_OBSERVATIONS {
-        return Err(format!(
-            "validation trial needs 1 to {MAX_OBSERVATIONS} observations"
-        ));
+    if validation.is_empty() {
+        return Err("validation trial has no observations".into());
     }
+    let validation_total = validation.len();
+    let (validation, validation_sampling_method, _) = sample_observations(&validation);
     let mut representatives = BTreeMap::new();
     for cluster in &report.clusters {
         let representative = state
@@ -264,13 +271,17 @@ pub fn validate_clusters(
     }
     Ok(ClusterValidation {
         revision: state.revision,
-        method: "stable_header_and_medoid_held_out_v1",
+        method: "stable_header_and_medoid_held_out_v2",
         provisional: true,
         discovery_trial_id: discovery_trial_id.into(),
         validation_trial_id: validation_trial_id.into(),
         direction_mode: report.direction_mode,
         discovery_count: report.observation_count,
+        discovery_total: report.selected_observation_count,
+        discovery_sampling_method: report.sampling_method,
         validation_count: observations.len(),
+        validation_total,
+        validation_sampling_method,
         cluster_count: report.clusters.len(),
         assigned_count,
         ambiguous_count,
@@ -300,6 +311,88 @@ struct Split {
     evidence_length: bool,
 }
 
+fn sample_observations<'a>(
+    observations: &[&'a Observation],
+) -> (Vec<&'a Observation>, &'static str, usize) {
+    if observations.len() <= MAX_OBSERVATIONS {
+        return (observations.to_vec(), "all", 0);
+    }
+    let digests: Vec<[u8; 32]> = observations
+        .iter()
+        .map(|observation| Sha256::digest(observation.id.as_bytes()).into())
+        .collect();
+    let rank = |left: &usize, right: &usize| {
+        digests[*left]
+            .cmp(&digests[*right])
+            .then_with(|| observations[*left].id.cmp(&observations[*right].id))
+    };
+    let mut strata = BTreeMap::<(Option<String>, usize), Vec<usize>>::new();
+    for (index, observation) in observations.iter().enumerate() {
+        strata
+            .entry((
+                observation.direction.clone(),
+                observation.bytes_hex.len() / 2,
+            ))
+            .or_default()
+            .push(index);
+    }
+    let strata_count = strata.len();
+    if strata_count > MAX_OBSERVATIONS {
+        let mut indices: Vec<_> = (0..observations.len()).collect();
+        indices.sort_unstable_by(rank);
+        indices.truncate(MAX_OBSERVATIONS);
+        indices.sort_unstable();
+        return (
+            indices
+                .into_iter()
+                .map(|index| observations[index])
+                .collect(),
+            "hash_v1",
+            strata_count,
+        );
+    }
+    let slots = MAX_OBSERVATIONS - strata_count;
+    let extra_capacity = observations.len() - strata_count;
+    let mut groups: Vec<_> = strata
+        .into_values()
+        .map(|indices| {
+            let capacity = indices.len() - 1;
+            let numerator = (slots as u128) * (capacity as u128);
+            let extra = (numerator / extra_capacity as u128) as usize;
+            let remainder = numerator % extra_capacity as u128;
+            (indices, 1 + extra, remainder)
+        })
+        .collect();
+    let assigned: usize = groups.iter().map(|(_, quota, _)| *quota).sum();
+    let mut remainder_order: Vec<_> = (0..groups.len()).collect();
+    remainder_order.sort_unstable_by(|left, right| {
+        groups[*right]
+            .2
+            .cmp(&groups[*left].2)
+            .then_with(|| left.cmp(right))
+    });
+    for group in remainder_order
+        .into_iter()
+        .take(MAX_OBSERVATIONS - assigned)
+    {
+        groups[group].1 += 1;
+    }
+    let mut chosen = Vec::with_capacity(MAX_OBSERVATIONS);
+    for (mut indices, quota, _) in groups {
+        indices.sort_unstable_by(rank);
+        chosen.extend(indices.into_iter().take(quota));
+    }
+    chosen.sort_unstable();
+    (
+        chosen
+            .into_iter()
+            .map(|index| observations[index])
+            .collect(),
+        "direction_length_stratified_hash_v1",
+        strata_count,
+    )
+}
+
 pub fn cluster_observations(
     state: &State,
     trial_id: Option<&str>,
@@ -325,11 +418,8 @@ pub fn cluster_observations(
     if selected.is_empty() {
         return Err("no observations selected".into());
     }
-    if selected.len() > MAX_OBSERVATIONS {
-        return Err(format!(
-            "clustering supports at most {MAX_OBSERVATIONS} observations per query"
-        ));
-    }
+    let selected_observation_count = selected.len();
+    let (selected, sampling_method, sampling_strata_count) = sample_observations(&selected);
     let samples: Vec<Sample> = selected
         .iter()
         .map(|observation| {
@@ -401,7 +491,7 @@ pub fn cluster_observations(
     });
     Ok(ClusterReport {
         revision: state.revision,
-        method: "direction_then_correlated_discriminator_v1",
+        method: "direction_then_correlated_discriminator_v2",
         provisional: true,
         direction_mode: if respect_direction {
             "respect"
@@ -409,7 +499,10 @@ pub fn cluster_observations(
             "ignore"
         },
         trial_id: trial_id.map(str::to_owned),
+        selected_observation_count,
         observation_count: samples.len(),
+        sampling_method,
+        sampling_strata_count,
         maximum_observations: MAX_OBSERVATIONS,
         maximum_header_bytes: MAX_HEADER_BYTES,
         maximum_distance_bytes: MAX_DISTANCE_BYTES,
@@ -660,5 +753,35 @@ mod tests {
         let report = cluster_observations(&state, None, false).unwrap();
         assert_eq!(report.clusters.len(), 1);
         assert_eq!(report.clusters[0].member_count, 8);
+    }
+
+    #[test]
+    fn many_length_strata_use_disclosed_deterministic_fallback() {
+        let observations: Vec<_> = (0..513)
+            .map(|index| Observation {
+                id: format!("obs-{index:04}"),
+                capture_id: "capture".into(),
+                source_index: index,
+                source_offset: None,
+                timestamp_ns: None,
+                direction: None,
+                source_port: None,
+                destination_port: None,
+                tcp_sequence: None,
+                stream_gap_before: false,
+                source_spans: Vec::new(),
+                bytes_hex: "aa".repeat(index + 1),
+            })
+            .collect();
+        let selected: Vec<_> = observations.iter().collect();
+        let (first, method, strata) = sample_observations(&selected);
+        let (again, _, _) = sample_observations(&selected);
+        assert_eq!(method, "hash_v1");
+        assert_eq!(strata, 513);
+        assert_eq!(first.len(), 512);
+        assert_eq!(
+            first.iter().map(|item| &item.id).collect::<Vec<_>>(),
+            again.iter().map(|item| &item.id).collect::<Vec<_>>()
+        );
     }
 }
