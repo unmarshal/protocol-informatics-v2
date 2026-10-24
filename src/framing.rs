@@ -323,7 +323,7 @@ pub struct FramingInference {
     pub candidates: Vec<FramingCandidate>,
 }
 
-fn trial_observations<'a>(
+pub(crate) fn trial_observations<'a>(
     state: &'a State,
     trial_id: &str,
 ) -> Result<Vec<&'a Observation>, String> {
@@ -358,6 +358,20 @@ pub fn infer_length_prefix(
     discovery_trial_id: &str,
     validation_trial_id: &str,
 ) -> Result<FramingInference, String> {
+    infer_length_prefix_for_offsets(
+        state,
+        discovery_trial_id,
+        validation_trial_id,
+        &[0, 1, 2, 3, 4],
+    )
+}
+
+pub(crate) fn infer_length_prefix_for_offsets(
+    state: &State,
+    discovery_trial_id: &str,
+    validation_trial_id: &str,
+    prefix_offsets: &[usize],
+) -> Result<FramingInference, String> {
     let discovery_trial = state
         .trials
         .iter()
@@ -389,7 +403,7 @@ pub fn infer_length_prefix(
 
     let mut candidates = Vec::new();
     for start_offset in 0..=8 {
-        for prefix_offset in 0..=4 {
+        for &prefix_offset in prefix_offsets {
             for prefix_width in [1, 2, 4] {
                 for byte_order in [ByteOrder::BigEndian, ByteOrder::LittleEndian] {
                     if prefix_width == 1 && byte_order == ByteOrder::LittleEndian {

@@ -16,6 +16,7 @@ mod profile;
 pub mod query;
 pub mod reassembly;
 pub mod report;
+pub mod tlv;
 pub mod workflow;
 
 pub use alignment::{AlignError, AlignedPair, CpuAligner, PairwiseAligner};

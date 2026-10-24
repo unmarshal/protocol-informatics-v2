@@ -1716,6 +1716,41 @@ fn agent_can_probe_and_validate_length_prefixed_binary_records() {
         assert_eq!(record["length_value"], expected["length"]);
         assert_eq!(record["source_file_offset"], expected["start"]);
     }
+    let tlv_probe = cli(&[
+        "probe-tlv",
+        root_text,
+        first,
+        "4",
+        "1",
+        "2",
+        "big",
+        "payload",
+        "2",
+    ]);
+    assert_eq!(tlv_probe["status"], "complete");
+    assert_eq!(tlv_probe["element_count"], 3);
+    for (element, expected) in tlv_probe["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(truth["cases"][0]["records"].as_array().unwrap())
+    {
+        assert_eq!(element["start"], expected["start"]);
+        assert_eq!(element["end"], expected["end"]);
+        assert_eq!(element["type_start"], expected["start"]);
+        assert_eq!(
+            element["type_end"].as_u64().unwrap(),
+            expected["start"].as_u64().unwrap() + 1
+        );
+        assert_eq!(element["value_start"], element["length_field_end"]);
+        assert_eq!(element["value_end"], expected["logical_end"]);
+        assert_eq!(element["value_length"], expected["length"]);
+        assert_eq!(
+            element["type_hex"],
+            format!("{:02x}", expected["kind"].as_u64().unwrap())
+        );
+        assert_eq!(element["source_file_offset"], expected["start"]);
+    }
     let wrong = cli(&[
         "probe-framing",
         root_text,
@@ -1736,6 +1771,18 @@ fn agent_can_probe_and_validate_length_prefixed_binary_records() {
     assert_eq!(inferred["candidate_count"], 1);
     assert_eq!(inferred["candidates"][0]["config"], probe["config"]);
     assert_eq!(inferred["candidates"][0]["validation_matches"], 2);
+    let tlv_inferred = cli(&["infer-tlv", root_text, discovery_id, validation_id]);
+    assert_eq!(tlv_inferred["candidate_count"], 1);
+    assert_eq!(tlv_inferred["candidates"][0]["config"], tlv_probe["config"]);
+    assert_eq!(
+        tlv_inferred["candidates"][0]["recurring_discovery_types"],
+        3
+    );
+    assert_eq!(
+        tlv_inferred["candidates"][0]["validation_elements_with_seen_types"],
+        6
+    );
+    assert_eq!(tlv_inferred["candidates"][0]["type_profile_count"], 3);
     let revision_before = cli(&["resume", root_text])["revision"].as_u64().unwrap();
     let committed = cli(&[
         "commit-framing",
@@ -1807,6 +1854,8 @@ fn agent_can_probe_and_validate_length_prefixed_binary_records() {
     cli(&["report", root_text, path(&report)]);
     let html = fs::read_to_string(&report).unwrap();
     assert!(html.contains("Candidate record framing"));
+    assert!(html.contains("Candidate typed records"));
+    assert!(html.contains("tlv_inferences"));
     assert!(html.contains("framing_previews"));
     assert!(html.contains("framing_inferences"));
     assert!(html.contains("Committed frames"));
@@ -1829,6 +1878,12 @@ fn agent_can_probe_and_validate_length_prefixed_binary_records() {
     let challenged = cli(&["infer-framing", root_text, discovery_id, validation_id]);
     assert_eq!(challenged["validation_count"], 3);
     assert_eq!(challenged["candidates"][0]["validation_matches"], 2);
+    let tlv_challenged = cli(&["infer-tlv", root_text, discovery_id, validation_id]);
+    assert_eq!(tlv_challenged["candidates"][0]["validation_matches"], 2);
+    assert_eq!(
+        tlv_challenged["candidates"][0]["validation_counterexamples"][0]["observation_id"],
+        corrupted_id
+    );
     assert_eq!(
         challenged["candidates"][0]["validation_counterexamples"][0]["observation_id"],
         corrupted_id
@@ -1864,6 +1919,69 @@ fn agent_can_probe_and_validate_length_prefixed_binary_records() {
     );
     fs::write(&event_path, original_events).unwrap();
     assert_eq!(cli(&["verify", root_text])["observations"], 5);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn tlv_probe_supports_two_byte_types_and_rejects_invalid_type_widths() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&["init", root_text, "Are records typed?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Change record types",
+        "-",
+        "Type bytes precede lengths",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&["trial", root_text, experiment_id, "discovery", "two types"]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let file = root.join("typed.bin");
+    fs::write(
+        &file,
+        [
+            0x12, 0x34, 0x00, 0x01, 0xaa, 0x56, 0x78, 0x00, 0x02, 0xbb, 0xcc,
+        ],
+    )
+    .unwrap();
+    let imported = cli(&["import", root_text, trial_id, "binary", path(&file)]);
+    let observation_id = imported["event"]["observations"][0]["id"].as_str().unwrap();
+    let probe = cli(&[
+        "probe-tlv",
+        root_text,
+        observation_id,
+        "0",
+        "2",
+        "2",
+        "big",
+        "payload",
+        "1",
+    ]);
+    assert_eq!(probe["status"], "complete");
+    assert_eq!(probe["element_count"], 2);
+    assert_eq!(probe["elements"][0]["type_hex"], "1234");
+    assert_eq!(probe["elements"][0]["value_start"], 4);
+    assert_eq!(probe["elements"][0]["value_end"], 5);
+    assert_eq!(probe["elements"][1]["type_hex"], "5678");
+    assert_eq!(probe["elements"][1]["value_start"], 9);
+    assert_eq!(probe["elements"][1]["value_end"], 11);
+    let invalid = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "probe-tlv",
+            root_text,
+            observation_id,
+            "0",
+            "3",
+            "2",
+            "big",
+            "payload",
+            "1",
+        ])
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("type width must be 1 or 2"));
     fs::remove_dir_all(root).unwrap();
 }
 

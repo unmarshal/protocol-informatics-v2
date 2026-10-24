@@ -176,6 +176,8 @@ The candidate `[6, 8)` big-endian matches both held-out values. IPv6 parsing fol
 
 `infer-framing` searches a bounded set of those models across two discovery observations or more in one trial. It requires each discovery observation to parse into at least two records with varying length values, then reports exact fits and counterexamples from a separate validation trial in the same experiment. Its search covers start offsets 0–8, length-field offsets 0–4, field widths 1/2/4, both byte orders where relevant, total/payload lengths, and alignments 1/2/4. It examines at most 16 observations per trial and 64 KiB per observation. A structural fit is a candidate, not proof that the bytes encode a length.
 
+`probe-tlv` treats the bytes before the length field as a one- or two-byte raw type code and reports each element's type, value, logical, and padded spans with source provenance. `infer-tlv` searches those typed layouts on discovery files, checks the boundaries on held-out files, and counts recurring type codes and novel held-out codes. Type recurrence is descriptive evidence; it does not assign a meaning to a code or reject a valid new code. See [the TLV method](docs/tlv-method.md).
+
 `commit-framing` records a complete model with at least two records for one observation. Its caller-supplied key makes retries safe; a different model cannot reuse the key. Commit-time frame IDs and half-open offsets persist in the event log, and replay checks them against the original observation. `framing-status` and paged `frames` expose the result; `frame-span` reads up to 4096 bytes per call in frame-relative coordinates, with the parent observation offsets and exact source-file or TCP packet provenance. Frames form a separate derived layer, so they are not silently counted as raw observations by clustering or alignment. The HTML report shows committed boundaries alongside proposed ones.
 
 `frame-value` attaches a controlled unsigned value to a committed frame as discovery or validation evidence. `infer-frame-value` runs the same exact-match search as `infer-value`, using frame-relative logical bytes (excluding alignment padding) and returning frame IDs for held-out counterexamples. At least three discovery frames with two distinct values are required. Discovery and validation frames must come from separate captures; the result lists those capture IDs. A later annotation of the same variable on the same frame supersedes the earlier one in the materialized state, while both events remain in the log. The HTML report shows frame field candidates and highlights a unique shortest validated candidate in the parent observation.
@@ -191,7 +193,9 @@ cargo run -- import /tmp/pi-records trial-000003 binary examples/records_discove
 cargo run -- import /tmp/pi-records trial-000004 binary examples/records_validation_a.bin
 cargo run -- import /tmp/pi-records trial-000004 binary examples/records_validation_b.bin
 cargo run -- infer-framing /tmp/pi-records trial-000003 trial-000004
+cargo run -- infer-tlv /tmp/pi-records trial-000003 trial-000004
 cargo run -- probe-framing /tmp/pi-records obs-000005-0000 4 1 2 big payload 2
+cargo run -- probe-tlv /tmp/pi-records obs-000005-0000 4 1 2 big payload 2
 cargo run -- commit-framing /tmp/pi-records obs-000005-0000 4 1 2 big payload 2 discovery-a-v1
 cargo run -- commit-framing /tmp/pi-records obs-000008-0000 4 1 2 big payload 2 validation-b-v1
 cargo run -- framing-status /tmp/pi-records discovery-a-v1
