@@ -6,4 +6,6 @@
 
 The deterministic `varint_*.bin` fixture crosses the 127/128-byte encoding boundary. Its independent truth file records every prefix and byte span. Two discovery files admit two candidate starts; only the start at byte 4 fits both held-out files. Inspect the failed alternative before accepting the surviving candidate. Corrupting a validation prefix produces a named counterexample without changing the discovery fit.
 
-This first varint model does not persist derived frame IDs. Keep the raw observations and inference JSON, and use `span` to inspect exact bytes. Durable variable-width frames, signed zigzag encodings, base-128 big-endian variants, and nested records remain separate work.
+`commit-varint` stores a complete interpretation of one observation containing at least two records. It uses a caller key so retries return the same run, and assigns stable frame IDs at commit time. The event log replays each boundary and decoded length against the immutable parent observation. `varint-status` retrieves the run, `frames` pages its records, and `frame-span` reads frame-relative bytes with original source provenance. `frame-value` and `infer-frame-value` accept these IDs, so controlled values can be tested across separate captures. Fixed-width and varint run keys share one namespace.
+
+The model still excludes signed zigzag encodings, base-128 big-endian variants, and nested records. These need separate hypotheses and held-out checks.

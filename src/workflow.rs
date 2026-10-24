@@ -15,8 +15,9 @@ use crate::pcap::{
     extract_tcp_segments, extract_udp_messages,
 };
 use crate::reassembly::{SourceSpan, reassemble_tcp_segments};
+use crate::varint::{VarintConfig, probe_varint};
 
-const SCHEMA_VERSION: u32 = 9;
+const SCHEMA_VERSION: u32 = 10;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +121,50 @@ pub struct FramingRun {
     pub observation_id: String,
     pub config: FramingConfig,
     pub records: Vec<FramingRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VarintRun {
+    pub id: String,
+    pub key: String,
+    pub observation_id: String,
+    pub config: VarintConfig,
+    pub records: Vec<FramingRecord>,
+}
+
+pub fn varint_run_from_probe(
+    key: String,
+    observation_id: String,
+    config: VarintConfig,
+    state: &State,
+) -> Result<VarintRun, String> {
+    let probe = probe_varint(state, &observation_id, config)?;
+    if probe.status != FramingStatus::Complete || probe.records.len() < 2 {
+        return Err(format!(
+            "varint model must consume the observation with at least two records; stopped at {} ({:?})",
+            probe.next_offset, probe.status
+        ));
+    }
+    Ok(VarintRun {
+        id: String::new(),
+        key,
+        observation_id,
+        config,
+        records: probe
+            .records
+            .into_iter()
+            .map(|record| FramingRecord {
+                id: String::new(),
+                index: record.index,
+                start: record.start,
+                logical_end: record.logical_end,
+                end: record.end,
+                length_field_start: record.length_field_start,
+                length_field_end: record.length_field_end,
+                length_value: record.length_value,
+            })
+            .collect(),
+    })
 }
 
 pub fn framing_run_from_probe(
@@ -275,6 +320,9 @@ pub enum Event {
     FramingCommitted {
         run: FramingRun,
     },
+    VarintCommitted {
+        run: VarintRun,
+    },
     CaptureRunReserved {
         run: CaptureRun,
     },
@@ -343,6 +391,12 @@ impl Event {
                     record.id = format!("frame-{revision:06}-{index:04}");
                 }
             }
+            Self::VarintCommitted { run } => {
+                run.id = format!("varint-{revision:06}");
+                for (index, record) in run.records.iter_mut().enumerate() {
+                    record.id = format!("frame-{revision:06}-{index:04}");
+                }
+            }
             Self::CaptureRunReserved { run } => {
                 run.id = format!("run-{revision:06}");
             }
@@ -394,6 +448,7 @@ pub struct State {
     pub capture_runs: Vec<CaptureRun>,
     pub observations: Vec<Observation>,
     pub framing_runs: Vec<FramingRun>,
+    pub varint_runs: Vec<VarintRun>,
     pub actions: Vec<Action>,
     pub tags: Vec<Tag>,
     pub window_tags: Vec<WindowTag>,
@@ -404,6 +459,25 @@ pub struct State {
 }
 
 impl State {
+    pub fn frame_by_id(&self, frame_id: &str) -> Option<(&str, &str, &FramingRecord)> {
+        self.framing_runs
+            .iter()
+            .find_map(|run| {
+                run.records
+                    .iter()
+                    .find(|record| record.id == frame_id)
+                    .map(|record| (run.id.as_str(), run.observation_id.as_str(), record))
+            })
+            .or_else(|| {
+                self.varint_runs.iter().find_map(|run| {
+                    run.records
+                        .iter()
+                        .find(|record| record.id == frame_id)
+                        .map(|record| (run.id.as_str(), run.observation_id.as_str(), record))
+                })
+            })
+    }
+
     fn empty() -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
@@ -416,6 +490,7 @@ impl State {
             capture_runs: Vec::new(),
             observations: Vec::new(),
             framing_runs: Vec::new(),
+            varint_runs: Vec::new(),
             actions: Vec::new(),
             tags: Vec::new(),
             window_tags: Vec::new(),
@@ -569,6 +644,7 @@ impl State {
                         .framing_runs
                         .iter()
                         .any(|old| old.key == run.key || old.id == run.id)
+                    || self.varint_runs.iter().any(|old| old.key == run.key)
                     || run.config.validate()? != run.config
                 {
                     return Err("invalid or duplicate framing run".into());
@@ -600,6 +676,47 @@ impl State {
                     }
                 }
                 self.framing_runs.push(run.clone());
+            }
+            Event::VarintCommitted { run } => {
+                if record.schema_version < 10 {
+                    return Err("varint commits require schema version 10".into());
+                }
+                if run.key.is_empty()
+                    || run.key.len() > 128
+                    || run.key.chars().any(char::is_control)
+                    || run.id != format!("varint-{:06}", record.revision)
+                    || self
+                        .varint_runs
+                        .iter()
+                        .any(|old| old.key == run.key || old.id == run.id)
+                    || self.framing_runs.iter().any(|old| old.key == run.key)
+                    || run.config.validate()? != run.config
+                {
+                    return Err("invalid or duplicate varint run".into());
+                }
+                let expected = varint_run_from_probe(
+                    run.key.clone(),
+                    run.observation_id.clone(),
+                    run.config,
+                    self,
+                )?;
+                if expected.records.len() != run.records.len() {
+                    return Err("committed varint frame count does not match source bytes".into());
+                }
+                for (actual, expected) in run.records.iter().zip(&expected.records) {
+                    if actual.id != format!("frame-{:06}-{:04}", record.revision, expected.index)
+                        || actual.index != expected.index
+                        || actual.start != expected.start
+                        || actual.logical_end != expected.logical_end
+                        || actual.end != expected.end
+                        || actual.length_field_start != expected.length_field_start
+                        || actual.length_field_end != expected.length_field_end
+                        || actual.length_value != expected.length_value
+                    {
+                        return Err("committed varint frame does not match source bytes".into());
+                    }
+                }
+                self.varint_runs.push(run.clone());
             }
             Event::CaptureRunReserved { run } => {
                 if !self.trials.iter().any(|trial| trial.id == run.trial_id) {
@@ -763,11 +880,7 @@ impl State {
                 if record.schema_version < 9 {
                     return Err("frame values require schema version 9".into());
                 }
-                if !self.framing_runs.iter().any(|run| {
-                    run.records
-                        .iter()
-                        .any(|frame| frame.id == known_value.frame_id)
-                }) {
+                if self.frame_by_id(&known_value.frame_id).is_none() {
                     return Err(format!("unknown frame {}", known_value.frame_id));
                 }
                 if known_value.variable.trim().is_empty()

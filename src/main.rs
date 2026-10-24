@@ -78,6 +78,10 @@ fn print_help() {
     println!("  probe-varint <dir> <obs-id> <start> <field-offset> <total|payload> <alignment>");
     println!("  infer-varint <dir> <discovery-trial> <validation-trial>");
     println!(
+        "  commit-varint <dir> <obs-id> <start> <field-offset> <total|payload> <alignment> <key>"
+    );
+    println!("  varint-status <dir> <key>          inspect a committed varint run");
+    println!(
         "  commit-framing <dir> <obs-id> <start> <field-offset> <width> <big|little> <total|payload> <alignment> <key>"
     );
     println!("  framing-status <dir> <key>         inspect a committed framing run");
@@ -657,6 +661,9 @@ fn commit_framing(root: &Path, args: &[String]) -> Result<(), String> {
     let matches_request =
         |run: &workflow::FramingRun| &run.observation_id == observation_id && run.config == config;
     let state = workflow::load(root)?;
+    if state.varint_runs.iter().any(|run| &run.key == key) {
+        return Err(format!("framing key {key} is already used by a varint run"));
+    }
     if let Some(existing) = state.framing_runs.iter().find(|run| &run.key == key) {
         return if matches_request(existing) {
             print_json(&json!({"revision": state.revision, "run": existing, "replayed": true}))
@@ -684,6 +691,53 @@ fn commit_framing(root: &Path, args: &[String]) -> Result<(), String> {
     Err(appended
         .err()
         .unwrap_or_else(|| "framing run was not recorded".into()))
+}
+
+fn commit_varint(root: &Path, args: &[String]) -> Result<(), String> {
+    require_len(args, 8)?;
+    let observation_id = &args[2];
+    let config = parse_varint_config(args)?;
+    let key = &args[7];
+    if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
+        return Err(
+            "varint key must be nonempty, at most 128 bytes, and contain no control characters"
+                .into(),
+        );
+    }
+    let matches_request =
+        |run: &workflow::VarintRun| &run.observation_id == observation_id && run.config == config;
+    let state = workflow::load(root)?;
+    if state.framing_runs.iter().any(|run| &run.key == key) {
+        return Err(format!(
+            "varint key {key} is already used by a fixed-width framing run"
+        ));
+    }
+    if let Some(existing) = state.varint_runs.iter().find(|run| &run.key == key) {
+        return if matches_request(existing) {
+            print_json(&json!({"revision": state.revision, "run": existing, "replayed": true}))
+        } else {
+            Err(format!(
+                "varint key {key} was used with different arguments"
+            ))
+        };
+    }
+    let run = workflow::varint_run_from_probe(key.clone(), observation_id.clone(), config, &state)?;
+    let appended = workflow::append(root, Event::VarintCommitted { run });
+    let updated = workflow::load(root)?;
+    if let Some(existing) = updated.varint_runs.iter().find(|run| &run.key == key) {
+        return if matches_request(existing) {
+            print_json(
+                &json!({"revision": updated.revision, "run": existing, "replayed": appended.is_err()}),
+            )
+        } else {
+            Err(format!(
+                "varint key {key} was used with different arguments"
+            ))
+        };
+    }
+    Err(appended
+        .err()
+        .unwrap_or_else(|| "varint run was not recorded".into()))
 }
 
 fn run_investigation_command(args: &[String]) -> Result<(), String> {
@@ -899,6 +953,7 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             )?)
         }
         "commit-framing" => commit_framing(root, args),
+        "commit-varint" => commit_varint(root, args),
         "framing-status" => {
             require_len(args, 3)?;
             let state = workflow::load(root)?;
@@ -909,16 +964,41 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 .ok_or_else(|| format!("unknown framing key {}", args[2]))?;
             print_json(&json!({"revision": state.revision, "run": run}))
         }
-        "frames" => {
-            if args.len() < 3 || args.len() > 5 {
-                return Err("expected framing key, optional offset and limit".into());
-            }
+        "varint-status" => {
+            require_len(args, 3)?;
             let state = workflow::load(root)?;
             let run = state
-                .framing_runs
+                .varint_runs
                 .iter()
                 .find(|run| run.key == args[2])
-                .ok_or_else(|| format!("unknown framing key {}", args[2]))?;
+                .ok_or_else(|| format!("unknown varint key {}", args[2]))?;
+            print_json(&json!({"revision": state.revision, "run": run}))
+        }
+        "frames" => {
+            if args.len() < 3 || args.len() > 5 {
+                return Err("expected frame run key, optional offset and limit".into());
+            }
+            let state = workflow::load(root)?;
+            let (run_id, key, observation_id, model, records) =
+                if let Some(run) = state.framing_runs.iter().find(|run| run.key == args[2]) {
+                    (
+                        run.id.as_str(),
+                        run.key.as_str(),
+                        run.observation_id.as_str(),
+                        "fixed_width",
+                        run.records.as_slice(),
+                    )
+                } else if let Some(run) = state.varint_runs.iter().find(|run| run.key == args[2]) {
+                    (
+                        run.id.as_str(),
+                        run.key.as_str(),
+                        run.observation_id.as_str(),
+                        "unsigned_leb128",
+                        run.records.as_slice(),
+                    )
+                } else {
+                    return Err(format!("unknown frame run key {}", args[2]));
+                };
             let offset: usize = args.get(3).map_or(Ok(0), |value| {
                 value.parse().map_err(|_| "offset must be an integer")
             })?;
@@ -928,12 +1008,12 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             if limit == 0 || limit > 100 {
                 return Err("limit must be between 1 and 100".into());
             }
-            let total = run.records.len();
-            let records: Vec<_> = run.records.iter().skip(offset).take(limit).collect();
+            let total = records.len();
+            let records: Vec<_> = records.iter().skip(offset).take(limit).collect();
             let next_offset = (offset.saturating_add(limit) < total).then_some(offset + limit);
             print_json(
-                &json!({"revision": state.revision, "framing_id": run.id, "key": run.key,
-                "observation_id": run.observation_id, "coordinate_system": "observation_bytes",
+                &json!({"revision": state.revision, "framing_id": run_id, "key": key,
+                "observation_id": observation_id, "model": model, "coordinate_system": "observation_bytes",
                 "total": total, "offset": offset, "next_offset": next_offset, "frames": records}),
             )
         }
@@ -942,15 +1022,8 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             let start: usize = args[3].parse().map_err(|_| "start must be an integer")?;
             let end: usize = args[4].parse().map_err(|_| "end must be an integer")?;
             let state = workflow::load(root)?;
-            let (run, frame) = state
-                .framing_runs
-                .iter()
-                .find_map(|run| {
-                    run.records
-                        .iter()
-                        .find(|frame| frame.id == args[2])
-                        .map(|frame| (run, frame))
-                })
+            let (run_id, observation_id, frame) = state
+                .frame_by_id(&args[2])
                 .ok_or_else(|| format!("unknown frame {}", args[2]))?;
             let length = frame.end - frame.start;
             if start >= end || end > length || end - start > 4096 {
@@ -962,7 +1035,7 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             let absolute_end = frame.start + end;
             let span = protocol_informatics_v2::query::read_span(
                 &state,
-                &run.observation_id,
+                observation_id,
                 absolute_start,
                 absolute_end,
             )?;
@@ -979,8 +1052,9 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 })
                 .collect();
             print_json(
-                &json!({"revision": state.revision, "frame_id": frame.id, "framing_id": run.id,
-                "observation_id": run.observation_id, "capture_id": span.capture_id, "artifact": span.artifact,
+                &json!({"revision": state.revision, "frame_id": frame.id, "framing_id": run_id,
+                "observation_id": observation_id, "capture_id": span.capture_id, "artifact": span.artifact,
+                "model": if run_id.starts_with("varint-") { "unsigned_leb128" } else { "fixed_width" },
                 "coordinate_system": "frame_bytes", "frame_length": length,
                 "logical_length": frame.logical_end-frame.start, "start": start, "end": end,
                 "observation_start": absolute_start, "observation_end": absolute_end,
@@ -1113,6 +1187,7 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 "trials": state.trials, "captures": state.captures,
                 "capture_runs": state.capture_runs,
                 "framing_runs": state.framing_runs,
+                "varint_runs": state.varint_runs,
                 "actions": state.actions, "window_tags": state.window_tags,
                 "observation_count": state.observations.len(), "tag_count": state.tags.len(),
                 "known_value_count": state.known_values.len(),

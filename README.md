@@ -178,7 +178,7 @@ The candidate `[6, 8)` big-endian matches both held-out values. IPv6 parsing fol
 
 `probe-tlv` treats the bytes before the length field as a one- or two-byte raw type code and reports each element's type, value, logical, and padded spans with source provenance. `infer-tlv` searches those typed layouts on discovery files, checks the boundaries on held-out files, and counts recurring type codes and novel held-out codes. Type recurrence is descriptive evidence; it does not assign a meaning to a code or reject a valid new code. See [the TLV method](docs/tlv-method.md).
 
-`probe-varint` tests unsigned LEB128 length prefixes with a variable number of encoded bytes. `infer-varint` searches candidate record starts, prefix offsets, length modes, and alignments; it requires a multibyte prefix in discovery and reports every discovery fit with held-out counterexamples. See [the varint method](docs/varint-method.md) and the independent four-file fixture in `examples/varint_*.bin`.
+`probe-varint` tests unsigned LEB128 length prefixes with a variable number of encoded bytes. `infer-varint` searches candidate record starts, prefix offsets, length modes, and alignments; it requires a multibyte prefix in discovery and reports every discovery fit with held-out counterexamples. `commit-varint` persists a complete interpretation with retry-safe keys and stable frame IDs. Paged `frames`, `frame-span`, `frame-value`, and `infer-frame-value` work on these derived records. See [the varint method](docs/varint-method.md) and the independent four-file fixture in `examples/varint_*.bin`.
 
 `commit-framing` records a complete model with at least two records for one observation. Its caller-supplied key makes retries safe; a different model cannot reuse the key. Commit-time frame IDs and half-open offsets persist in the event log, and replay checks them against the original observation. `framing-status` and paged `frames` expose the result; `frame-span` reads up to 4096 bytes per call in frame-relative coordinates, with the parent observation offsets and exact source-file or TCP packet provenance. Frames form a separate derived layer, so they are not silently counted as raw observations by clustering or alignment. The HTML report shows committed boundaries alongside proposed ones.
 
@@ -215,6 +215,15 @@ cargo run -- infer-frame-value /tmp/pi-records record_type
 The fixture has a four-byte preamble and three aligned records per file. Only one searched model fits both discovery files and both held-out files: a two-byte big-endian payload length at record offset 1, with two-byte alignment. The probe maps its first file's records to `[4, 8)`, `[8, 16)`, and `[16, 276)`.
 
 For variable-width lengths, generate `examples/varint_*.bin` with `python3 examples/generate_varint_fixture.py`, import the two discovery and two validation files into separate trials as above, then run `infer-varint <dir> <discovery-trial> <validation-trial>` and `probe-varint <dir> <obs-id> 4 1 payload 2`. Two layouts fit the discovery files; only the layout starting at byte 4 validates on both held-out files. Its 128-byte payload uses a two-byte `8001` prefix.
+
+```sh
+cargo run -- commit-varint /tmp/pi-varint obs-000005-0000 4 1 payload 2 discovery-a-v1
+cargo run -- varint-status /tmp/pi-varint discovery-a-v1
+cargo run -- frames /tmp/pi-varint discovery-a-v1 0 50
+cargo run -- frame-span /tmp/pi-varint frame-000009-0002 0 3
+```
+
+Use the actual frame IDs returned by `commit-varint`; they depend on the investigation revision. This run stores the byte boundaries and checks them against the original observation during event replay.
 
 The [framing method](docs/framing-method.md) describes the evidence rule, counterexamples, and model families still to add.
 

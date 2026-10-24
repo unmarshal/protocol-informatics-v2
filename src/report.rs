@@ -212,8 +212,9 @@ const trialById = new Map(state.trials.map(x=>[x.id,x]));
 const clusterById = new Map((state.cluster_report?.clusters||[]).map(x=>[x.id,x]));
 const framingPreviewById = new Map((state.framing_previews||[]).map(x=>[x.probe.observation_id,x.probe]));
 for(const item of state.varint_previews||[]) if(!framingPreviewById.has(item.probe.observation_id)) framingPreviewById.set(item.probe.observation_id,item.probe);
-for(const run of state.framing_runs||[]) framingPreviewById.set(run.observation_id,{records:run.records,committed:true,key:run.key});
-const frameById = new Map((state.framing_runs||[]).flatMap(run=>run.records.map(frame=>[frame.id,{frame,run}])));
+const committedRuns = [...(state.framing_runs||[]), ...(state.varint_runs||[])];
+for(const run of committedRuns) framingPreviewById.set(run.observation_id,{records:run.records,committed:true,key:run.key});
+const frameById = new Map(committedRuns.flatMap(run=>run.records.map(frame=>[frame.id,{frame,run}])));
 const tagsFor = id => state.tags.filter(x=>x.observation_id===id);
 const valuesFor = id => state.known_values.filter(x=>x.observation_id===id);
 const fieldOverlays = state.field_inferences.flatMap(inference => {
@@ -299,15 +300,16 @@ for(const item of state.varint_inferences||[]) {
   byId('varintCandidates').append(row);
 }
 if(!(state.varint_inferences||[]).length) byId('varintCandidates').append(node('div','Cross a varint width boundary in discovery trials to test this model.','small muted'));
-for(const run of state.framing_runs||[]) {
+for(const run of committedRuns) {
   const row=node('div','', 'row');
-  row.append(node('strong',run.id+' · '+run.key),node('div',run.observation_id+' · '+run.records.length+' frames · '+run.config.prefix_width+' byte '+run.config.byte_order+' '+run.config.length_mode+' length · alignment '+run.config.alignment,'small muted'));
+  const model=run.id.startsWith('varint-') ? 'unsigned LEB128 '+run.config.length_mode+' length · field +'+run.config.field_offset : run.config.prefix_width+' byte '+run.config.byte_order+' '+run.config.length_mode+' length';
+  row.append(node('strong',run.id+' · '+run.key),node('div',run.observation_id+' · '+run.records.length+' frames · '+model+' · alignment '+run.config.alignment,'small muted'));
   for(const frame of run.records.slice(0,20)) row.append(node('div',frame.id+' ['+frame.start+', '+frame.end+')'+(frame.logical_end<frame.end?' · padding ['+frame.logical_end+', '+frame.end+')':'')+' '+state.frame_known_values.filter(value=>value.frame_id===frame.id).map(value=>value.variable+'='+value.value+' ('+value.set+')').join(' · '),'small'));
   if(run.records.length>20) row.append(node('div','Additional frames are available through the frames command.','small muted'));
   const button=node('button','Inspect source bytes','small'); button.onclick=()=>{const observation=state.observations.find(x=>x.id===run.observation_id); if(observation) showDetail(observation);}; row.append(button);
   byId('committedFrames').append(row);
 }
-if(!(state.framing_runs||[]).length) byId('committedFrames').append(node('div','Commit a complete framing model to preserve record boundaries and stable frame IDs.','small muted'));
+if(!committedRuns.length) byId('committedFrames').append(node('div','Commit a complete framing model to preserve record boundaries and stable frame IDs.','small muted'));
 for(const inference of state.frame_field_inferences||[]) {
   const row=node('div','', 'row');
   row.append(node('strong',inference.variable),node('div',inference.discovery_count+' discovery frames · '+inference.validation_count+' held-out frames · '+inference.candidate_count+' candidate(s) · '+inference.preferred_candidate_count+' shortest validated','small muted'));

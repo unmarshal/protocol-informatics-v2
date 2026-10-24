@@ -184,7 +184,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     assert_eq!(summary["observation_count"], 48);
     assert_eq!(summary["hypotheses"][0]["score"], 0.9);
     let corpus = cli(&["summary", root_text]);
-    assert_eq!(corpus["schema_version"], 9);
+    assert_eq!(corpus["schema_version"], 10);
     assert_eq!(corpus["revision"], 13);
     assert_eq!(corpus["counts"]["captures"], 2);
     assert_eq!(corpus["counts"]["observations"], 48);
@@ -210,7 +210,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
         serde_json::json!({"trial_id":"trial-000004","direction":direction,"offset":2,"limit":3})
             .to_string();
     let matches = cli(&["search-observations", root_text, &direction_query]);
-    assert_eq!(matches["schema_version"], 9);
+    assert_eq!(matches["schema_version"], 10);
     assert_eq!(matches["total"], 24);
     assert_eq!(matches["observations"].as_array().unwrap().len(), 3);
     assert_eq!(matches["next_offset"], 5);
@@ -2084,6 +2084,106 @@ fn agent_can_infer_canonical_varint_record_lengths_across_width_boundary() {
             .len(),
         1
     );
+    let revision_before = cli(&["resume", root_text])["revision"].as_u64().unwrap();
+    let committed = cli(&[
+        "commit-varint",
+        root_text,
+        &observation_ids[0],
+        "4",
+        "1",
+        "payload",
+        "2",
+        "varint-a-v1",
+    ]);
+    assert_eq!(committed["replayed"], false);
+    assert_eq!(committed["revision"], revision_before + 1);
+    assert_eq!(committed["run"]["records"].as_array().unwrap().len(), 3);
+    let repeated = cli(&[
+        "commit-varint",
+        root_text,
+        &observation_ids[0],
+        "4",
+        "1",
+        "payload",
+        "2",
+        "varint-a-v1",
+    ]);
+    assert_eq!(repeated["replayed"], true);
+    assert_eq!(repeated["revision"], committed["revision"]);
+    assert_eq!(
+        cli(&["varint-status", root_text, "varint-a-v1"])["run"],
+        committed["run"]
+    );
+    let page = cli(&["frames", root_text, "varint-a-v1", "2", "1"]);
+    assert_eq!(page["model"], "unsigned_leb128");
+    assert_eq!(page["total"], 3);
+    let third_id = page["frames"][0]["id"].as_str().unwrap();
+    let third_span = cli(&["frame-span", root_text, third_id, "0", "3"]);
+    assert_eq!(third_span["model"], "unsigned_leb128");
+    assert_eq!(third_span["bytes_hex"], "938001");
+    assert_eq!(
+        third_span["source_file_offset"],
+        truth["cases"][0]["records"][2]["start"]
+    );
+    assert_eq!(third_span["logical_length"], 131);
+    let validation_run = cli(&[
+        "commit-varint",
+        root_text,
+        &observation_ids[3],
+        "4",
+        "1",
+        "payload",
+        "2",
+        "varint-b-v1",
+    ]);
+    for (set, run) in [("discovery", &committed), ("validation", &validation_run)] {
+        for (index, value) in [145, 146, 147].into_iter().enumerate() {
+            let frame_id = run["run"]["records"][index]["id"].as_str().unwrap();
+            cli(&[
+                "frame-value",
+                root_text,
+                frame_id,
+                "record_type",
+                &value.to_string(),
+                set,
+            ]);
+        }
+    }
+    let field = cli(&["infer-frame-value", root_text, "record_type"]);
+    assert_eq!(field["discovery_count"], 3);
+    assert_eq!(field["validation_count"], 3);
+    assert!(
+        field["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate["start"] == 0
+                && candidate["end"] == 1
+                && candidate["validation_matches"] == 3)
+    );
+    let corpus = cli(&["summary", root_text]);
+    assert_eq!(corpus["counts"]["varint_runs"], 2);
+    assert_eq!(corpus["counts"]["frames"], 6);
+    let filter = serde_json::json!({"framing_key":"varint-a-v1"}).to_string();
+    assert_eq!(
+        cli(&["search-observations", root_text, &filter])["total"],
+        1
+    );
+    let conflicting = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "commit-varint",
+            root_text,
+            &observation_ids[0],
+            "4",
+            "0",
+            "payload",
+            "2",
+            "varint-a-v1",
+        ])
+        .output()
+        .unwrap();
+    assert!(!conflicting.status.success());
+    assert!(String::from_utf8_lossy(&conflicting.stderr).contains("different arguments"));
     let report = root.join("varint-report.html");
     cli(&["report", root_text, path(&report)]);
     let html = fs::read_to_string(&report).unwrap();
@@ -2091,6 +2191,8 @@ fn agent_can_infer_canonical_varint_record_lengths_across_width_boundary() {
     assert!(html.contains("varint_inferences"));
     assert!(html.contains("varint_previews"));
     assert!(html.contains("unsigned LEB128"));
+    assert!(html.contains("varint-a-v1"));
+    assert!(html.contains(third_id));
 
     let mut corrupted = fs::read(examples.join("varint_validation_a.bin")).unwrap();
     corrupted[5] = 0xff;
@@ -2111,6 +2213,34 @@ fn agent_can_infer_canonical_varint_record_lengths_across_width_boundary() {
         challenged["candidates"][0]["validation_counterexamples"][0]["observation_id"],
         corrupted_id
     );
+    assert_eq!(cli(&["verify", root_text])["observations"], 5);
+    let events_path = root.join(".pi/events.jsonl");
+    let original_events = fs::read_to_string(&events_path).unwrap();
+    let altered = original_events
+        .lines()
+        .map(|line| {
+            let mut event: Value = serde_json::from_str(line).unwrap();
+            if event["event"]["type"] == "varint_committed"
+                && event["event"]["run"]["key"] == "varint-a-v1"
+            {
+                event["event"]["run"]["records"][0]["length_value"] = serde_json::json!(99);
+            }
+            serde_json::to_string(&event).unwrap()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(&events_path, altered).unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["verify", root_text])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr)
+            .contains("committed varint frame does not match source bytes")
+    );
+    fs::write(&events_path, original_events).unwrap();
     assert_eq!(cli(&["verify", root_text])["observations"], 5);
     fs::remove_dir_all(root).unwrap();
 }
@@ -2500,7 +2630,7 @@ fn replays_v1_log_and_appends_v9_events() {
         "Old investigation"
     );
     let appended = cli(&["hypothesis", path(&root), "A new claim"]);
-    assert_eq!(appended["schema_version"], 9);
+    assert_eq!(appended["schema_version"], 10);
     assert_eq!(appended["revision"], 2);
     assert_eq!(
         cli(&["changes", path(&root), "0"])

@@ -158,21 +158,14 @@ pub fn infer_frame_unsigned_field(
     let examples: Vec<(Example, String)> = annotations
         .iter()
         .map(|annotation| {
-            let (run, frame) = state
-                .framing_runs
-                .iter()
-                .find_map(|run| {
-                    run.records
-                        .iter()
-                        .find(|frame| frame.id == annotation.frame_id)
-                        .map(|frame| (run, frame))
-                })
+            let (_, observation_id, frame) = state
+                .frame_by_id(&annotation.frame_id)
                 .ok_or_else(|| format!("unknown frame {}", annotation.frame_id))?;
             let observation = state
                 .observations
                 .iter()
-                .find(|observation| observation.id == run.observation_id)
-                .ok_or_else(|| format!("unknown observation {}", run.observation_id))?;
+                .find(|observation| observation.id == observation_id)
+                .ok_or_else(|| format!("unknown observation {observation_id}"))?;
             let bytes = from_hex(&observation.bytes_hex)?;
             Ok((
                 Example {

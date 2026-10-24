@@ -1,6 +1,6 @@
 //! Bounded unsigned LEB128 length-prefix records with held-out structural checks.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 use crate::framing::{
@@ -13,7 +13,7 @@ const MAX_RECORDS: usize = 256;
 const MAX_SPANS_PER_RECORD: usize = 16;
 const MAX_REPORTED_CANDIDATES: usize = 100;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct VarintConfig {
     pub start_offset: usize,
     pub field_offset: usize,

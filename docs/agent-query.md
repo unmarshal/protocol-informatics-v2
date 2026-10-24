@@ -7,7 +7,7 @@ The filter is one JSON object. All supplied fields are combined with AND. Unknow
 | Field | Meaning |
 | --- | --- |
 | `experiment_id`, `trial_id`, `capture_id` | Exact durable IDs |
-| `framing_key` | Parent observation of one committed framing run |
+| `framing_key` | Parent observation of one committed fixed-width or varint framing run |
 | `format` | Exact capture format, such as `pcap-udp` |
 | `direction` | Exact source-to-destination string from `summary`; use `<unknown>` for observations without direction metadata |
 | `source_port`, `destination_port` | Exact unsigned 16-bit transport ports |
