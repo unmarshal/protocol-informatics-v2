@@ -17,7 +17,7 @@ use crate::pcap::{
 use crate::reassembly::{SourceSpan, reassemble_tcp_segments};
 use crate::varint::{VarintConfig, probe_varint};
 
-const SCHEMA_VERSION: u32 = 11;
+const SCHEMA_VERSION: u32 = 12;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 const MAX_RECOVERY_TAIL_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -233,6 +233,8 @@ pub struct CaptureTagBatch {
     pub capture_id: String,
     pub phase: String,
     pub label: String,
+    #[serde(default)]
+    pub start_index: usize,
     pub observation_ids: Vec<String>,
     pub tag_ids: Vec<String>,
 }
@@ -905,6 +907,10 @@ impl State {
                     .iter()
                     .find(|capture| capture.id == batch.capture_id)
                     .ok_or_else(|| format!("unknown capture {}", batch.capture_id))?;
+                let end_index = batch
+                    .start_index
+                    .checked_add(batch.observation_ids.len())
+                    .ok_or("capture tag range overflows")?;
                 if capture.trial_id != action.trial_id
                     || batch.id != format!("capture-tags-{:06}", record.revision)
                     || batch.key.is_empty()
@@ -918,7 +924,9 @@ impl State {
                             || (old.action_id == batch.action_id
                                 && old.capture_id == batch.capture_id
                                 && old.phase == batch.phase
-                                && old.label == batch.label)
+                                && old.label == batch.label
+                                && batch.start_index < old.start_index + old.observation_ids.len()
+                                && old.start_index < end_index)
                     })
                     || tags.is_empty()
                     || tags.len() > 1000
@@ -927,13 +935,20 @@ impl State {
                 {
                     return Err("invalid or duplicate capture tag batch".into());
                 }
-                let selected: Vec<_> = self
+                let all_observations: Vec<_> = self
                     .observations
                     .iter()
                     .filter(|observation| observation.capture_id == batch.capture_id)
                     .map(|observation| observation.id.clone())
                     .collect();
-                if selected != batch.observation_ids {
+                if end_index > all_observations.len()
+                    || (record.schema_version < 12
+                        && (batch.start_index != 0 || end_index != all_observations.len()))
+                {
+                    return Err("invalid capture tag range".into());
+                }
+                let selected = &all_observations[batch.start_index..end_index];
+                if selected != batch.observation_ids.as_slice() {
                     return Err("capture tag selection does not match source observations".into());
                 }
                 for (index, tag) in tags.iter().enumerate() {

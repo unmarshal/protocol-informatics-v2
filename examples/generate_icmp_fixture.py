@@ -80,6 +80,38 @@ def main() -> None:
     (HERE / "icmp_echo.pcapng").write_bytes(capture_ng)
     (HERE / "icmp_baseline_255.pcap").write_bytes(isolated[255])
     (HERE / "icmp_variant_256.pcap").write_bytes(isolated[256])
+    sweep = bytearray(header)
+    for sequence in range(512):
+        for icmp_type in (8, 0):
+            frame = packet(icmp_type, 0x4567, sequence, bytes.fromhex("11223344"))
+            timestamp_us = sequence * 100_000 + (0 if icmp_type == 8 else 50_000)
+            sweep.extend(
+                struct.pack(
+                    "<IIII",
+                    1_720_000_000 + timestamp_us // 1_000_000,
+                    timestamp_us % 1_000_000,
+                    len(frame),
+                    len(frame),
+                )
+                + frame
+            )
+    (HERE / "icmp_sweep_512.pcap").write_bytes(sweep)
+    (HERE / "icmp_sweep_512.truth.json").write_text(
+        json.dumps(
+            {
+                "packet_count": 1024,
+                "sequence_range": [0, 511],
+                "request_type": 8,
+                "reply_type": 0,
+                "identifier": 0x4567,
+                "payload_hex": "11223344",
+                "sequence_span": [6, 8],
+                "checksum_span": [2, 4],
+            },
+            indent=2,
+        )
+        + "\n"
+    )
     holdout = bytearray(header)
     for index, sequence in enumerate((3, 258, 4097)):
         payload = bytes([0xA0 + index, 0xB0, 0xC0 + index]) + bytes(range(index))

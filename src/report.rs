@@ -366,7 +366,8 @@ for(const window of state.window_tags) {
 if(!state.window_tags.length) byId('tagWindows').append(node('div','No action windows tagged.','small muted'));
 for(const batch of state.capture_tag_batches||[]) {
   const row=node('div','', 'row');
-  row.append(node('strong',batch.id+' · '+batch.key),node('div',batch.phase+': '+batch.label+' · '+batch.observation_ids.length+' observation(s)','small'),node('div','Action '+batch.action_id+' · capture '+batch.capture_id,'small muted'));
+  const start=batch.start_index||0;
+  row.append(node('strong',batch.id+' · '+batch.key),node('div',batch.phase+': '+batch.label+' · observations '+start+'–'+(start+batch.observation_ids.length-1),'small'),node('div','Action '+batch.action_id+' · capture '+batch.capture_id,'small muted'));
   byId('captureTags').append(row);
 }
 if(!(state.capture_tag_batches||[]).length) byId('captureTags').append(node('div','No captures tagged to an action.','small muted'));

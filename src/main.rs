@@ -16,6 +16,7 @@ use protocol_informatics_v2::workflow::{
 use protocol_informatics_v2::{CpuAligner, analyze_best, parse_hex_samples};
 use serde::Serialize;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 fn main() -> ExitCode {
     match run() {
@@ -64,7 +65,9 @@ fn print_help() {
     println!("  mark-at <dir> <trial-id> <timestamp-ns> <kind> <detail>");
     println!("  tag <dir> <obs-id> <phase> <label>");
     println!("  tag-window <dir> <action-id> <end-ns> <phase> <label> <key>");
-    println!("  tag-capture <dir> <action-id> <capture-id> <phase> <label> <key>");
+    println!(
+        "  tag-capture <dir> <action-id> <capture-id> <phase> <label> <key> [offset count<=1000]"
+    );
     println!("  capture-tag-status <dir> <key>    inspect a completed capture tag batch");
     println!("  window-status <dir> <key>             inspect a completed tag window");
     println!("  value <dir> <obs-id> <variable> <unsigned> <discovery|validation>");
@@ -497,21 +500,51 @@ fn capture_step(root: &Path, args: &[String]) -> Result<(), String> {
     let capture_id = captured["capture"]["id"]
         .as_str()
         .ok_or("capture-command returned no capture ID")?;
-    let tag_args = vec![
-        "tag-capture".into(),
-        directory,
-        action_id.into(),
-        capture_id.into(),
-        args[5].clone(),
-        args[6].clone(),
-        format!("{step_key}:tags"),
-    ];
-    let tagged = invoke_local_json(&tag_args)?;
+    let observation_count = captured["observation_ids"]
+        .as_array()
+        .ok_or("capture-command returned no observation IDs")?
+        .len();
+    let mut tag_batches = Vec::new();
+    let mut all_replayed = true;
+    let mut revision = captured["revision"].clone();
+    for offset in (0..observation_count).step_by(1000) {
+        let count = (observation_count - offset).min(1000);
+        let key = if observation_count <= 1000 {
+            format!("{step_key}:tags")
+        } else {
+            format!(
+                "step-tags-{:x}-{offset}",
+                Sha256::digest(step_key.as_bytes())
+            )
+        };
+        let mut tag_args = vec![
+            "tag-capture".into(),
+            directory.clone(),
+            action_id.into(),
+            capture_id.into(),
+            args[5].clone(),
+            args[6].clone(),
+            key,
+        ];
+        if observation_count > 1000 {
+            tag_args.push(offset.to_string());
+            tag_args.push(count.to_string());
+        }
+        let tagged = invoke_local_json(&tag_args)?;
+        all_replayed &= tagged["replayed"] == true;
+        revision = tagged["revision"].clone();
+        tag_batches.push(tagged["batch"].clone());
+    }
+    let tag_batch = if tag_batches.len() == 1 {
+        tag_batches[0].clone()
+    } else {
+        serde_json::Value::Null
+    };
     print_json(&json!({
-        "revision": tagged["revision"], "step_key": step_key, "status": "completed",
+        "revision": revision, "step_key": step_key, "status": "completed",
         "action": marked["action"], "capture": captured["capture"],
-        "observation_ids": captured["observation_ids"], "tag_batch": tagged["batch"],
-        "replayed": tagged["replayed"],
+        "observation_ids": captured["observation_ids"], "tag_batch": tag_batch,
+        "tag_batches": tag_batches, "replayed": all_replayed,
     }))
 }
 
@@ -773,7 +806,11 @@ fn mark_keyed(root: &Path, args: &[String]) -> Result<(), String> {
 }
 
 fn tag_capture(root: &Path, args: &[String]) -> Result<(), String> {
-    require_len(args, 7)?;
+    if args.len() != 7 && args.len() != 9 {
+        return Err(
+            "expected action, capture, phase, label, key, and optional offset/count".into(),
+        );
+    }
     let action_id = &args[2];
     let capture_id = &args[3];
     let phase = &args[4];
@@ -789,26 +826,21 @@ fn tag_capture(root: &Path, args: &[String]) -> Result<(), String> {
             "capture tag key, phase, and label must be nonempty; key has a 128-byte limit".into(),
         );
     }
-    let matches_request = |batch: &CaptureTagBatch| {
-        &batch.action_id == action_id
-            && &batch.capture_id == capture_id
-            && &batch.phase == phase
-            && &batch.label == label
+    let requested_range = if args.len() == 9 {
+        let offset: usize = args[7]
+            .parse()
+            .map_err(|_| "capture tag offset must be an unsigned integer".to_string())?;
+        let count: usize = args[8]
+            .parse()
+            .map_err(|_| "capture tag count must be an unsigned integer".to_string())?;
+        if !(1..=1000).contains(&count) {
+            return Err("capture tag count must be 1 to 1000".into());
+        }
+        Some((offset, count))
+    } else {
+        None
     };
     let state = workflow::load(root)?;
-    if let Some(batch) = state
-        .capture_tag_batches
-        .iter()
-        .find(|batch| &batch.key == key)
-    {
-        return if matches_request(batch) {
-            print_json(&json!({"revision": state.revision, "batch": batch, "replayed": true}))
-        } else {
-            Err(format!(
-                "capture tag key {key} was used with different arguments"
-            ))
-        };
-    }
     let action = state
         .actions
         .iter()
@@ -822,14 +854,47 @@ fn tag_capture(root: &Path, args: &[String]) -> Result<(), String> {
     if action.trial_id != capture.trial_id {
         return Err("action and capture must belong to the same trial".into());
     }
-    let observation_ids: Vec<_> = state
+    let all_observation_ids: Vec<_> = state
         .observations
         .iter()
         .filter(|observation| &observation.capture_id == capture_id)
         .map(|observation| observation.id.clone())
         .collect();
-    if observation_ids.is_empty() || observation_ids.len() > 1000 {
-        return Err("capture tag batch needs 1 to 1000 observations".into());
+    let (start_index, end_index) = if let Some((offset, count)) = requested_range {
+        let end = offset
+            .checked_add(count)
+            .ok_or("capture tag range overflows")?;
+        if end > all_observation_ids.len() {
+            return Err("capture tag range exceeds capture observations".into());
+        }
+        (offset, end)
+    } else {
+        if all_observation_ids.is_empty() || all_observation_ids.len() > 1000 {
+            return Err("capture tag batch needs 1 to 1000 observations; use offset/count for larger captures".into());
+        }
+        (0, all_observation_ids.len())
+    };
+    let observation_ids = all_observation_ids[start_index..end_index].to_vec();
+    let matches_request = |batch: &CaptureTagBatch| {
+        &batch.action_id == action_id
+            && &batch.capture_id == capture_id
+            && &batch.phase == phase
+            && &batch.label == label
+            && batch.start_index == start_index
+            && batch.observation_ids == observation_ids
+    };
+    if let Some(batch) = state
+        .capture_tag_batches
+        .iter()
+        .find(|batch| &batch.key == key)
+    {
+        return if matches_request(batch) {
+            print_json(&json!({"revision": state.revision, "batch": batch, "replayed": true}))
+        } else {
+            Err(format!(
+                "capture tag key {key} was used with different arguments"
+            ))
+        };
     }
     let tags = observation_ids
         .iter()
@@ -848,7 +913,8 @@ fn tag_capture(root: &Path, args: &[String]) -> Result<(), String> {
         capture_id: capture_id.clone(),
         phase: phase.clone(),
         label: label.clone(),
-        observation_ids,
+        start_index,
+        observation_ids: observation_ids.clone(),
         tag_ids: Vec::new(),
     };
     let appended = workflow::append(root, Event::CaptureTagged { batch, tags });

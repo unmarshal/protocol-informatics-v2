@@ -184,7 +184,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     assert_eq!(summary["observation_count"], 48);
     assert_eq!(summary["hypotheses"][0]["score"], 0.9);
     let corpus = cli(&["summary", root_text]);
-    assert_eq!(corpus["schema_version"], 11);
+    assert_eq!(corpus["schema_version"], 12);
     assert_eq!(corpus["revision"], 13);
     assert_eq!(corpus["counts"]["captures"], 2);
     assert_eq!(corpus["counts"]["observations"], 48);
@@ -210,7 +210,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
         serde_json::json!({"trial_id":"trial-000004","direction":direction,"offset":2,"limit":3})
             .to_string();
     let matches = cli(&["search-observations", root_text, &direction_query]);
-    assert_eq!(matches["schema_version"], 11);
+    assert_eq!(matches["schema_version"], 12);
     assert_eq!(matches["total"], 24);
     assert_eq!(matches["observations"].as_array().unwrap().len(), 3);
     assert_eq!(matches["next_offset"], 5);
@@ -2630,7 +2630,7 @@ fn replays_v1_log_and_appends_v9_events() {
         "Old investigation"
     );
     let appended = cli(&["hypothesis", path(&root), "A new claim"]);
-    assert_eq!(appended["schema_version"], 11);
+    assert_eq!(appended["schema_version"], 12);
     assert_eq!(appended["revision"], 2);
     assert_eq!(
         cli(&["changes", path(&root), "0"])
@@ -3276,5 +3276,152 @@ fn capture_step_retries_after_capture_and_does_not_repeat_completed_work() {
     assert_eq!(corpus["counts"]["actions"], 2);
     assert_eq!(corpus["counts"]["capture_tag_batches"], 2);
     assert_eq!(cli(&["verify", root_text])["observations"], 4);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn capture_step_pages_large_capture_tags_and_resumes_after_partial_tagging() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&[
+        "init",
+        root_text,
+        "Can every observation be tagged after a retry?",
+    ]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Sweep ICMP sequence values",
+        "-",
+        "Keep acquisition scope for all observations",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "discovery",
+        "512 request and reply pairs",
+    ]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/icmp_sweep_512.pcap");
+    let arguments = [
+        "capture-step",
+        root_text,
+        trial_id,
+        "stimulus",
+        "generated 512 ICMP sequences",
+        "capture_scope",
+        "value sweep",
+        "large-icmp-step",
+        "pcap-icmp",
+        "5000",
+        "--",
+        "/bin/cat",
+        path(&source),
+    ];
+    let first = cli(&arguments);
+    assert_eq!(first["status"], "completed");
+    assert_eq!(first["replayed"], false);
+    assert!(first["tag_batch"].is_null());
+    assert_eq!(first["observation_ids"].as_array().unwrap().len(), 1024);
+    assert_eq!(first["tag_batches"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        cli(&["span", root_text, "obs-000006-0510", "6", "8"])["bytes_hex"],
+        "00ff"
+    );
+    assert_eq!(
+        cli(&["span", root_text, "obs-000006-0512", "6", "8"])["bytes_hex"],
+        "0100"
+    );
+    assert_eq!(
+        cli(&["span", root_text, "obs-000006-1022", "6", "8"])["bytes_hex"],
+        "01ff"
+    );
+    assert_eq!(first["tag_batches"][0]["start_index"], 0);
+    assert_eq!(
+        first["tag_batches"][0]["tag_ids"].as_array().unwrap().len(),
+        1000
+    );
+    assert_eq!(first["tag_batches"][1]["start_index"], 1000);
+    assert_eq!(
+        first["tag_batches"][1]["tag_ids"].as_array().unwrap().len(),
+        24
+    );
+    let revision = first["revision"].as_u64().unwrap();
+    let repeated = cli(&arguments);
+    assert_eq!(repeated["replayed"], true);
+    assert_eq!(repeated["revision"], revision);
+    assert_eq!(
+        cli(&["summary", root_text])["counts"]["tagged_observations"],
+        1024
+    );
+
+    let overlapping = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "tag-capture",
+            root_text,
+            first["action"]["id"].as_str().unwrap(),
+            first["capture"]["id"].as_str().unwrap(),
+            "capture_scope",
+            "value sweep",
+            "overlap",
+            "999",
+            "2",
+        ])
+        .output()
+        .unwrap();
+    assert!(!overlapping.status.success());
+    assert!(String::from_utf8_lossy(&overlapping.stderr).contains("duplicate capture tag batch"));
+    assert_eq!(cli(&["resume", root_text])["revision"], revision);
+
+    let events_path = root.join(".pi/events.jsonl");
+    let complete = fs::read_to_string(&events_path).unwrap();
+    let mut lines: Vec<_> = complete.lines().collect();
+    let last: Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+    assert_eq!(last["event"]["type"], "capture_tagged");
+    lines.pop();
+    fs::write(&events_path, lines.join("\n") + "\n").unwrap();
+    assert_eq!(
+        cli(&["summary", root_text])["counts"]["tagged_observations"],
+        1000
+    );
+    let resumed = cli(&arguments);
+    assert_eq!(resumed["replayed"], false);
+    assert_eq!(resumed["revision"], revision);
+    assert_eq!(
+        resumed["tag_batches"][0]["id"],
+        first["tag_batches"][0]["id"]
+    );
+    assert_eq!(
+        resumed["tag_batches"][1]["id"],
+        first["tag_batches"][1]["id"]
+    );
+    assert_eq!(cli(&["verify", root_text])["observations"], 1024);
+
+    let valid = fs::read_to_string(&events_path).unwrap();
+    let tampered = valid
+        .lines()
+        .map(|line| {
+            let mut event: Value = serde_json::from_str(line).unwrap();
+            if event["event"]["type"] == "capture_tagged"
+                && event["event"]["batch"]["start_index"] == 0
+            {
+                event["event"]["batch"]["start_index"] = serde_json::json!(1);
+            }
+            serde_json::to_string(&event).unwrap()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(&events_path, tampered).unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["verify", root_text])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("capture tag selection"));
+    fs::write(&events_path, valid).unwrap();
+    assert_eq!(cli(&["verify", root_text])["observations"], 1024);
     fs::remove_dir_all(root).unwrap();
 }
