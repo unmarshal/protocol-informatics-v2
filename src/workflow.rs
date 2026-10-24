@@ -13,6 +13,7 @@ use crate::pcap::{
 };
 
 const SCHEMA_VERSION: u32 = 2;
+const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hypothesis {
@@ -622,6 +623,24 @@ pub fn import_capture(
     let capture_id = format!("cap-{revision:06}");
     let observations = match format {
         "hex" => parse_hex_observations(raw, &capture_id)?,
+        "binary" => {
+            if raw.is_empty() || raw.len() > MAX_BINARY_OBSERVATION_BYTES {
+                return Err(format!(
+                    "binary file must contain 1 to {MAX_BINARY_OBSERVATION_BYTES} bytes"
+                ));
+            }
+            vec![Observation {
+                id: format!("obs-{revision:06}-0000"),
+                capture_id: capture_id.clone(),
+                source_index: 0,
+                source_offset: Some(0),
+                timestamp_ns: None,
+                direction: None,
+                source_port: None,
+                destination_port: None,
+                bytes_hex: to_hex(raw),
+            }]
+        }
         "pcap-icmp" | "pcapng-icmp" | "pcap-udp" | "pcapng-udp" => {
             let messages = match format {
                 "pcap-icmp" => extract_icmp_messages(raw)?,
@@ -651,7 +670,8 @@ pub fn import_capture(
         }
         _ => {
             return Err(
-                "format must be hex, pcap-icmp, pcapng-icmp, pcap-udp, or pcapng-udp".into(),
+                "format must be hex, binary, pcap-icmp, pcapng-icmp, pcap-udp, or pcapng-udp"
+                    .into(),
             );
         }
     };
@@ -660,6 +680,7 @@ pub fn import_capture(
     }
     let extension = match format {
         "hex" => "hex",
+        "binary" => "bin",
         "pcap-icmp" | "pcap-udp" => "pcap",
         "pcapng-icmp" | "pcapng-udp" => "pcapng",
         _ => unreachable!("format validated above"),
@@ -767,6 +788,18 @@ pub fn verify(root: &Path) -> Result<Verification, String> {
             return Err(format!("capture {} observation count mismatch", capture.id));
         }
         match capture.format.as_str() {
+            "binary" => {
+                if actual.len() != 1
+                    || actual[0].source_offset != Some(0)
+                    || actual[0].source_index != 0
+                    || actual[0].bytes_hex != to_hex(&raw)
+                {
+                    return Err(format!(
+                        "capture {} binary observation mismatch",
+                        capture.id
+                    ));
+                }
+            }
             "hex" => {
                 let expected = parse_hex_observations(&raw, &capture.id)?;
                 for (expected, actual) in expected.iter().zip(actual) {

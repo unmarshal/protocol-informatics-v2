@@ -455,6 +455,85 @@ fn agent_can_investigate_dns_over_udp_without_a_dns_specific_decoder() {
 }
 
 #[test]
+fn agent_can_infer_a_field_from_standalone_binary_files() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&[
+        "init",
+        root_text,
+        "Where is the sample rate in a binary file?",
+    ]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Change only the sample rate",
+        "-",
+        "Find its byte span",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&["trial", root_text, experiment_id, "sweep", "four rates"]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let mut observation_ids = Vec::new();
+    for rate in [8000, 44100, 96000, 192000] {
+        let fixture = examples.join(format!("wav_rate_{rate}.wav"));
+        let capture = cli(&["import", root_text, trial_id, "binary", path(&fixture)]);
+        assert_eq!(capture["event"]["capture"]["observation_count"], 1);
+        assert_eq!(capture["event"]["observations"][0]["source_offset"], 0);
+        observation_ids.push(
+            capture["event"]["observations"][0]["id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    let span = cli(&["span", root_text, &observation_ids[0], "24", "28"]);
+    assert_eq!(span["bytes_hex"], "401f0000");
+    assert_eq!(span["source_file_offset"], 24);
+    for (index, rate) in [8000, 44100, 96000, 192000].into_iter().enumerate() {
+        cli(&[
+            "value",
+            root_text,
+            &observation_ids[index],
+            "sample_rate",
+            &rate.to_string(),
+            if index == 3 {
+                "validation"
+            } else {
+                "discovery"
+            },
+        ]);
+    }
+    let inferred = cli(&["infer-value", root_text, "sample_rate"]);
+    assert_eq!(inferred["preferred_candidate_count"], 1);
+    assert_eq!(inferred["candidates"][0]["start"], 24);
+    assert_eq!(inferred["candidates"][0]["end"], 28);
+    assert_eq!(inferred["candidates"][0]["byte_order"], "little_endian");
+    assert_eq!(inferred["candidates"][0]["validation_matches"], 1);
+    cli(&["analyze-investigation", root_text, trial_id]);
+    let report = root.join("wav-report.html");
+    cli(&["report", root_text, path(&report)]);
+    assert!(fs::read_to_string(report).unwrap().contains("sample_rate"));
+    assert_eq!(cli(&["verify", root_text])["observations"], 4);
+    let too_large = root.join("too-large.bin");
+    fs::write(&too_large, vec![0_u8; 1024 * 1024 + 1]).unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["import", root_text, trial_id, "binary", path(&too_large)])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("binary file must contain"));
+    let empty = root.join("empty.bin");
+    fs::write(&empty, []).unwrap();
+    let rejected_empty = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["import", root_text, trial_id, "binary", path(&empty)])
+        .output()
+        .unwrap();
+    assert!(!rejected_empty.status.success());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn annotated_icmp_values_locate_sequence_on_held_out_packets() {
     let root = workspace();
     let root_text = path(&root);

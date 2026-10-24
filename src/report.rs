@@ -65,6 +65,9 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
 .byte { width:2.1em; text-align:center; padding:4px 0; background:#243448; border-radius:3px; font-family:ui-monospace,monospace }
 .byte.changed { background:#75502c; color:#fff0c9 }
 .byte.candidate { outline:2px solid #5cd6ab; background:#174c43 }
+.byte-nav { display:flex; gap:10px; align-items:center; margin-top:12px }
+.byte-nav button { background:#243448; color:#e9eef5; border:1px solid #4a607a; border-radius:5px; padding:4px 8px; cursor:pointer }
+.byte-nav button:disabled { opacity:.4; cursor:default }
 .legend { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px }
 @media(max-width:850px) { .layout { grid-template-columns:1fr } }
 </style>
@@ -160,10 +163,21 @@ function renderComparison() {
   const right=state.observations.find(x=>x.id===byId('rightCompare').value);
   const target=byId('comparison'); target.replaceChildren();
   if(!left||!right) { target.append(node('span','Choose two observations to highlight changed bytes.','muted')); return; }
-  const a=left.bytes_hex.match(/../g)||[], b=right.bytes_hex.match(/../g)||[];
-  const changed=[]; for(let i=0;i<Math.max(a.length,b.length);i++) if(a[i]!==b[i]) changed.push(i);
-  target.append(node('div',changed.length+' changed byte position(s): '+(changed.length?changed.join(', '):'none'),'small muted'));
-  target.append(byteRow(left.id,a,b),byteRow(right.id,b,a));
+  const width=Math.max(left.bytes_hex.length,right.bytes_hex.length)/2;
+  let changedCount=0; const changedPreview=[];
+  for(let i=0;i<width;i++) if(left.bytes_hex.slice(2*i,2*i+2)!==right.bytes_hex.slice(2*i,2*i+2)) { changedCount++; if(changedPreview.length<100) changedPreview.push(i); }
+  target.append(node('div',changedCount+' changed byte position(s): '+(changedPreview.length?changedPreview.join(', ')+(changedCount>100?' …':''):'none'),'small muted'));
+  const rows=node('div',''); const navigation=node('div','', 'byte-nav small'); const previous=node('button','Previous'), next=node('button','Next'), status=node('span','');
+  let page=0; const pageSize=256;
+  function draw() {
+    const start=page*pageSize, end=Math.min(width,start+pageSize);
+    const a=left.bytes_hex.slice(2*start,2*end).match(/../g)||[], b=right.bytes_hex.slice(2*start,2*end).match(/../g)||[];
+    rows.replaceChildren(byteRow(left.id+' ['+start+', '+end+')',a,b),byteRow(right.id+' ['+start+', '+end+')',b,a));
+    status.textContent='Bytes ['+start+', '+end+') of '+width; previous.disabled=page===0; next.disabled=end>=width;
+  }
+  previous.onclick=()=>{page--;draw();}; next.onclick=()=>{page++;draw();};
+  if(width>pageSize) { navigation.append(previous,status,next); target.append(navigation); }
+  target.append(rows); draw();
 }
 byId('leftCompare').onchange=renderComparison; byId('rightCompare').onchange=renderComparison;
 const firstBaseline=state.observations.find(o=>trialById.get(captureById.get(o.capture_id).trial_id).role==='baseline');
@@ -179,14 +193,23 @@ function showDetail(observation) {
   if(observation.direction) detail.append(node('div',observation.direction+(observation.source_port===null?'':' · UDP ports '+observation.source_port+' → '+observation.destination_port),'small muted'));
   for(const tag of tagsFor(observation.id)) detail.append(node('span',tag.phase+': '+tag.label,'pill'));
   for(const value of valuesFor(observation.id)) detail.append(node('span',value.variable+'='+value.value+' ('+value.set+')','pill'));
-  const bytes=node('div','', 'bytes');
-  for(let i=0;i<observation.bytes_hex.length;i+=2) {
-    const offset=i/2, overlay=fieldOverlays.find(field=>field.observationIds.has(observation.id)&&offset>=field.start&&offset<field.end);
-    const cell=node('span',observation.bytes_hex.slice(i,i+2),overlay?'byte candidate':'byte');
-    cell.title=overlay?overlay.variable+' candidate ['+overlay.start+', '+overlay.end+')':'byte '+offset;
-    bytes.append(cell);
+  const total=observation.bytes_hex.length/2, pageSize=256;
+  const bytes=node('div','', 'bytes'); const navigation=node('div','', 'byte-nav small');
+  const previous=node('button','Previous'), next=node('button','Next'), status=node('span','');
+  let page=0;
+  function draw() {
+    const start=page*pageSize, end=Math.min(total,start+pageSize); bytes.replaceChildren();
+    for(let offset=start;offset<end;offset++) {
+      const overlay=fieldOverlays.find(field=>field.observationIds.has(observation.id)&&offset>=field.start&&offset<field.end);
+      const cell=node('span',observation.bytes_hex.slice(2*offset,2*offset+2),overlay?'byte candidate':'byte');
+      cell.title=overlay?overlay.variable+' candidate ['+overlay.start+', '+overlay.end+')':'byte '+offset;
+      bytes.append(cell);
+    }
+    status.textContent='Bytes ['+start+', '+end+') of '+total; previous.disabled=page===0; next.disabled=end>=total;
   }
-  detail.append(bytes);
+  previous.onclick=()=>{page--;draw();}; next.onclick=()=>{page++;draw();};
+  if(total>pageSize) { navigation.append(previous,status,next); detail.append(navigation); }
+  detail.append(bytes); draw();
   detail.append(node('div','Green outline marks the unique shortest candidate matching held-out values. Longer encodings may also fit; boundaries and meaning need protocol-level confirmation.','small muted legend'));
 }
 function renderObservations() {
@@ -194,7 +217,7 @@ function renderObservations() {
   const list=byId('observations'); list.replaceChildren();
   const matches=state.observations.filter(o=>{ const c=captureById.get(o.capture_id); const labels=tagsFor(o.id).map(t=>t.label+' '+t.phase).join(' ')+valuesFor(o.id).map(v=>v.variable+'='+v.value).join(' '); return (!selected||c.trial_id===selected) && (!cluster||cluster.member_observation_ids.includes(o.id)) && (o.id+' '+o.bytes_hex+' '+(o.direction||'')+' '+(o.source_port??'')+' '+(o.destination_port??'')+' '+labels).toLowerCase().includes(search); });
   list.append(node('div',matches.length+' of '+state.observations.length+' observations','small muted'));
-  for(const o of matches) { const row=node('div','', 'row'); const button=node('button',o.id+' · '+o.bytes_hex.match(/../g).join(' ').slice(0,100)); button.onclick=()=>showDetail(o); row.append(button,node('div',(o.direction||'')+(o.source_port===null?'':' · '+o.source_port+' → '+o.destination_port)+' '+tagsFor(o.id).map(t=>'['+t.phase+': '+t.label+']').join(' '),'small muted')); list.append(row); }
+  for(const o of matches) { const row=node('div','', 'row'); const button=node('button',o.id+' · '+(o.bytes_hex.slice(0,80).match(/../g)||[]).join(' ')); button.onclick=()=>showDetail(o); row.append(button,node('div',(o.direction||'')+(o.source_port===null?'':' · '+o.source_port+' → '+o.destination_port)+' '+tagsFor(o.id).map(t=>'['+t.phase+': '+t.label+']').join(' '),'small muted')); list.append(row); }
 }
 byId('trialFilter').onchange=renderObservations; byId('clusterFilter').onchange=renderObservations; byId('search').oninput=renderObservations; renderObservations();
 if(state.observations.length) showDetail(state.observations[0]);

@@ -1,0 +1,30 @@
+{
+  "format": "RIFF/WAVE PCM",
+  "sample_rate_span": [
+    24,
+    28
+  ],
+  "byte_order": "little_endian",
+  "cases": [
+    {
+      "file": "wav_rate_8000.wav",
+      "sample_rate": 8000,
+      "size": 556
+    },
+    {
+      "file": "wav_rate_44100.wav",
+      "sample_rate": 44100,
+      "size": 556
+    },
+    {
+      "file": "wav_rate_96000.wav",
+      "sample_rate": 96000,
+      "size": 556
+    },
+    {
+      "file": "wav_rate_192000.wav",
+      "sample_rate": 192000,
+      "size": 556
+    }
+  ]
+}
