@@ -8,6 +8,7 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::delimiter::{DelimiterConfig, DelimiterStatus, probe_observation as probe_delimiter};
 use crate::framing::{FramingConfig, FramingStatus, probe_observation};
 use crate::pcap::{
     extract_icmp_messages, extract_icmpv6_messages, extract_pcapng_icmp_messages,
@@ -17,7 +18,7 @@ use crate::pcap::{
 use crate::reassembly::{SourceSpan, reassemble_tcp_segments};
 use crate::varint::{VarintConfig, probe_varint};
 
-const SCHEMA_VERSION: u32 = 12;
+const SCHEMA_VERSION: u32 = 13;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 const MAX_RECOVERY_TAIL_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -131,6 +132,56 @@ pub struct VarintRun {
     pub observation_id: String,
     pub config: VarintConfig,
     pub records: Vec<FramingRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelimiterFrameRecord {
+    pub id: String,
+    pub index: usize,
+    pub start: usize,
+    pub logical_end: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelimiterRun {
+    pub id: String,
+    pub key: String,
+    pub observation_id: String,
+    pub config: DelimiterConfig,
+    pub records: Vec<DelimiterFrameRecord>,
+}
+
+pub fn delimiter_run_from_probe(
+    key: String,
+    observation_id: String,
+    config: DelimiterConfig,
+    state: &State,
+) -> Result<DelimiterRun, String> {
+    let probe = probe_delimiter(state, &observation_id, config)?;
+    if probe.status != DelimiterStatus::Complete || probe.records.len() < 2 {
+        return Err(format!(
+            "delimiter model must consume the observation with at least two records; stopped at {} ({:?})",
+            probe.next_offset, probe.status
+        ));
+    }
+    Ok(DelimiterRun {
+        id: String::new(),
+        key,
+        observation_id,
+        config: probe.config,
+        records: probe
+            .records
+            .into_iter()
+            .map(|record| DelimiterFrameRecord {
+                id: String::new(),
+                index: record.index,
+                start: record.start,
+                logical_end: record.payload_end,
+                end: record.end,
+            })
+            .collect(),
+    })
 }
 
 pub fn varint_run_from_probe(
@@ -340,6 +391,9 @@ pub enum Event {
     VarintCommitted {
         run: VarintRun,
     },
+    DelimiterCommitted {
+        run: DelimiterRun,
+    },
     CaptureRunReserved {
         run: CaptureRun,
     },
@@ -418,6 +472,12 @@ impl Event {
                     record.id = format!("frame-{revision:06}-{index:04}");
                 }
             }
+            Self::DelimiterCommitted { run } => {
+                run.id = format!("delimiter-{revision:06}");
+                for (index, record) in run.records.iter_mut().enumerate() {
+                    record.id = format!("frame-{revision:06}-{index:04}");
+                }
+            }
             Self::CaptureRunReserved { run } => {
                 run.id = format!("run-{revision:06}");
             }
@@ -477,6 +537,7 @@ pub struct State {
     pub observations: Vec<Observation>,
     pub framing_runs: Vec<FramingRun>,
     pub varint_runs: Vec<VarintRun>,
+    pub delimiter_runs: Vec<DelimiterRun>,
     pub actions: Vec<Action>,
     pub tags: Vec<Tag>,
     pub window_tags: Vec<WindowTag>,
@@ -487,22 +548,71 @@ pub struct State {
     pub decisions: Vec<Decision>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct FrameBounds<'a> {
+    pub id: &'a str,
+    pub start: usize,
+    pub logical_end: usize,
+    pub end: usize,
+}
+
 impl State {
-    pub fn frame_by_id(&self, frame_id: &str) -> Option<(&str, &str, &FramingRecord)> {
+    pub fn frame_by_id(&self, frame_id: &str) -> Option<(&str, &str, FrameBounds<'_>)> {
         self.framing_runs
             .iter()
             .find_map(|run| {
                 run.records
                     .iter()
                     .find(|record| record.id == frame_id)
-                    .map(|record| (run.id.as_str(), run.observation_id.as_str(), record))
+                    .map(|record| {
+                        (
+                            run.id.as_str(),
+                            run.observation_id.as_str(),
+                            FrameBounds {
+                                id: &record.id,
+                                start: record.start,
+                                logical_end: record.logical_end,
+                                end: record.end,
+                            },
+                        )
+                    })
             })
             .or_else(|| {
                 self.varint_runs.iter().find_map(|run| {
                     run.records
                         .iter()
                         .find(|record| record.id == frame_id)
-                        .map(|record| (run.id.as_str(), run.observation_id.as_str(), record))
+                        .map(|record| {
+                            (
+                                run.id.as_str(),
+                                run.observation_id.as_str(),
+                                FrameBounds {
+                                    id: &record.id,
+                                    start: record.start,
+                                    logical_end: record.logical_end,
+                                    end: record.end,
+                                },
+                            )
+                        })
+                })
+            })
+            .or_else(|| {
+                self.delimiter_runs.iter().find_map(|run| {
+                    run.records
+                        .iter()
+                        .find(|record| record.id == frame_id)
+                        .map(|record| {
+                            (
+                                run.id.as_str(),
+                                run.observation_id.as_str(),
+                                FrameBounds {
+                                    id: &record.id,
+                                    start: record.start,
+                                    logical_end: record.logical_end,
+                                    end: record.end,
+                                },
+                            )
+                        })
                 })
             })
     }
@@ -520,6 +630,7 @@ impl State {
             observations: Vec::new(),
             framing_runs: Vec::new(),
             varint_runs: Vec::new(),
+            delimiter_runs: Vec::new(),
             actions: Vec::new(),
             tags: Vec::new(),
             window_tags: Vec::new(),
@@ -675,6 +786,7 @@ impl State {
                         .iter()
                         .any(|old| old.key == run.key || old.id == run.id)
                     || self.varint_runs.iter().any(|old| old.key == run.key)
+                    || self.delimiter_runs.iter().any(|old| old.key == run.key)
                     || run.config.validate()? != run.config
                 {
                     return Err("invalid or duplicate framing run".into());
@@ -720,6 +832,7 @@ impl State {
                         .iter()
                         .any(|old| old.key == run.key || old.id == run.id)
                     || self.framing_runs.iter().any(|old| old.key == run.key)
+                    || self.delimiter_runs.iter().any(|old| old.key == run.key)
                     || run.config.validate()? != run.config
                 {
                     return Err("invalid or duplicate varint run".into());
@@ -747,6 +860,47 @@ impl State {
                     }
                 }
                 self.varint_runs.push(run.clone());
+            }
+            Event::DelimiterCommitted { run } => {
+                if record.schema_version < 13 {
+                    return Err("delimiter commits require schema version 13".into());
+                }
+                if run.key.is_empty()
+                    || run.key.len() > 128
+                    || run.key.chars().any(char::is_control)
+                    || run.id != format!("delimiter-{:06}", record.revision)
+                    || self
+                        .delimiter_runs
+                        .iter()
+                        .any(|old| old.key == run.key || old.id == run.id)
+                    || self.framing_runs.iter().any(|old| old.key == run.key)
+                    || self.varint_runs.iter().any(|old| old.key == run.key)
+                    || run.config.clone().validate()? != run.config
+                {
+                    return Err("invalid or duplicate delimiter run".into());
+                }
+                let expected = delimiter_run_from_probe(
+                    run.key.clone(),
+                    run.observation_id.clone(),
+                    run.config.clone(),
+                    self,
+                )?;
+                if expected.records.len() != run.records.len() {
+                    return Err(
+                        "committed delimiter frame count does not match source bytes".into(),
+                    );
+                }
+                for (actual, expected) in run.records.iter().zip(&expected.records) {
+                    if actual.id != format!("frame-{:06}-{:04}", record.revision, expected.index)
+                        || actual.index != expected.index
+                        || actual.start != expected.start
+                        || actual.logical_end != expected.logical_end
+                        || actual.end != expected.end
+                    {
+                        return Err("committed delimiter frame does not match source bytes".into());
+                    }
+                }
+                self.delimiter_runs.push(run.clone());
             }
             Event::CaptureRunReserved { run } => {
                 if !self.trials.iter().any(|trial| trial.id == run.trial_id) {

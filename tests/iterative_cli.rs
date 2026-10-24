@@ -184,7 +184,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     assert_eq!(summary["observation_count"], 48);
     assert_eq!(summary["hypotheses"][0]["score"], 0.9);
     let corpus = cli(&["summary", root_text]);
-    assert_eq!(corpus["schema_version"], 12);
+    assert_eq!(corpus["schema_version"], 13);
     assert_eq!(corpus["revision"], 13);
     assert_eq!(corpus["counts"]["captures"], 2);
     assert_eq!(corpus["counts"]["observations"], 48);
@@ -220,7 +220,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
         serde_json::json!({"trial_id":"trial-000004","direction":direction,"offset":2,"limit":3})
             .to_string();
     let matches = cli(&["search-observations", root_text, &direction_query]);
-    assert_eq!(matches["schema_version"], 12);
+    assert_eq!(matches["schema_version"], 13);
     assert_eq!(matches["total"], 24);
     assert_eq!(matches["observations"].as_array().unwrap().len(), 3);
     assert_eq!(matches["next_offset"], 5);
@@ -2640,7 +2640,7 @@ fn replays_v1_log_and_appends_v9_events() {
         "Old investigation"
     );
     let appended = cli(&["hypothesis", path(&root), "A new claim"]);
-    assert_eq!(appended["schema_version"], 12);
+    assert_eq!(appended["schema_version"], 13);
     assert_eq!(appended["revision"], 2);
     assert_eq!(
         cli(&["changes", path(&root), "0"])
@@ -3924,6 +3924,91 @@ fn held_out_delimiter_inference_rejects_strict_crlf_on_lf_records() {
     assert!(html.contains("Candidate delimiter records"));
     assert!(!html.contains("\"delimiter_inferences\":[]"));
     assert!(html.contains("delimiterCandidates"));
+    let mut runs = Vec::new();
+    for (observation_id, key) in [
+        (&observation_ids[0], "delimiter-discovery"),
+        (&observation_ids[2], "delimiter-validation"),
+    ] {
+        runs.push(cli(&[
+            "commit-delimiter",
+            root_text,
+            observation_id,
+            "0",
+            "0D0A",
+            key,
+        ]));
+    }
+    assert_eq!(runs[0]["run"]["config"]["delimiter_hex"], "0d0a");
+    assert_eq!(runs[0]["run"]["records"][0]["logical_end"], 1);
+    let replay = cli(&[
+        "commit-delimiter",
+        root_text,
+        &observation_ids[0],
+        "0",
+        "0d0a",
+        "delimiter-discovery",
+    ]);
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(replay["run"]["id"], runs[0]["run"]["id"]);
+    let changed_key_use = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "commit-delimiter",
+            root_text,
+            &observation_ids[0],
+            "0",
+            "0a",
+            "delimiter-discovery",
+        ])
+        .output()
+        .unwrap();
+    assert!(!changed_key_use.status.success());
+    assert_eq!(
+        cli(&["delimiter-status", root_text, "delimiter-discovery"])["run"]["id"],
+        runs[0]["run"]["id"]
+    );
+    let frame_page = cli(&["frames", root_text, "delimiter-discovery", "0", "1"]);
+    assert_eq!(frame_page["model"], "delimiter");
+    assert_eq!(frame_page["total"], 3);
+    assert_eq!(frame_page["next_offset"], 1);
+    let first_frame_id = frame_page["frames"][0]["id"].as_str().unwrap();
+    let frame_span = cli(&["frame-span", root_text, first_frame_id, "0", "3"]);
+    assert_eq!(frame_span["model"], "delimiter");
+    assert_eq!(frame_span["logical_length"], 1);
+    assert_eq!(frame_span["bytes_hex"], "410d0a");
+    assert_eq!(frame_span["source_file_offset"], 0);
+    for (set, run, values) in [
+        ("discovery", &runs[0], [65, 66, 70]),
+        ("validation", &runs[1], [67, 68, 73]),
+    ] {
+        for (index, value) in values.into_iter().enumerate() {
+            cli(&[
+                "frame-value",
+                root_text,
+                run["run"]["records"][index]["id"].as_str().unwrap(),
+                "first_payload_byte",
+                &value.to_string(),
+                set,
+            ]);
+        }
+    }
+    let field = cli(&["infer-frame-value", root_text, "first_payload_byte"]);
+    assert_eq!(field["candidate_count"], 1);
+    assert_eq!(field["candidates"][0]["start"], 0);
+    assert_eq!(field["candidates"][0]["end"], 1);
+    assert_eq!(field["candidates"][0]["validation_matches"], 3);
+    let framed_query = serde_json::json!({"framing_key":"delimiter-discovery"}).to_string();
+    assert_eq!(
+        cli(&["search-observations", root_text, &framed_query])["total"],
+        1
+    );
+    let corpus = cli(&["summary", root_text]);
+    assert_eq!(corpus["counts"]["delimiter_runs"], 2);
+    assert_eq!(corpus["counts"]["frames"], 6);
+    let committed_report = root.join("delimiter-committed.html");
+    cli(&["report", root_text, path(&committed_report)]);
+    let committed_html = fs::read_to_string(committed_report).unwrap();
+    assert!(committed_html.contains("\"delimiter_runs\":[{"));
+    assert!(committed_html.contains("terminator"));
     let unfinished = cli(&[
         "import",
         root_text,
@@ -3940,5 +4025,133 @@ fn held_out_delimiter_inference_rejects_strict_crlf_on_lf_records() {
     assert_eq!(incomplete["next_offset"], 10);
     assert_eq!(incomplete["remaining_bytes"], 4);
     assert_eq!(cli(&["verify", root_text])["observations"], 5);
+    let incomplete_commit = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "commit-delimiter",
+            root_text,
+            unfinished_id,
+            "0",
+            "0d0a",
+            "incomplete",
+        ])
+        .output()
+        .unwrap();
+    assert!(!incomplete_commit.status.success());
+    let event_path = root.join(".pi/events.jsonl");
+    let mut events: Vec<Value> = fs::read_to_string(&event_path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let committed = events
+        .iter_mut()
+        .find(|event| event["event"]["type"] == "delimiter_committed")
+        .unwrap();
+    committed["event"]["run"]["records"][0]["logical_end"] = serde_json::json!(2);
+    fs::write(
+        event_path,
+        events
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    let invalid = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["verify", root_text])
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("committed delimiter frame"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn committed_delimiter_spans_trace_a_terminator_split_across_tcp_packets() {
+    let root = workspace();
+    let root_text = path(&root);
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let fixture = examples.join("delimiter_split_tcp.pcap");
+    let truth: Value =
+        serde_json::from_slice(&fs::read(examples.join("delimiter_split_tcp.truth.json")).unwrap())
+            .unwrap();
+    let raw = fs::read(&fixture).unwrap();
+    cli(&[
+        "init",
+        root_text,
+        "Where does the TCP record terminator end?",
+    ]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Split CRLF across packets",
+        "-",
+        "Record boundaries survive packet splits",
+    ]);
+    let trial = cli(&[
+        "trial",
+        root_text,
+        experiment["event"]["experiment"]["id"].as_str().unwrap(),
+        "discovery",
+        "CRLF straddles packets",
+    ]);
+    let imported = cli(&[
+        "import",
+        root_text,
+        trial["event"]["trial"]["id"].as_str().unwrap(),
+        "pcap-tcp-stream",
+        path(&fixture),
+    ]);
+    assert_eq!(imported["event"]["capture"]["observation_count"], 1);
+    let observation_id = imported["event"]["observations"][0]["id"].as_str().unwrap();
+    assert_eq!(
+        imported["event"]["observations"][0]["bytes_hex"],
+        truth["observation_hex"]
+    );
+    let probe = cli(&["probe-delimiter", root_text, observation_id, "0", "0d0a"]);
+    assert_eq!(probe["status"], "complete");
+    assert_eq!(probe["record_count"], 2);
+    assert_eq!(probe["records"][0]["source_span_count"], 2);
+    let committed = cli(&[
+        "commit-delimiter",
+        root_text,
+        observation_id,
+        "0",
+        "0d0a",
+        "split-crlf",
+    ]);
+    for (actual, expected) in committed["run"]["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(truth["records"].as_array().unwrap())
+    {
+        assert_eq!(actual["start"], expected["start"]);
+        assert_eq!(actual["logical_end"], expected["payload_end"]);
+        assert_eq!(actual["end"], expected["end"]);
+    }
+    let first_frame_id = committed["run"]["records"][0]["id"].as_str().unwrap();
+    let span = cli(&["frame-span", root_text, first_frame_id, "0", "3"]);
+    assert_eq!(span["bytes_hex"], "410d0a");
+    assert_eq!(span["source_file_offset"], Value::Null);
+    let sources = span["source_spans"].as_array().unwrap();
+    assert_eq!(sources.len(), 2);
+    assert_eq!(sources[0]["message_start"], 0);
+    assert_eq!(sources[0]["message_end"], 2);
+    assert_eq!(sources[1]["message_start"], 2);
+    assert_eq!(sources[1]["message_end"], 3);
+    for (actual, expected) in sources
+        .iter()
+        .zip(truth["source_spans"].as_array().unwrap())
+    {
+        assert_eq!(actual["packet_index"], expected["packet_index"]);
+        assert_eq!(actual["file_offset"], expected["file_offset"]);
+        let start = actual["message_start"].as_u64().unwrap() as usize;
+        let end = actual["message_end"].as_u64().unwrap() as usize;
+        let offset = actual["file_offset"].as_u64().unwrap() as usize;
+        assert_eq!(&raw[offset..offset + end - start], &b"A\r\n"[start..end]);
+    }
+    assert_eq!(cli(&["verify", root_text])["artifacts_verified"], 1);
     fs::remove_dir_all(root).unwrap();
 }

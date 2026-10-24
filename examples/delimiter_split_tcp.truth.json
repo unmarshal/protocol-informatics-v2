@@ -1,0 +1,29 @@
+{
+  "observation_hex": "410d0a42430d0a",
+  "records": [
+    {
+      "start": 0,
+      "payload_end": 1,
+      "end": 3
+    },
+    {
+      "start": 3,
+      "payload_end": 5,
+      "end": 7
+    }
+  ],
+  "source_spans": [
+    {
+      "packet_index": 0,
+      "message_start": 0,
+      "message_end": 2,
+      "file_offset": 94
+    },
+    {
+      "packet_index": 1,
+      "message_start": 2,
+      "message_end": 7,
+      "file_offset": 166
+    }
+  ]
+}

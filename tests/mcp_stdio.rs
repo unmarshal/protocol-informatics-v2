@@ -127,7 +127,7 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 41);
+    assert_eq!(names.len(), 42);
     assert!(names.contains(&"summary"));
     assert!(names.contains(&"capture_step"));
     assert!(names.contains(&"validate_exchanges"));
@@ -137,6 +137,7 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
     assert!(names.contains(&"verify"));
     assert!(names.contains(&"commit_framing"));
     assert!(names.contains(&"commit_varint"));
+    assert!(names.contains(&"commit_delimiter"));
     assert!(names.contains(&"frame_span"));
     assert!(names.contains(&"infer_frame_value"));
     assert!(names.contains(&"experiments"));
@@ -460,6 +461,7 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
         .as_str()
         .unwrap();
     let mut first_delimiter_observation = String::new();
+    let mut validation_delimiter_observation = String::new();
     for (trial_id, key, filename) in [
         (
             delimiter_discovery_id,
@@ -492,6 +494,12 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
                 .unwrap()
                 .to_owned();
         }
+        if filename == "delimiter_validation_a.bin" {
+            validation_delimiter_observation = capture["first_observation_ids"][0]
+                .as_str()
+                .unwrap()
+                .to_owned();
+        }
     }
     let delimiter_probe = client.tool(
         "probe_delimiter",
@@ -514,6 +522,61 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
                     && candidate["validation_matches"] == 2
             })
     );
+    let delimiter_commit_config = |observation_id: &str, key: &str| json!({"observation_id":observation_id,"start_offset":0,"delimiter_hex":"0d0a","key":key});
+    let delimiter_discovery_run = client.tool(
+        "commit_delimiter",
+        delimiter_commit_config(&first_delimiter_observation, "mcp-delimiter-discovery"),
+    );
+    assert_eq!(
+        delimiter_discovery_run["run"]["records"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(
+        client.tool(
+            "commit_delimiter",
+            delimiter_commit_config(&first_delimiter_observation, "mcp-delimiter-discovery")
+        )["replayed"],
+        true
+    );
+    let delimiter_validation_run = client.tool(
+        "commit_delimiter",
+        delimiter_commit_config(
+            &validation_delimiter_observation,
+            "mcp-delimiter-validation",
+        ),
+    );
+    assert_eq!(
+        client.tool("frame_run_status", json!({"key":"mcp-delimiter-discovery"}))["model"],
+        "delimiter"
+    );
+    let delimiter_frames =
+        client.tool("frames", json!({"key":"mcp-delimiter-discovery","limit":1}));
+    assert_eq!(delimiter_frames["model"], "delimiter");
+    let delimiter_span = client.tool(
+        "frame_span",
+        json!({"frame_id":delimiter_frames["frames"][0]["id"],"start":0,"end":3}),
+    );
+    assert_eq!(delimiter_span["bytes_hex"], "410d0a");
+    for (set, run, values) in [
+        ("discovery", &delimiter_discovery_run, [65, 66, 70]),
+        ("validation", &delimiter_validation_run, [67, 68, 73]),
+    ] {
+        for (index, value) in values.into_iter().enumerate() {
+            client.tool(
+                "annotate_frame_value",
+                json!({"frame_id":run["run"]["records"][index]["id"],"variable":"mcp_delimiter_first_byte","value":value.to_string(),"set":set}),
+            );
+        }
+    }
+    let delimiter_field = client.tool(
+        "infer_frame_value",
+        json!({"variable":"mcp_delimiter_first_byte"}),
+    );
+    assert_eq!(delimiter_field["candidate_count"], 1);
+    assert_eq!(delimiter_field["candidates"][0]["validation_matches"], 3);
     assert!(
         delimiter_result["candidates"]
             .as_array()

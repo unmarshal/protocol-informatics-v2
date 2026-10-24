@@ -558,7 +558,7 @@ mod tests {
             })
             .collect();
         let state = State {
-            schema_version: 12,
+            schema_version: 13,
             revision: 1,
             question: "test".into(),
             hypotheses: Vec::new(),
@@ -582,6 +582,7 @@ mod tests {
             }],
             framing_runs: Vec::new(),
             varint_runs: Vec::new(),
+            delimiter_runs: Vec::new(),
             actions: Vec::new(),
             tags: Vec::new(),
             window_tags: Vec::new(),

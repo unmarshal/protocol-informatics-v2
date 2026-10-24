@@ -148,6 +148,14 @@ struct DelimiterProbeInput {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct DelimiterCommitInput {
+    observation_id: String,
+    start_offset: usize,
+    delimiter_hex: String,
+    key: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct FramingProbeInput {
     observation_id: String,
     start_offset: usize,
@@ -705,7 +713,27 @@ impl InvestigationServer {
     }
 
     #[tool(
-        description = "Inspect a committed fixed-width or unsigned LEB128 frame run by retry key.",
+        description = "Commit complete delimiter-terminated record boundaries with a retry-safe key and replay-checked frame IDs.",
+        annotations(idempotent_hint = true)
+    )]
+    async fn commit_delimiter(
+        &self,
+        Parameters(input): Parameters<DelimiterCommitInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke(
+            "commit-delimiter",
+            vec![
+                input.observation_id,
+                input.start_offset.to_string(),
+                input.delimiter_hex,
+                input.key,
+            ],
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Inspect a committed fixed-width, unsigned LEB128, or delimiter frame run by retry key.",
         annotations(read_only_hint = true)
     )]
     fn frame_run_status(
@@ -720,6 +748,9 @@ impl InvestigationServer {
             return Self::json(
                 json!({"revision":state.revision,"model":"unsigned_leb128","run":run}),
             );
+        }
+        if let Some(run) = state.delimiter_runs.iter().find(|run| run.key == input.key) {
+            return Self::json(json!({"revision":state.revision,"model":"delimiter","run":run}));
         }
         Err(format!("unknown frame run key {}", input.key))
     }
@@ -1042,7 +1073,7 @@ impl ServerHandler for InvestigationServer {
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions(
-                "Start with summary, then page trials and search observations. Read exact byte spans before making claims. Pairing and clustering are provisional. Use stable keys for mark and capture operations.",
+                "Start with summary, then page trials and search observations. Read exact byte spans before making claims. Pairing, clustering, and record models are provisional. Check held-out captures before committing frames; use stable keys for mark, capture, and frame operations.",
             )
     }
 }

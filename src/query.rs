@@ -20,6 +20,7 @@ pub struct CorpusCounts {
     pub observation_bytes: u64,
     pub framing_runs: usize,
     pub varint_runs: usize,
+    pub delimiter_runs: usize,
     pub frames: usize,
     pub hypotheses: usize,
     pub actions: usize,
@@ -469,6 +470,11 @@ pub fn corpus_summary(state: &State) -> CorpusSummary {
             *trial_frames.entry(trial_id).or_default() += run.records.len();
         }
     }
+    for run in &state.delimiter_runs {
+        if let Some(trial_id) = observation_trials.get(run.observation_id.as_str()) {
+            *trial_frames.entry(trial_id).or_default() += run.records.len();
+        }
+    }
     for action in &state.actions {
         *trial_actions.entry(&action.trial_id).or_default() += 1;
     }
@@ -523,6 +529,7 @@ pub fn corpus_summary(state: &State) -> CorpusSummary {
             observation_bytes: lengths.iter().map(|length| *length as u64).sum(),
             framing_runs: state.framing_runs.len(),
             varint_runs: state.varint_runs.len(),
+            delimiter_runs: state.delimiter_runs.len(),
             frames: state
                 .framing_runs
                 .iter()
@@ -530,6 +537,11 @@ pub fn corpus_summary(state: &State) -> CorpusSummary {
                 .sum::<usize>()
                 + state
                     .varint_runs
+                    .iter()
+                    .map(|run| run.records.len())
+                    .sum::<usize>()
+                + state
+                    .delimiter_runs
                     .iter()
                     .map(|run| run.records.len())
                     .sum::<usize>(),
@@ -787,6 +799,13 @@ pub fn search_observations<'a>(
                 .or_else(|| {
                     state
                         .varint_runs
+                        .iter()
+                        .find(|run| run.key == *key)
+                        .map(|run| run.observation_id.as_str())
+                })
+                .or_else(|| {
+                    state
+                        .delimiter_runs
                         .iter()
                         .find(|run| run.key == *key)
                         .map(|run| run.observation_id.as_str())
