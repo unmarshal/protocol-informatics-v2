@@ -10,7 +10,8 @@ use std::os::unix::process::CommandExt;
 
 use protocol_informatics_v2::workflow::{
     self, Action, AnalysisRecord, AnalysisScope, CaptureRun, CaptureRunStatus, Decision, Event,
-    Experiment, Hypothesis, KnownValue, Observation, Tag, Trial, ValueSet, WindowTag,
+    Experiment, FrameKnownValue, Hypothesis, KnownValue, Observation, Tag, Trial, ValueSet,
+    WindowTag,
 };
 use protocol_informatics_v2::{CpuAligner, analyze_best, parse_hex_samples};
 use serde::Serialize;
@@ -62,6 +63,10 @@ fn print_help() {
     println!("  window-status <dir> <key>             inspect a completed tag window");
     println!("  value <dir> <obs-id> <variable> <unsigned> <discovery|validation>");
     println!("  infer-value <dir> <variable>         find exact unsigned field candidates");
+    println!("  frame-value <dir> <frame-id> <variable> <unsigned> <discovery|validation>");
+    println!(
+        "  infer-frame-value <dir> <variable>   search logical frame bytes with held-out checks"
+    );
     println!(
         "  probe-framing <dir> <obs-id> <start> <field-offset> <width> <big|little> <total|payload> <alignment>"
     );
@@ -803,6 +808,33 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 &state, &args[2],
             )?)
         }
+        "frame-value" => {
+            require_len(args, 6)?;
+            let value = parse_unsigned(&args[4])?;
+            let set = match args[5].as_str() {
+                "discovery" => ValueSet::Discovery,
+                "validation" => ValueSet::Validation,
+                _ => return Err("set must be discovery or validation".into()),
+            };
+            let known_value = FrameKnownValue {
+                id: workflow::next_id(root, "frame-value")?,
+                frame_id: args[2].clone(),
+                variable: args[3].clone(),
+                value,
+                set,
+            };
+            print_json(&workflow::append(
+                root,
+                Event::FrameValueAnnotated { known_value },
+            )?)
+        }
+        "infer-frame-value" => {
+            require_len(args, 3)?;
+            let state = workflow::load(root)?;
+            print_json(
+                &protocol_informatics_v2::inference::infer_frame_unsigned_field(&state, &args[2])?,
+            )
+        }
         "probe-framing" => {
             require_len(args, 9)?;
             let config = parse_framing_config(args)?;
@@ -1015,6 +1047,7 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 "actions": state.actions, "window_tags": state.window_tags,
                 "observation_count": state.observations.len(), "tag_count": state.tags.len(),
                 "known_value_count": state.known_values.len(),
+                "frame_known_value_count": state.frame_known_values.len(),
                 "analyses": state.analyses, "decisions": state.decisions}),
             )
         }

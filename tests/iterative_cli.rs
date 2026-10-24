@@ -1847,6 +1847,124 @@ fn committed_tcp_frames_trace_bytes_across_packets() {
 }
 
 #[test]
+fn agent_infers_a_field_with_held_out_committed_frames() {
+    let root = workspace();
+    let root_text = path(&root);
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    cli(&[
+        "init",
+        root_text,
+        "Which frame byte identifies record type?",
+    ]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Vary payload size",
+        "-",
+        "Type remains at frame offset zero",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let discovery = cli(&["trial", root_text, experiment_id, "discovery", "first file"]);
+    let validation = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "validation",
+        "held-out file",
+    ]);
+    let mut runs = Vec::new();
+    for (trial, filename, key) in [
+        (&discovery, "records_discovery_a.bin", "type-discovery"),
+        (&validation, "records_validation_b.bin", "type-validation"),
+    ] {
+        let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+        let imported = cli(&[
+            "import",
+            root_text,
+            trial_id,
+            "binary",
+            path(&examples.join(filename)),
+        ]);
+        let observation_id = imported["event"]["observations"][0]["id"].as_str().unwrap();
+        runs.push(cli(&[
+            "commit-framing",
+            root_text,
+            observation_id,
+            "4",
+            "1",
+            "2",
+            "big",
+            "payload",
+            "2",
+            key,
+        ]));
+    }
+    for (set, run) in [("discovery", &runs[0]), ("validation", &runs[1])] {
+        for (index, value) in [160, 161, 162].into_iter().enumerate() {
+            let frame_id = run["run"]["records"][index]["id"].as_str().unwrap();
+            let value_text = value.to_string();
+            cli(&[
+                "frame-value",
+                root_text,
+                frame_id,
+                "record_type",
+                &value_text,
+                set,
+            ]);
+        }
+    }
+    let inference = cli(&["infer-frame-value", root_text, "record_type"]);
+    assert_eq!(inference["coordinate_system"], "frame_bytes");
+    assert_eq!(inference["byte_range"], "logical_record");
+    assert_eq!(inference["discovery_count"], 3);
+    assert_eq!(inference["validation_count"], 3);
+    assert_eq!(inference["candidate_count"], 1);
+    assert_eq!(inference["candidates"][0]["start"], 0);
+    assert_eq!(inference["candidates"][0]["end"], 1);
+    assert_eq!(inference["candidates"][0]["validation_matches"], 3);
+    assert_eq!(inference["candidates"][0]["preferred"], true);
+    let report = root.join("frame-fields.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("Frame fields"));
+    assert!(html.contains("frame_field_inferences"));
+    assert!(html.contains("record_type"));
+
+    let last_frame = runs[1]["run"]["records"][2]["id"].as_str().unwrap();
+    cli(&[
+        "frame-value",
+        root_text,
+        last_frame,
+        "record_type",
+        "999",
+        "validation",
+    ]);
+    let challenged = cli(&["infer-frame-value", root_text, "record_type"]);
+    assert_eq!(challenged["candidate_count"], 1);
+    assert_eq!(challenged["candidates"][0]["validation_matches"], 2);
+    assert_eq!(
+        challenged["candidates"][0]["counterexample_frame_ids"][0],
+        last_frame
+    );
+    assert_eq!(challenged["preferred_candidate_count"], 0);
+    assert_eq!(cli(&["resume", root_text])["frame_known_value_count"], 6);
+    cli(&[
+        "frame-value",
+        root_text,
+        last_frame,
+        "record_type",
+        "162",
+        "validation",
+    ]);
+    assert_eq!(
+        cli(&["infer-frame-value", root_text, "record_type"])["preferred_candidate_count"],
+        1
+    );
+    assert_eq!(cli(&["verify", root_text])["artifacts_verified"], 2);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn annotated_icmp_values_locate_sequence_on_held_out_packets() {
     let root = workspace();
     let root_text = path(&root);
@@ -2014,7 +2132,7 @@ fn controlled_intervention_locates_checksum_candidate_on_new_packets() {
 }
 
 #[test]
-fn replays_v1_log_and_appends_v8_events() {
+fn replays_v1_log_and_appends_v9_events() {
     let root = workspace();
     let events = root.join(".pi/events.jsonl");
     fs::create_dir_all(events.parent().unwrap()).unwrap();
@@ -2028,7 +2146,7 @@ fn replays_v1_log_and_appends_v8_events() {
         "Old investigation"
     );
     let appended = cli(&["hypothesis", path(&root), "A new claim"]);
-    assert_eq!(appended["schema_version"], 8);
+    assert_eq!(appended["schema_version"], 9);
     assert_eq!(appended["revision"], 2);
     assert_eq!(
         cli(&["changes", path(&root), "0"])

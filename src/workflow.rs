@@ -16,7 +16,7 @@ use crate::pcap::{
 };
 use crate::reassembly::{SourceSpan, reassemble_tcp_segments};
 
-const SCHEMA_VERSION: u32 = 8;
+const SCHEMA_VERSION: u32 = 9;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,6 +196,15 @@ pub struct KnownValue {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrameKnownValue {
+    pub id: String,
+    pub frame_id: String,
+    pub variable: String,
+    pub value: u64,
+    pub set: ValueSet,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Action {
     pub id: String,
     pub trial_id: String,
@@ -289,6 +298,9 @@ pub enum Event {
     ValueAnnotated {
         known_value: KnownValue,
     },
+    FrameValueAnnotated {
+        known_value: FrameKnownValue,
+    },
     AnalysisRecorded {
         analysis: AnalysisRecord,
     },
@@ -349,6 +361,9 @@ impl Event {
             Self::ValueAnnotated { known_value } => {
                 known_value.id = format!("value-{revision:06}");
             }
+            Self::FrameValueAnnotated { known_value } => {
+                known_value.id = format!("frame-value-{revision:06}");
+            }
             Self::AnalysisRecorded { analysis } => {
                 analysis.id = format!("analysis-{revision:06}");
             }
@@ -383,6 +398,7 @@ pub struct State {
     pub tags: Vec<Tag>,
     pub window_tags: Vec<WindowTag>,
     pub known_values: Vec<KnownValue>,
+    pub frame_known_values: Vec<FrameKnownValue>,
     pub analyses: Vec<AnalysisRecord>,
     pub decisions: Vec<Decision>,
 }
@@ -404,6 +420,7 @@ impl State {
             tags: Vec::new(),
             window_tags: Vec::new(),
             known_values: Vec::new(),
+            frame_known_values: Vec::new(),
             analyses: Vec::new(),
             decisions: Vec::new(),
         }
@@ -740,6 +757,35 @@ impl State {
                     *existing = known_value.clone();
                 } else {
                     self.known_values.push(known_value.clone());
+                }
+            }
+            Event::FrameValueAnnotated { known_value } => {
+                if record.schema_version < 9 {
+                    return Err("frame values require schema version 9".into());
+                }
+                if !self.framing_runs.iter().any(|run| {
+                    run.records
+                        .iter()
+                        .any(|frame| frame.id == known_value.frame_id)
+                }) {
+                    return Err(format!("unknown frame {}", known_value.frame_id));
+                }
+                if known_value.variable.trim().is_empty()
+                    || known_value.variable.len() > 128
+                    || known_value.variable.chars().any(char::is_control)
+                {
+                    return Err(
+                        "frame-value variable must be 1 to 128 bytes without control characters"
+                            .into(),
+                    );
+                }
+                if let Some(existing) = self.frame_known_values.iter_mut().find(|existing| {
+                    existing.frame_id == known_value.frame_id
+                        && existing.variable == known_value.variable
+                }) {
+                    *existing = known_value.clone();
+                } else {
+                    self.frame_known_values.push(known_value.clone());
                 }
             }
             Event::AnalysisRecorded { analysis } => {

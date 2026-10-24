@@ -176,6 +176,8 @@ The candidate `[6, 8)` big-endian matches both held-out values. IPv6 parsing fol
 
 `commit-framing` records a complete model with at least two records for one observation. Its caller-supplied key makes retries safe; a different model cannot reuse the key. Commit-time frame IDs and half-open offsets persist in the event log, and replay checks them against the original observation. `framing-status` and paged `frames` expose the result; `frame-span` reads up to 4096 bytes per call in frame-relative coordinates, with the parent observation offsets and exact source-file or TCP packet provenance. Frames form a separate derived layer, so they are not silently counted as raw observations by clustering or alignment. The HTML report shows committed boundaries alongside proposed ones.
 
+`frame-value` attaches a controlled unsigned value to a committed frame as discovery or validation evidence. `infer-frame-value` runs the same exact-match search as `infer-value`, using frame-relative logical bytes (excluding alignment padding) and returning frame IDs for held-out counterexamples. At least three discovery frames with two distinct values are required. Discovery and validation frames must come from separate captures; the result lists those capture IDs. A later annotation of the same variable on the same frame supersedes the earlier one in the materialized state, while both events remain in the log. The HTML report shows frame field candidates and highlights a unique shortest validated candidate in the parent observation.
+
 ```sh
 python3 examples/generate_records_fixture.py
 cargo run -- init /tmp/pi-records 'Where are record boundaries?'
@@ -189,9 +191,17 @@ cargo run -- import /tmp/pi-records trial-000004 binary examples/records_validat
 cargo run -- infer-framing /tmp/pi-records trial-000003 trial-000004
 cargo run -- probe-framing /tmp/pi-records obs-000005-0000 4 1 2 big payload 2
 cargo run -- commit-framing /tmp/pi-records obs-000005-0000 4 1 2 big payload 2 discovery-a-v1
+cargo run -- commit-framing /tmp/pi-records obs-000008-0000 4 1 2 big payload 2 validation-b-v1
 cargo run -- framing-status /tmp/pi-records discovery-a-v1
 cargo run -- frames /tmp/pi-records discovery-a-v1 0 50
 cargo run -- frame-span /tmp/pi-records frame-000009-0001 0 8
+cargo run -- frame-value /tmp/pi-records frame-000009-0000 record_type 160 discovery
+cargo run -- frame-value /tmp/pi-records frame-000009-0001 record_type 161 discovery
+cargo run -- frame-value /tmp/pi-records frame-000009-0002 record_type 162 discovery
+cargo run -- frame-value /tmp/pi-records frame-000010-0000 record_type 160 validation
+cargo run -- frame-value /tmp/pi-records frame-000010-0001 record_type 161 validation
+cargo run -- frame-value /tmp/pi-records frame-000010-0002 record_type 162 validation
+cargo run -- infer-frame-value /tmp/pi-records record_type
 ```
 
 The fixture has a four-byte preamble and three aligned records per file. Only one searched model fits both discovery files and both held-out files: a two-byte big-endian payload length at record offset 1, with two-byte alignment. The probe maps its first file's records to `[4, 8)`, `[8, 16)`, and `[16, 276)`.

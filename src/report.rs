@@ -16,6 +16,23 @@ pub fn render(state: &State) -> String {
     let mut view = serde_json::to_value(state).expect("state is serializable");
     view["field_inferences"] =
         serde_json::to_value(inferences).expect("inferences are serializable");
+    let frame_variables: BTreeSet<&str> = state
+        .frame_known_values
+        .iter()
+        .map(|value| value.variable.as_str())
+        .collect();
+    let mut frame_inferences = Vec::new();
+    let mut frame_inference_errors = Vec::new();
+    for variable in frame_variables {
+        match crate::inference::infer_frame_unsigned_field(state, variable) {
+            Ok(inference) => frame_inferences.push(inference),
+            Err(error) => frame_inference_errors
+                .push(serde_json::json!({"variable": variable, "error": error})),
+        }
+    }
+    view["frame_field_inferences"] =
+        serde_json::to_value(frame_inferences).expect("frame inferences are serializable");
+    view["frame_field_errors"] = serde_json::Value::Array(frame_inference_errors);
     match crate::clustering::cluster_observations(state, None, true) {
         Ok(report) => {
             view["cluster_report"] =
@@ -127,6 +144,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
     <section class="panel"><h2>Candidate fields</h2><div id="fieldCandidates"></div></section>
     <section class="panel"><h2>Candidate record framing</h2><div id="framingCandidates"></div></section>
     <section class="panel"><h2>Committed frames</h2><div id="committedFrames"></div></section>
+    <section class="panel"><h2>Frame fields</h2><div id="frameFields"></div></section>
     <section class="panel"><h2>Analyses</h2><div id="analyses"></div></section>
     <section class="panel"><h2>Decisions</h2><div id="decisions"></div></section>
   </div>
@@ -145,12 +163,19 @@ const trialById = new Map(state.trials.map(x=>[x.id,x]));
 const clusterById = new Map((state.cluster_report?.clusters||[]).map(x=>[x.id,x]));
 const framingPreviewById = new Map((state.framing_previews||[]).map(x=>[x.probe.observation_id,x.probe]));
 for(const run of state.framing_runs||[]) framingPreviewById.set(run.observation_id,{records:run.records,committed:true,key:run.key});
+const frameById = new Map((state.framing_runs||[]).flatMap(run=>run.records.map(frame=>[frame.id,{frame,run}])));
 const tagsFor = id => state.tags.filter(x=>x.observation_id===id);
 const valuesFor = id => state.known_values.filter(x=>x.observation_id===id);
 const fieldOverlays = state.field_inferences.flatMap(inference => {
   const preferred=inference.candidates.filter(candidate=>candidate.preferred);
   const observationIds=new Set(state.known_values.filter(value=>value.variable===inference.variable).map(value=>value.observation_id));
   return !inference.truncated&&inference.preferred_candidate_count===1 ? [{variable:inference.variable,observationIds,...preferred[0]}] : [];
+});
+const frameFieldOverlays = (state.frame_field_inferences||[]).flatMap(inference => {
+  const preferred=inference.candidates.filter(candidate=>candidate.preferred);
+  if(inference.truncated||inference.preferred_candidate_count!==1) return [];
+  const frameIds=new Set(state.frame_known_values.filter(value=>value.variable===inference.variable).map(value=>value.frame_id));
+  return [...frameIds].flatMap(id=>{const target=frameById.get(id); return target?[{variable:inference.variable,frameId:id,observationId:target.run.observation_id,start:target.frame.start+preferred[0].start,end:target.frame.start+preferred[0].end}]:[];});
 });
 byId('revision').textContent=state.revision;
 byId('question').textContent=state.question;
@@ -186,12 +211,20 @@ if(!(state.framing_inferences||[]).length) byId('framingCandidates').append(node
 for(const run of state.framing_runs||[]) {
   const row=node('div','', 'row');
   row.append(node('strong',run.id+' · '+run.key),node('div',run.observation_id+' · '+run.records.length+' frames · '+run.config.prefix_width+' byte '+run.config.byte_order+' '+run.config.length_mode+' length · alignment '+run.config.alignment,'small muted'));
-  for(const frame of run.records.slice(0,20)) row.append(node('div',frame.id+' ['+frame.start+', '+frame.end+')'+(frame.logical_end<frame.end?' · padding ['+frame.logical_end+', '+frame.end+')':''),'small'));
+  for(const frame of run.records.slice(0,20)) row.append(node('div',frame.id+' ['+frame.start+', '+frame.end+')'+(frame.logical_end<frame.end?' · padding ['+frame.logical_end+', '+frame.end+')':'')+' '+state.frame_known_values.filter(value=>value.frame_id===frame.id).map(value=>value.variable+'='+value.value+' ('+value.set+')').join(' · '),'small'));
   if(run.records.length>20) row.append(node('div','Additional frames are available through the frames command.','small muted'));
   const button=node('button','Inspect source bytes','small'); button.onclick=()=>{const observation=state.observations.find(x=>x.id===run.observation_id); if(observation) showDetail(observation);}; row.append(button);
   byId('committedFrames').append(row);
 }
 if(!(state.framing_runs||[]).length) byId('committedFrames').append(node('div','Commit a complete framing model to preserve record boundaries and stable frame IDs.','small muted'));
+for(const inference of state.frame_field_inferences||[]) {
+  const row=node('div','', 'row');
+  row.append(node('strong',inference.variable),node('div',inference.discovery_count+' discovery frames · '+inference.validation_count+' held-out frames · '+inference.candidate_count+' candidate(s) · '+inference.preferred_candidate_count+' shortest validated','small muted'));
+  for(const candidate of inference.candidates.slice(0,5)) row.append(node('div','frame ['+candidate.start+', '+candidate.end+') '+candidate.byte_order+' · held-out '+candidate.validation_matches+'/'+candidate.validation_total+(candidate.preferred?' · shortest validated':''),'small'));
+  byId('frameFields').append(row);
+}
+for(const failure of state.frame_field_errors||[]) byId('frameFields').append(node('div',failure.variable+': '+failure.error,'small muted'));
+if(!(state.frame_field_inferences||[]).length&&!(state.frame_field_errors||[]).length) byId('frameFields').append(node('div','Annotate committed frames with controlled values to locate fields inside records.','small muted'));
 for(const experiment of state.experiments) {
   const row=node('div','', 'row'); row.append(node('strong',experiment.id+' · '+experiment.question),node('div','Prediction: '+experiment.prediction,'small muted'));
   for(const trial of state.trials.filter(x=>x.experiment_id===experiment.id)) {
@@ -296,7 +329,7 @@ function showDetail(observation) {
   function draw() {
     const start=page*pageSize, end=Math.min(total,start+pageSize); bytes.replaceChildren();
     for(let offset=start;offset<end;offset++) {
-      const overlay=fieldOverlays.find(field=>field.observationIds.has(observation.id)&&offset>=field.start&&offset<field.end);
+      const overlay=fieldOverlays.find(field=>field.observationIds.has(observation.id)&&offset>=field.start&&offset<field.end)||frameFieldOverlays.find(field=>field.observationId===observation.id&&offset>=field.start&&offset<field.end);
       const source=observation.source_spans?.find(span=>offset>=span.message_start&&offset<span.message_end);
       const packetStart=source&&source.message_start===offset&&offset!==0;
       const recordStart=framing?.records.find(record=>record.start===offset);
