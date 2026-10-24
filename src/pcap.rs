@@ -1,6 +1,8 @@
-//! Ethernet/IPv4 transport extraction from classic pcap and pcapng.
+//! Ethernet IPv4/IPv6 transport extraction from classic pcap and pcapng.
 //! ICMP messages, UDP datagrams, and TCP segment payloads share capture parsing and retain exact
-//! byte offsets into the original capture. Ethernet VLAN tags are unwrapped before IPv4 parsing.
+//! byte offsets into the original capture. Ethernet VLAN tags are unwrapped before IP parsing.
+
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportMessage {
@@ -8,8 +10,8 @@ pub struct TransportMessage {
     pub timestamp_ns: u64,
     /// Offset of the extracted bytes in the original capture file.
     pub source_offset: usize,
-    pub source_ipv4: [u8; 4],
-    pub destination_ipv4: [u8; 4],
+    pub source_ip: IpAddr,
+    pub destination_ip: IpAddr,
     pub source_port: Option<u16>,
     pub destination_port: Option<u16>,
     pub tcp_sequence: Option<u32>,
@@ -22,8 +24,8 @@ pub type IcmpMessage = TransportMessage;
 #[derive(Debug)]
 struct TransportSlice<'a> {
     offset: usize,
-    source_ipv4: [u8; 4],
-    destination_ipv4: [u8; 4],
+    source_ip: IpAddr,
+    destination_ip: IpAddr,
     source_port: Option<u16>,
     destination_port: Option<u16>,
     tcp_sequence: Option<u32>,
@@ -34,14 +36,16 @@ struct TransportSlice<'a> {
 #[derive(Clone, Copy)]
 enum Transport {
     Icmp,
+    Icmpv6,
     Udp,
     Tcp,
 }
 
 impl Transport {
-    fn ipv4_protocol(self) -> u8 {
+    fn protocol(self) -> u8 {
         match self {
             Self::Icmp => 1,
+            Self::Icmpv6 => 58,
             Self::Udp => 17,
             Self::Tcp => 6,
         }
@@ -82,6 +86,10 @@ impl Endian {
 
 pub fn extract_icmp_messages(data: &[u8]) -> Result<Vec<TransportMessage>, String> {
     extract_pcap_messages(data, Transport::Icmp)
+}
+
+pub fn extract_icmpv6_messages(data: &[u8]) -> Result<Vec<TransportMessage>, String> {
+    extract_pcap_messages(data, Transport::Icmpv6)
 }
 
 pub fn extract_udp_messages(data: &[u8]) -> Result<Vec<TransportMessage>, String> {
@@ -169,6 +177,10 @@ struct PcapngInterface {
 /// block types are skipped only when they cannot contain packet bytes.
 pub fn extract_pcapng_icmp_messages(data: &[u8]) -> Result<Vec<TransportMessage>, String> {
     extract_pcapng_messages(data, Transport::Icmp)
+}
+
+pub fn extract_pcapng_icmpv6_messages(data: &[u8]) -> Result<Vec<TransportMessage>, String> {
+    extract_pcapng_messages(data, Transport::Icmpv6)
 }
 
 pub fn extract_pcapng_udp_messages(data: &[u8]) -> Result<Vec<TransportMessage>, String> {
@@ -356,8 +368,8 @@ fn push_ethernet_transport(
             packet_index,
             timestamp_ns,
             source_offset: frame_start + message.offset,
-            source_ipv4: message.source_ipv4,
-            destination_ipv4: message.destination_ipv4,
+            source_ip: message.source_ip,
+            destination_ip: message.destination_ip,
             source_port: message.source_port,
             destination_port: message.destination_port,
             tcp_sequence: message.tcp_sequence,
@@ -389,31 +401,104 @@ fn extract_ethernet_transport(
         ip_start += 4;
         vlan_depth += 1;
     }
-    if ether_type != 0x0800 {
-        return Ok(None);
-    }
     let ip = &frame[ip_start..];
-    if ip.len() < 20 {
-        return Err("truncated IPv4 header".into());
-    }
-    let version = ip[0] >> 4;
-    let header_length = (ip[0] & 0x0f) as usize * 4;
-    if version != 4 || header_length < 20 || ip.len() < header_length {
-        return Err("invalid IPv4 header".into());
-    }
-    let total_length = u16::from_be_bytes([ip[2], ip[3]]) as usize;
-    if total_length < header_length || ip.len() < total_length {
-        return Err("truncated IPv4 payload".into());
-    }
-    let fragment_bits = u16::from_be_bytes([ip[6], ip[7]]);
-    if ip[9] != transport.ipv4_protocol() || fragment_bits & 0x3fff != 0 {
-        return Ok(None);
-    }
-    let payload = &ip[header_length..total_length];
+    let (source_ip, destination_ip, payload, transport_offset) = match ether_type {
+        0x0800 => {
+            if matches!(transport, Transport::Icmpv6) {
+                return Ok(None);
+            }
+            if ip.len() < 20 {
+                return Err("truncated IPv4 header".into());
+            }
+            let header_length = (ip[0] & 0x0f) as usize * 4;
+            if ip[0] >> 4 != 4 || header_length < 20 || ip.len() < header_length {
+                return Err("invalid IPv4 header".into());
+            }
+            let total_length = u16::from_be_bytes([ip[2], ip[3]]) as usize;
+            if total_length < header_length || ip.len() < total_length {
+                return Err("truncated IPv4 payload".into());
+            }
+            let fragment_bits = u16::from_be_bytes([ip[6], ip[7]]);
+            if ip[9] != transport.protocol() || fragment_bits & 0x3fff != 0 {
+                return Ok(None);
+            }
+            let source = IpAddr::V4(Ipv4Addr::from(
+                <[u8; 4]>::try_from(&ip[12..16]).expect("validated IPv4 header"),
+            ));
+            let destination = IpAddr::V4(Ipv4Addr::from(
+                <[u8; 4]>::try_from(&ip[16..20]).expect("validated IPv4 header"),
+            ));
+            (
+                source,
+                destination,
+                &ip[header_length..total_length],
+                header_length,
+            )
+        }
+        0x86dd => {
+            if matches!(transport, Transport::Icmp) {
+                return Ok(None);
+            }
+            if ip.len() < 40 {
+                return Err("truncated IPv6 header".into());
+            }
+            if ip[0] >> 4 != 6 {
+                return Err("invalid IPv6 header".into());
+            }
+            let payload_length = u16::from_be_bytes([ip[4], ip[5]]) as usize;
+            if payload_length == 0 {
+                return Ok(None); // IPv6 jumbograms are not supported.
+            }
+            let packet_end = 40 + payload_length;
+            if ip.len() < packet_end {
+                return Err("truncated IPv6 payload".into());
+            }
+            let mut next_header = ip[6];
+            let mut cursor = 40;
+            let mut extension_count = 0;
+            while matches!(next_header, 0 | 43 | 60) {
+                if extension_count == 8 {
+                    return Err("IPv6 extension header chain exceeds eight headers".into());
+                }
+                if cursor + 2 > packet_end {
+                    return Err("truncated IPv6 extension header".into());
+                }
+                let extension_length = (usize::from(ip[cursor + 1]) + 1) * 8;
+                if cursor + extension_length > packet_end {
+                    return Err("truncated IPv6 extension header".into());
+                }
+                next_header = ip[cursor];
+                cursor += extension_length;
+                extension_count += 1;
+            }
+            if next_header == 44 {
+                if cursor + 8 > packet_end {
+                    return Err("truncated IPv6 fragment header".into());
+                }
+                return Ok(None); // Even atomic fragments need explicit policy before extraction.
+            }
+            if next_header != transport.protocol() {
+                return Ok(None);
+            }
+            let source = IpAddr::V6(Ipv6Addr::from(
+                <[u8; 16]>::try_from(&ip[8..24]).expect("validated IPv6 header"),
+            ));
+            let destination = IpAddr::V6(Ipv6Addr::from(
+                <[u8; 16]>::try_from(&ip[24..40]).expect("validated IPv6 header"),
+            ));
+            (source, destination, &ip[cursor..packet_end], cursor)
+        }
+        _ => return Ok(None),
+    };
     let (bytes, source_port, destination_port, tcp_sequence, tcp_syn, transport_header_length) =
         match transport {
-            Transport::Icmp => {
-                if payload.len() < 8 {
+            Transport::Icmp | Transport::Icmpv6 => {
+                let minimum_length = if matches!(transport, Transport::Icmpv6) {
+                    4
+                } else {
+                    8
+                };
+                if payload.len() < minimum_length {
                     return Err("truncated ICMP message".into());
                 }
                 (payload, None, None, None, false, 0)
@@ -461,12 +546,10 @@ fn extract_ethernet_transport(
                 )
             }
         };
-    let source_ipv4 = ip[12..16].try_into().expect("validated IPv4 header");
-    let destination_ipv4 = ip[16..20].try_into().expect("validated IPv4 header");
     Ok(Some(TransportSlice {
-        offset: ip_start + header_length + transport_header_length,
-        source_ipv4,
-        destination_ipv4,
+        offset: ip_start + transport_offset + transport_header_length,
+        source_ip,
+        destination_ip,
         source_port,
         destination_port,
         tcp_sequence,
@@ -510,6 +593,89 @@ mod tests {
             );
             assert_eq!(icmp_checksum(&message.bytes), 0);
         }
+    }
+
+    #[test]
+    fn ipv6_fixtures_preserve_transport_payloads_and_offsets() {
+        let classic = include_bytes!("../examples/ipv6_mixed.pcap");
+        let enhanced = include_bytes!("../examples/ipv6_mixed.pcapng");
+        let truth: serde_json::Value =
+            serde_json::from_str(include_str!("../examples/ipv6_mixed.truth.json")).unwrap();
+        let cases = truth["cases"].as_array().unwrap();
+        for (kind, classic_messages, enhanced_messages, expected_count) in [
+            (
+                "icmpv6",
+                extract_icmpv6_messages(classic).unwrap(),
+                extract_pcapng_icmpv6_messages(enhanced).unwrap(),
+                12,
+            ),
+            (
+                "udp",
+                extract_udp_messages(classic).unwrap(),
+                extract_pcapng_udp_messages(enhanced).unwrap(),
+                8,
+            ),
+            (
+                "tcp",
+                extract_tcp_segments(classic).unwrap(),
+                extract_pcapng_tcp_segments(enhanced).unwrap(),
+                4,
+            ),
+        ] {
+            let expected: Vec<_> = cases.iter().filter(|case| case["kind"] == kind).collect();
+            assert_eq!(classic_messages.len(), expected_count);
+            assert_eq!(enhanced_messages.len(), expected_count);
+            for ((left, right), case) in classic_messages
+                .iter()
+                .zip(&enhanced_messages)
+                .zip(expected)
+            {
+                assert_eq!(left.packet_index as u64, case["packet_index"]);
+                assert_eq!(left.timestamp_ns, case["timestamp_ns"]);
+                assert_eq!(left.source_ip.to_string(), case["source_ip"]);
+                assert_eq!(left.destination_ip.to_string(), case["destination_ip"]);
+                assert_eq!(left.bytes, right.bytes);
+                assert_eq!(crate::workflow::to_hex(&left.bytes), case["bytes_hex"]);
+                assert_eq!(left.source_offset as u64, case["pcap_source_offset"]);
+                assert_eq!(right.source_offset as u64, case["pcapng_source_offset"]);
+                assert_eq!(
+                    &classic[left.source_offset..left.source_offset + left.bytes.len()],
+                    left.bytes
+                );
+                assert_eq!(
+                    &enhanced[right.source_offset..right.source_offset + right.bytes.len()],
+                    right.bytes
+                );
+            }
+        }
+        assert!(extract_icmp_messages(classic).unwrap().is_empty());
+
+        let with_option = extract_icmpv6_messages(classic).unwrap()[6].source_offset;
+        let mut bad_option = classic.to_vec();
+        bad_option[with_option - 7] = 255;
+        assert!(
+            extract_icmpv6_messages(&bad_option)
+                .unwrap_err()
+                .contains("truncated IPv6 extension header")
+        );
+
+        for option_kind in [43, 60] {
+            let mut other_option = classic.to_vec();
+            other_option[with_option - 8 - 40 + 6] = option_kind;
+            assert_eq!(extract_icmpv6_messages(&other_option).unwrap().len(), 12);
+        }
+
+        let mut fragmented = classic.to_vec();
+        fragmented[40 + 14 + 6] = 44;
+        assert_eq!(extract_icmpv6_messages(&fragmented).unwrap().len(), 11);
+
+        let mut bad_length = classic.to_vec();
+        bad_length[40 + 14 + 4..40 + 14 + 6].copy_from_slice(&9_u16.to_be_bytes());
+        assert!(
+            extract_icmpv6_messages(&bad_length)
+                .unwrap_err()
+                .contains("truncated IPv6 payload")
+        );
     }
 
     #[test]
@@ -683,8 +849,8 @@ mod tests {
         for (left, right) in classic.iter().zip(&enhanced) {
             assert_eq!(left.packet_index, right.packet_index);
             assert_eq!(left.timestamp_ns, right.timestamp_ns);
-            assert_eq!(left.source_ipv4, right.source_ipv4);
-            assert_eq!(left.destination_ipv4, right.destination_ipv4);
+            assert_eq!(left.source_ip, right.source_ip);
+            assert_eq!(left.destination_ip, right.destination_ip);
             assert_eq!(left.bytes, right.bytes);
             assert_eq!(
                 &raw[right.source_offset..right.source_offset + right.bytes.len()],

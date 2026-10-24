@@ -1,0 +1,268 @@
+{
+  "cases": [
+    {
+      "packet_index": 0,
+      "kind": "icmpv6",
+      "value": 0,
+      "timestamp_ns": 1700001000000000000,
+      "source_ip": "2001:db8::1",
+      "destination_ip": "2001:db8::2",
+      "bytes_hex": "8000010323450000",
+      "pcap_source_offset": 94,
+      "pcapng_source_offset": 130
+    },
+    {
+      "packet_index": 1,
+      "kind": "icmpv6",
+      "value": 0,
+      "timestamp_ns": 1700001000100000000,
+      "source_ip": "2001:db8::2",
+      "destination_ip": "2001:db8::1",
+      "bytes_hex": "8100000323450000",
+      "pcap_source_offset": 172,
+      "pcapng_source_offset": 226
+    },
+    {
+      "packet_index": 2,
+      "kind": "icmpv6",
+      "value": 1,
+      "timestamp_ns": 1700001000200000000,
+      "source_ip": "2001:db8::1",
+      "destination_ip": "2001:db8::2",
+      "bytes_hex": "8000ff002345000102",
+      "pcap_source_offset": 250,
+      "pcapng_source_offset": 322
+    },
+    {
+      "packet_index": 3,
+      "kind": "icmpv6",
+      "value": 1,
+      "timestamp_ns": 1700001000300000000,
+      "source_ip": "2001:db8::2",
+      "destination_ip": "2001:db8::1",
+      "bytes_hex": "8100fe002345000102",
+      "pcap_source_offset": 329,
+      "pcapng_source_offset": 418
+    },
+    {
+      "packet_index": 4,
+      "kind": "icmpv6",
+      "value": 255,
+      "timestamp_ns": 1700001000400000000,
+      "source_ip": "2001:db8::1",
+      "destination_ip": "2001:db8::2",
+      "bytes_hex": "8000fcfe234500ff0303",
+      "pcap_source_offset": 408,
+      "pcapng_source_offset": 514
+    },
+    {
+      "packet_index": 5,
+      "kind": "icmpv6",
+      "value": 255,
+      "timestamp_ns": 1700001000500000000,
+      "source_ip": "2001:db8::2",
+      "destination_ip": "2001:db8::1",
+      "bytes_hex": "8100fbfe234500ff0303",
+      "pcap_source_offset": 488,
+      "pcapng_source_offset": 610
+    },
+    {
+      "packet_index": 6,
+      "kind": "icmpv6",
+      "value": 256,
+      "timestamp_ns": 1700001000600000000,
+      "source_ip": "2001:db8::1",
+      "destination_ip": "2001:db8::2",
+      "bytes_hex": "8000000323450100",
+      "pcap_source_offset": 576,
+      "pcapng_source_offset": 714
+    },
+    {
+      "packet_index": 7,
+      "kind": "icmpv6",
+      "value": 256,
+      "timestamp_ns": 1700001000700000000,
+      "source_ip": "2001:db8::2",
+      "destination_ip": "2001:db8::1",
+      "bytes_hex": "8100ff0223450100",
+      "pcap_source_offset": 662,
+      "pcapng_source_offset": 818
+    },
+    {
+      "packet_index": 8,
+      "kind": "icmpv6",
+      "value": 1024,
+      "timestamp_ns": 1700001000800000000,
+      "source_ip": "2001:db8::1",
+      "destination_ip": "2001:db8::2",
+      "bytes_hex": "8000f8012345040005",
+      "pcap_source_offset": 740,
+      "pcapng_source_offset": 914
+    },
+    {
+      "packet_index": 9,
+      "kind": "icmpv6",
+      "value": 1024,
+      "timestamp_ns": 1700001000900000000,
+      "source_ip": "2001:db8::2",
+      "destination_ip": "2001:db8::1",
+      "bytes_hex": "8100f7012345040005",
+      "pcap_source_offset": 819,
+      "pcapng_source_offset": 1010
+    },
+    {
+      "packet_index": 10,
+      "kind": "icmpv6",
+      "value": 65535,
+      "timestamp_ns": 1700001001000000000,
+      "source_ip": "2001:db8::1",
+      "destination_ip": "2001:db8::2",
+      "bytes_hex": "8000fafa2345ffff0606",
+      "pcap_source_offset": 898,
+      "pcapng_source_offset": 1106
+    },
+    {
+      "packet_index": 11,
+      "kind": "icmpv6",
+      "value": 65535,
+      "timestamp_ns": 1700001001100000000,
+      "source_ip": "2001:db8::2",
+      "destination_ip": "2001:db8::1",
+      "bytes_hex": "8100f9fa2345ffff0606",
+      "pcap_source_offset": 978,
+      "pcapng_source_offset": 1202
+    },
+    {
+      "packet_index": 12,
+      "kind": "udp",
+      "value": 256,
+      "timestamp_ns": 1700001001200000000,
+      "source_ip": "2001:db8::1",
+      "destination_ip": "2001:db8::2",
+      "bytes_hex": "504932010051",
+      "pcap_source_offset": 1066,
+      "pcapng_source_offset": 1306
+    },
+    {
+      "packet_index": 13,
+      "kind": "udp",
+      "value": 256,
+      "timestamp_ns": 1700001001300000000,
+      "source_ip": "2001:db8::2",
+      "destination_ip": "2001:db8::1",
+      "bytes_hex": "504932010052",
+      "pcap_source_offset": 1150,
+      "pcapng_source_offset": 1406
+    },
+    {
+      "packet_index": 14,
+      "kind": "udp",
+      "value": 257,
+      "timestamp_ns": 1700001001400000000,
+      "source_ip": "2001:db8::1",
+      "destination_ip": "2001:db8::2",
+      "bytes_hex": "504932010151",
+      "pcap_source_offset": 1234,
+      "pcapng_source_offset": 1506
+    },
+    {
+      "packet_index": 15,
+      "kind": "udp",
+      "value": 257,
+      "timestamp_ns": 1700001001500000000,
+      "source_ip": "2001:db8::2",
+      "destination_ip": "2001:db8::1",
+      "bytes_hex": "504932010152",
+      "pcap_source_offset": 1318,
+      "pcapng_source_offset": 1606
+    },
+    {
+      "packet_index": 16,
+      "kind": "udp",
+      "value": 511,
+      "timestamp_ns": 1700001001600000000,
+      "source_ip": "2001:db8::1",
+      "destination_ip": "2001:db8::2",
+      "bytes_hex": "50493201ff51",
+      "pcap_source_offset": 1410,
+      "pcapng_source_offset": 1714
+    },
+    {
+      "packet_index": 17,
+      "kind": "udp",
+      "value": 511,
+      "timestamp_ns": 1700001001700000000,
+      "source_ip": "2001:db8::2",
+      "destination_ip": "2001:db8::1",
+      "bytes_hex": "50493201ff52",
+      "pcap_source_offset": 1502,
+      "pcapng_source_offset": 1822
+    },
+    {
+      "packet_index": 18,
+      "kind": "udp",
+      "value": 512,
+      "timestamp_ns": 1700001001800000000,
+      "source_ip": "2001:db8::1",
+      "destination_ip": "2001:db8::2",
+      "bytes_hex": "504932020051",
+      "pcap_source_offset": 1586,
+      "pcapng_source_offset": 1922
+    },
+    {
+      "packet_index": 19,
+      "kind": "udp",
+      "value": 512,
+      "timestamp_ns": 1700001001900000000,
+      "source_ip": "2001:db8::2",
+      "destination_ip": "2001:db8::1",
+      "bytes_hex": "504932020052",
+      "pcap_source_offset": 1670,
+      "pcapng_source_offset": 2022
+    },
+    {
+      "packet_index": 20,
+      "kind": "tcp",
+      "value": 1000,
+      "timestamp_ns": 1700001002000000000,
+      "source_ip": "2001:db8::1",
+      "destination_ip": "2001:db8::2",
+      "bytes_hex": "504932510000",
+      "pcap_source_offset": 1766,
+      "pcapng_source_offset": 2134
+    },
+    {
+      "packet_index": 21,
+      "kind": "tcp",
+      "value": 1006,
+      "timestamp_ns": 1700001002100000000,
+      "source_ip": "2001:db8::1",
+      "destination_ip": "2001:db8::2",
+      "bytes_hex": "0161",
+      "pcap_source_offset": 1862,
+      "pcapng_source_offset": 2246
+    },
+    {
+      "packet_index": 22,
+      "kind": "tcp",
+      "value": 7000,
+      "timestamp_ns": 1700001002200000000,
+      "source_ip": "2001:db8::2",
+      "destination_ip": "2001:db8::1",
+      "bytes_hex": "504932520000",
+      "pcap_source_offset": 1954,
+      "pcapng_source_offset": 2354
+    },
+    {
+      "packet_index": 23,
+      "kind": "tcp",
+      "value": 7006,
+      "timestamp_ns": 1700001002300000000,
+      "source_ip": "2001:db8::2",
+      "destination_ip": "2001:db8::1",
+      "bytes_hex": "0162",
+      "pcap_source_offset": 2050,
+      "pcapng_source_offset": 2466
+    }
+  ]
+}

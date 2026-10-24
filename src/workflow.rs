@@ -4,12 +4,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::pcap::{
-    extract_icmp_messages, extract_pcapng_icmp_messages, extract_pcapng_tcp_segments,
-    extract_pcapng_udp_messages, extract_tcp_segments, extract_udp_messages,
+    extract_icmp_messages, extract_icmpv6_messages, extract_pcapng_icmp_messages,
+    extract_pcapng_icmpv6_messages, extract_pcapng_tcp_segments, extract_pcapng_udp_messages,
+    extract_tcp_segments, extract_udp_messages,
 };
 use crate::reassembly::{SourceSpan, reassemble_tcp_segments};
 
@@ -726,6 +728,8 @@ pub fn valid_capture_format(format: &str) -> bool {
             | "binary"
             | "pcap-icmp"
             | "pcapng-icmp"
+            | "pcap-icmpv6"
+            | "pcapng-icmpv6"
             | "pcap-udp"
             | "pcapng-udp"
             | "pcap-tcp"
@@ -998,10 +1002,7 @@ pub fn import_capture_for_run(
                     source_index: message.first_packet_index,
                     source_offset: None,
                     timestamp_ns: Some(message.first_timestamp_ns),
-                    direction: Some(ipv4_direction(
-                        message.source_ipv4,
-                        message.destination_ipv4,
-                    )),
+                    direction: Some(ip_direction(message.source_ip, message.destination_ip)),
                     source_port: Some(message.source_port),
                     destination_port: Some(message.destination_port),
                     tcp_sequence: Some(message.tcp_sequence),
@@ -1011,10 +1012,13 @@ pub fn import_capture_for_run(
                 })
                 .collect()
         }
-        "pcap-icmp" | "pcapng-icmp" | "pcap-udp" | "pcapng-udp" | "pcap-tcp" | "pcapng-tcp" => {
+        "pcap-icmp" | "pcapng-icmp" | "pcap-icmpv6" | "pcapng-icmpv6" | "pcap-udp"
+        | "pcapng-udp" | "pcap-tcp" | "pcapng-tcp" => {
             let messages = match format {
                 "pcap-icmp" => extract_icmp_messages(raw)?,
                 "pcapng-icmp" => extract_pcapng_icmp_messages(raw)?,
+                "pcap-icmpv6" => extract_icmpv6_messages(raw)?,
+                "pcapng-icmpv6" => extract_pcapng_icmpv6_messages(raw)?,
                 "pcap-udp" => extract_udp_messages(raw)?,
                 "pcapng-udp" => extract_pcapng_udp_messages(raw)?,
                 "pcap-tcp" => extract_tcp_segments(raw)?,
@@ -1030,10 +1034,7 @@ pub fn import_capture_for_run(
                     source_index: message.packet_index,
                     source_offset: Some(message.source_offset),
                     timestamp_ns: Some(message.timestamp_ns),
-                    direction: Some(ipv4_direction(
-                        message.source_ipv4,
-                        message.destination_ipv4,
-                    )),
+                    direction: Some(ip_direction(message.source_ip, message.destination_ip)),
                     source_port: message.source_port,
                     destination_port: message.destination_port,
                     tcp_sequence: message.tcp_sequence,
@@ -1053,8 +1054,10 @@ pub fn import_capture_for_run(
     let extension = match format {
         "hex" => "hex",
         "binary" => "bin",
-        "pcap-icmp" | "pcap-udp" | "pcap-tcp" | "pcap-tcp-stream" => "pcap",
-        "pcapng-icmp" | "pcapng-udp" | "pcapng-tcp" | "pcapng-tcp-stream" => "pcapng",
+        "pcap-icmp" | "pcap-icmpv6" | "pcap-udp" | "pcap-tcp" | "pcap-tcp-stream" => "pcap",
+        "pcapng-icmp" | "pcapng-icmpv6" | "pcapng-udp" | "pcapng-tcp" | "pcapng-tcp-stream" => {
+            "pcapng"
+        }
         _ => unreachable!("format validated above"),
     };
     let (sha256, artifact) = store_artifact(root, raw, extension)?;
@@ -1116,18 +1119,8 @@ pub fn to_hex(bytes: &[u8]) -> String {
     output
 }
 
-fn ipv4_direction(source: [u8; 4], destination: [u8; 4]) -> String {
-    format!(
-        "{}.{}.{}.{} -> {}.{}.{}.{}",
-        source[0],
-        source[1],
-        source[2],
-        source[3],
-        destination[0],
-        destination[1],
-        destination[2],
-        destination[3]
-    )
+fn ip_direction(source: IpAddr, destination: IpAddr) -> String {
+    format!("{source} -> {destination}")
 }
 
 pub fn from_hex(text: &str) -> Result<Vec<u8>, String> {
@@ -1212,10 +1205,8 @@ pub fn verify(root: &Path) -> Result<Verification, String> {
                         || Some(expected.tcp_sequence) != actual.tcp_sequence
                         || expected.gap_before != actual.stream_gap_before
                         || expected.source_spans != actual.source_spans
-                        || Some(ipv4_direction(
-                            expected.source_ipv4,
-                            expected.destination_ipv4,
-                        )) != actual.direction
+                        || Some(ip_direction(expected.source_ip, expected.destination_ip))
+                            != actual.direction
                     {
                         return Err(format!(
                             "capture {} stream observation mismatch",
@@ -1224,10 +1215,13 @@ pub fn verify(root: &Path) -> Result<Verification, String> {
                     }
                 }
             }
-            "pcap-icmp" | "pcapng-icmp" | "pcap-udp" | "pcapng-udp" | "pcap-tcp" | "pcapng-tcp" => {
+            "pcap-icmp" | "pcapng-icmp" | "pcap-icmpv6" | "pcapng-icmpv6" | "pcap-udp"
+            | "pcapng-udp" | "pcap-tcp" | "pcapng-tcp" => {
                 let expected = match capture.format.as_str() {
                     "pcap-icmp" => extract_icmp_messages(&raw)?,
                     "pcapng-icmp" => extract_pcapng_icmp_messages(&raw)?,
+                    "pcap-icmpv6" => extract_icmpv6_messages(&raw)?,
+                    "pcapng-icmpv6" => extract_pcapng_icmpv6_messages(&raw)?,
                     "pcap-udp" => extract_udp_messages(&raw)?,
                     "pcapng-udp" => extract_pcapng_udp_messages(&raw)?,
                     "pcap-tcp" => extract_tcp_segments(&raw)?,
@@ -1247,10 +1241,8 @@ pub fn verify(root: &Path) -> Result<Verification, String> {
                         || expected.tcp_sequence != actual.tcp_sequence
                         || actual.stream_gap_before
                         || !actual.source_spans.is_empty()
-                        || Some(ipv4_direction(
-                            expected.source_ipv4,
-                            expected.destination_ipv4,
-                        )) != actual.direction
+                        || Some(ip_direction(expected.source_ip, expected.destination_ip))
+                            != actual.direction
                     {
                         return Err(format!("capture {} observation mismatch", capture.id));
                     }

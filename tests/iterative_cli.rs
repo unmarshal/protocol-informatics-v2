@@ -1018,6 +1018,72 @@ fn tagged_ethernet_capture_keeps_exact_span_provenance() {
 }
 
 #[test]
+fn agent_can_investigate_ipv6_and_reassemble_tcp_with_provenance() {
+    let root = workspace();
+    let root_text = path(&root);
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    cli(&["init", root_text, "Where are the fields in IPv6 traffic?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Vary echo and transaction IDs",
+        "-",
+        "Find stable fields and TCP runs",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&["trial", root_text, experiment_id, "sweep", "IPv6 values"]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let classic = examples.join("ipv6_mixed.pcap");
+    let enhanced = examples.join("ipv6_mixed.pcapng");
+    let mut imports = Vec::new();
+    for (format, file, count) in [
+        ("pcap-icmpv6", &classic, 12),
+        ("pcapng-icmpv6", &enhanced, 12),
+        ("pcap-udp", &classic, 8),
+        ("pcapng-udp", &enhanced, 8),
+        ("pcap-tcp-stream", &classic, 2),
+        ("pcapng-tcp-stream", &enhanced, 2),
+    ] {
+        let result = cli(&["import", root_text, trial_id, format, path(file)]);
+        assert_eq!(result["event"]["capture"]["observation_count"], count);
+        imports.push(result);
+    }
+    let echo = &imports[0]["event"]["observations"];
+    assert_eq!(echo[0]["direction"], "2001:db8::1 -> 2001:db8::2");
+    assert_eq!(echo[1]["direction"], "2001:db8::2 -> 2001:db8::1");
+    assert_eq!(&echo[6]["bytes_hex"].as_str().unwrap()[12..16], "0100");
+    for (index, value, role) in [
+        (0, 0, "discovery"),
+        (2, 1, "discovery"),
+        (4, 255, "discovery"),
+        (6, 256, "discovery"),
+        (8, 1024, "validation"),
+        (10, 65535, "validation"),
+    ] {
+        let id = echo[index]["id"].as_str().unwrap();
+        cli(&["value", root_text, id, "sequence", &value.to_string(), role]);
+    }
+    let inferred = cli(&["infer-value", root_text, "sequence"]);
+    assert_eq!(inferred["candidate_count"], 1);
+    assert_eq!(inferred["candidates"][0]["start"], 6);
+    assert_eq!(inferred["candidates"][0]["end"], 8);
+    assert_eq!(inferred["candidates"][0]["validation_matches"], 2);
+
+    for run in [
+        &imports[4]["event"]["observations"][0],
+        &imports[5]["event"]["observations"][0],
+    ] {
+        assert_eq!(run["bytes_hex"], "5049325100000161");
+        assert_eq!(run["source_spans"].as_array().unwrap().len(), 2);
+        let span = cli(&["span", root_text, run["id"].as_str().unwrap(), "5", "8"]);
+        assert_eq!(span["bytes_hex"], "000161");
+        assert_eq!(span["source_spans"].as_array().unwrap().len(), 2);
+    }
+    assert_eq!(cli(&["verify", root_text])["observations"], 44);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn agent_can_investigate_dns_over_udp_without_a_dns_specific_decoder() {
     let root = workspace();
     let root_text = path(&root);

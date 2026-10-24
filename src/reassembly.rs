@@ -1,7 +1,8 @@
-//! Conservative TCP reassembly within one capture and one directional IPv4 flow.
+//! Conservative TCP reassembly within one capture and one directional IP flow.
 //! A sequence gap starts another observation. Conflicting overlap rejects the capture.
 
 use std::collections::BTreeMap;
+use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 
@@ -19,8 +20,8 @@ pub struct SourceSpan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReassembledMessage {
-    pub source_ipv4: [u8; 4],
-    pub destination_ipv4: [u8; 4],
+    pub source_ip: IpAddr,
+    pub destination_ip: IpAddr,
     pub source_port: u16,
     pub destination_port: u16,
     pub tcp_sequence: u32,
@@ -31,7 +32,7 @@ pub struct ReassembledMessage {
     pub source_spans: Vec<SourceSpan>,
 }
 
-type FlowKey = ([u8; 4], [u8; 4], u16, u16);
+type FlowKey = (IpAddr, IpAddr, u16, u16);
 
 fn payload_sequence(segment: &TransportMessage) -> u32 {
     segment
@@ -42,8 +43,8 @@ fn payload_sequence(segment: &TransportMessage) -> u32 {
 
 fn start_run(segment: &TransportMessage, gap_before: bool) -> ReassembledMessage {
     ReassembledMessage {
-        source_ipv4: segment.source_ipv4,
-        destination_ipv4: segment.destination_ipv4,
+        source_ip: segment.source_ip,
+        destination_ip: segment.destination_ip,
         source_port: segment.source_port.expect("TCP segment has a source port"),
         destination_port: segment
             .destination_port
@@ -81,8 +82,8 @@ pub fn reassemble_tcp_segments(
         }
         flows
             .entry((
-                segment.source_ipv4,
-                segment.destination_ipv4,
+                segment.source_ip,
+                segment.destination_ip,
                 segment.source_port.unwrap(),
                 segment.destination_port.unwrap(),
             ))
@@ -118,16 +119,10 @@ pub fn reassemble_tcp_segments(
             let overlap = (run.bytes.len() - relative).min(segment.bytes.len());
             if run.bytes[relative..relative + overlap] != segment.bytes[..overlap] {
                 return Err(format!(
-                    "conflicting TCP overlap in flow {}.{}.{}.{}:{} -> {}.{}.{}.{}:{} near sequence {}",
-                    flow.0[0],
-                    flow.0[1],
-                    flow.0[2],
-                    flow.0[3],
+                    "conflicting TCP overlap in flow {}:{} -> {}:{} near sequence {}",
+                    flow.0,
                     flow.2,
-                    flow.1[0],
-                    flow.1[1],
-                    flow.1[2],
-                    flow.1[3],
+                    flow.1,
                     flow.3,
                     payload_sequence(segment)
                 ));
@@ -153,7 +148,7 @@ pub fn reassemble_tcp_segments(
             output.push(run);
         }
     }
-    output.sort_by_key(|run| (run.first_packet_index, run.source_ipv4, run.source_port));
+    output.sort_by_key(|run| (run.first_packet_index, run.source_ip, run.source_port));
     Ok(output)
 }
 
@@ -166,8 +161,8 @@ mod tests {
             packet_index: index,
             timestamp_ns: index as u64,
             source_offset: 100 + index * 20,
-            source_ipv4: [192, 0, 2, 1],
-            destination_ipv4: [192, 0, 2, 2],
+            source_ip: [192, 0, 2, 1].into(),
+            destination_ip: [192, 0, 2, 2].into(),
             source_port: Some(1234),
             destination_port: Some(4321),
             tcp_sequence: Some(sequence),
@@ -208,6 +203,18 @@ mod tests {
                 .unwrap_err()
                 .contains("conflicting TCP overlap")
         );
+    }
+
+    #[test]
+    fn ipv4_and_ipv6_flows_with_the_same_ports_and_sequence_stay_separate() {
+        let v4 = segment(0, 100, b"v4");
+        let mut v6 = segment(1, 100, b"v6");
+        v6.source_ip = "2001:db8::1".parse().unwrap();
+        v6.destination_ip = "2001:db8::2".parse().unwrap();
+        let runs = reassemble_tcp_segments(&[v4, v6]).unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].bytes, b"v4");
+        assert_eq!(runs[1].bytes, b"v6");
     }
 
     #[test]

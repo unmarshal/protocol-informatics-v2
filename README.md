@@ -130,7 +130,7 @@ cargo run -- value /tmp/pi-tcp obs-000004-0010 transaction_id 257 validation
 cargo run -- infer-value /tmp/pi-tcp transaction_id
 ```
 
-For split messages, use `pcap-tcp-stream` or `pcapng-tcp-stream`. This groups packets by directional IPv4 address and port tuple, orders payloads by TCP sequence, removes byte-identical retransmissions, and emits one observation per contiguous run. A sequence gap starts another observation with `stream_gap_before: true`; conflicting overlap rejects the entire import. Every assembled observation has `source_spans` mapping message byte ranges back to packet indices and exact file offsets. `span` returns the portions of that map crossing the requested range. A stream observation has `source_offset: null` because its bytes may come from multiple locations in the capture. The HTML byte inspector exposes the provenance map.
+For split messages, use `pcap-tcp-stream` or `pcapng-tcp-stream`. This groups packets by directional IP address and port tuple, orders payloads by TCP sequence, removes byte-identical retransmissions, and emits one observation per contiguous run. A sequence gap starts another observation with `stream_gap_before: true`; conflicting overlap rejects the entire import. Every assembled observation has `source_spans` mapping message byte ranges back to packet indices and exact file offsets. `span` returns the portions of that map crossing the requested range. A stream observation has `source_offset: null` because its bytes may come from multiple locations in the capture. The HTML byte inspector exposes the provenance map.
 
 The split fixture puts the transaction ID across two TCP packets, includes an out-of-order pair and a retransmission, and still yields the preferred `[4, 6)` field candidate:
 
@@ -144,6 +144,27 @@ cargo run -- span /tmp/pi-tcp-stream obs-000004-0000 4 6
 ```
 
 This is contiguous byte reassembly, not application message framing. A SYN on a data-bearing segment consumes one sequence number before its payload. The reassembler does not use SYN/FIN to distinguish repeated connections with the same 4-tuple, nor does it fill missing bytes or accept contradictory retransmissions. Sequence comparison assumes each flow stays within a window smaller than 2³¹ bytes around the first observed segment. Keep packet-level observations when these assumptions do not fit the capture.
+
+## IPv6 traffic
+
+The same `pcap-udp`, `pcapng-udp`, `pcap-tcp`, and TCP stream formats accept IPv6 Ethernet frames. Use `pcap-icmpv6` or `pcapng-icmpv6` for ICMPv6 messages. The deterministic mixed fixture has 12 echo messages, eight UDP datagrams, and four TCP segments, including packets with Hop-by-Hop options. IPv6 addresses appear in the same `direction` field as IPv4 addresses; the byte-span response still points into the original capture.
+
+```sh
+python3 examples/generate_ipv6_fixture.py
+cargo run -- init /tmp/pi-ipv6 'Where is the ICMPv6 sequence?'
+cargo run -- experiment /tmp/pi-ipv6 'Sweep echo sequence' - 'Locate the two-byte field'
+cargo run -- trial /tmp/pi-ipv6 exp-000002 sweep 'six request/reply pairs'
+cargo run -- import /tmp/pi-ipv6 trial-000003 pcap-icmpv6 examples/ipv6_mixed.pcap
+cargo run -- value /tmp/pi-ipv6 obs-000004-0000 sequence 0 discovery
+cargo run -- value /tmp/pi-ipv6 obs-000004-0002 sequence 1 discovery
+cargo run -- value /tmp/pi-ipv6 obs-000004-0004 sequence 255 discovery
+cargo run -- value /tmp/pi-ipv6 obs-000004-0006 sequence 256 discovery
+cargo run -- value /tmp/pi-ipv6 obs-000004-0008 sequence 1024 validation
+cargo run -- value /tmp/pi-ipv6 obs-000004-0010 sequence 65535 validation
+cargo run -- infer-value /tmp/pi-ipv6 sequence
+```
+
+The candidate `[6, 8)` big-endian matches both held-out values. IPv6 parsing follows bounded Hop-by-Hop, Routing, and Destination Options headers. It skips fragment headers and unsupported jumbograms, and rejects truncated extension headers. The current `infer-checksum` command tests the IPv4 ICMP whole-message model; ICMPv6 includes an IPv6 pseudo-header in its checksum, so use held-out value inference without applying that checksum command. See [RFC 8200](https://www.rfc-editor.org/rfc/rfc8200) and [RFC 4443](https://www.rfc-editor.org/rfc/rfc4443).
 
 ## Standalone binary files
 
@@ -180,7 +201,7 @@ Hex input has one extracted message per line; spaces and colons are allowed. Bla
 
 ## Current scope and next work
 
-Classic PCAP and pcapng ingestion currently support Ethernet with up to four VLAN tags, unfragmented IPv4, ICMP messages, UDP application payloads, individual TCP segment payloads, and contiguous TCP runs with per-span provenance. The pcapng reader accepts Enhanced Packet Blocks and rejects legacy packet blocks. VLAN tags are unwrapped for transport extraction but their IDs are not yet exposed as observation metadata. UDP extraction checks the declared datagram length but does not verify its checksum or parse its application payload. TCP extraction validates its data offset and excludes empty payloads; its reassembly does not identify application message boundaries or connection lifetimes. Binary files are one observation each, with a 1 MiB limit until the event store can reference large byte spans without copying them into events. It does not support IPv6, file-format record boundaries, or a dedicated network interface capture adapter. The HTML view is read-only and pages bytes in 256-byte chunks. Local event writers use file locks and assign IDs at commit time; the concurrent CLI test covers simultaneous hypotheses, imports, and keyed capture retries. Distributed coordination, a resumable live capture service, and interrupted event-write recovery remain open work. The fixtures test parsing, exact source offsets, ICMP checksums, and the alignment strategy against independent known answers.
+Classic PCAP and pcapng ingestion currently support Ethernet with up to four VLAN tags, unfragmented IPv4 and IPv6, ICMP and ICMPv6 messages, UDP application payloads, individual TCP segment payloads, and contiguous TCP runs with per-span provenance. The pcapng reader accepts Enhanced Packet Blocks and rejects legacy packet blocks. VLAN tags are unwrapped for transport extraction but their IDs are not yet exposed as observation metadata. UDP extraction checks the declared datagram length but does not verify its checksum or parse its application payload. TCP extraction validates its data offset and excludes empty payloads; its reassembly does not identify application message boundaries or connection lifetimes. Binary files are one observation each, with a 1 MiB limit until the event store can reference large byte spans without copying them into events. It does not support file-format record boundaries or a dedicated network interface capture adapter. The HTML view is read-only and pages bytes in 256-byte chunks. Local event writers use file locks and assign IDs at commit time; the concurrent CLI test covers simultaneous hypotheses, imports, and keyed capture retries. Distributed coordination, a resumable live capture service, and interrupted event-write recovery remain open work. The fixtures test parsing, exact source offsets, ICMP checksums, and the alignment strategy against independent known answers.
 
 The next inference step is to measure cluster stability across new captures, then test candidate lengths and request/response relations on held-out examples. See the [workflow](docs/iterative-workflow.md), [interface design](docs/interface-design.md), and [experiment lifecycle](docs/experiment-lifecycle.md) for the fuller direction. GPU acceleration can wait for representative CPU profiles.
 
