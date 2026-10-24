@@ -142,6 +142,224 @@ pub fn list_trials(state: &State, offset: usize, limit: usize) -> Result<TrialPa
     })
 }
 
+#[derive(Debug, Serialize)]
+pub struct HypothesisPreview {
+    pub id: String,
+    pub claim: String,
+    pub claim_truncated: bool,
+    pub score: Option<f64>,
+    pub evidence_count: usize,
+    pub evidence_ids: Vec<String>,
+    pub evidence_ids_omitted: usize,
+    pub counterexample_count: usize,
+    pub counterexample_ids: Vec<String>,
+    pub counterexample_ids_omitted: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HypothesisPage {
+    pub schema_version: u32,
+    pub revision: u64,
+    pub total: usize,
+    pub offset: usize,
+    pub next_offset: Option<usize>,
+    pub order: &'static str,
+    pub hypotheses: Vec<HypothesisPreview>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExperimentPreview {
+    pub id: String,
+    pub question: String,
+    pub question_truncated: bool,
+    pub prediction: String,
+    pub prediction_truncated: bool,
+    pub hypothesis_count: usize,
+    pub hypothesis_ids: Vec<String>,
+    pub hypothesis_ids_omitted: usize,
+    pub trial_count: usize,
+    pub capture_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExperimentPage {
+    pub schema_version: u32,
+    pub revision: u64,
+    pub total: usize,
+    pub offset: usize,
+    pub next_offset: Option<usize>,
+    pub order: &'static str,
+    pub experiments: Vec<ExperimentPreview>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DecisionPreview {
+    pub id: String,
+    pub text: String,
+    pub text_truncated: bool,
+    pub evidence_count: usize,
+    pub evidence_ids: Vec<String>,
+    pub evidence_ids_omitted: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DecisionPage {
+    pub schema_version: u32,
+    pub revision: u64,
+    pub total: usize,
+    pub offset: usize,
+    pub next_offset: Option<usize>,
+    pub order: &'static str,
+    pub decisions: Vec<DecisionPreview>,
+}
+
+fn valid_page_limit(limit: usize) -> Result<(), String> {
+    if limit == 0 || limit > 100 {
+        Err("limit must be between 1 and 100".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn preview_text(text: &str) -> (String, bool) {
+    (text.chars().take(200).collect(), text.chars().count() > 200)
+}
+
+pub fn list_hypotheses(
+    state: &State,
+    offset: usize,
+    limit: usize,
+) -> Result<HypothesisPage, String> {
+    valid_page_limit(limit)?;
+    let total = state.hypotheses.len();
+    let hypotheses = state
+        .hypotheses
+        .iter()
+        .rev()
+        .skip(offset)
+        .take(limit)
+        .map(|hypothesis| {
+            let (claim, claim_truncated) = preview_text(&hypothesis.claim);
+            HypothesisPreview {
+                id: hypothesis.id.clone(),
+                claim,
+                claim_truncated,
+                score: hypothesis.score,
+                evidence_count: hypothesis.evidence.len(),
+                evidence_ids: hypothesis.evidence.iter().take(10).cloned().collect(),
+                evidence_ids_omitted: hypothesis.evidence.len().saturating_sub(10),
+                counterexample_count: hypothesis.counterexamples.len(),
+                counterexample_ids: hypothesis
+                    .counterexamples
+                    .iter()
+                    .take(10)
+                    .cloned()
+                    .collect(),
+                counterexample_ids_omitted: hypothesis.counterexamples.len().saturating_sub(10),
+            }
+        })
+        .collect();
+    Ok(HypothesisPage {
+        schema_version: state.schema_version,
+        revision: state.revision,
+        total,
+        offset,
+        next_offset: (offset.saturating_add(limit) < total).then_some(offset + limit),
+        order: "newest_first",
+        hypotheses,
+    })
+}
+
+pub fn list_experiments(
+    state: &State,
+    offset: usize,
+    limit: usize,
+) -> Result<ExperimentPage, String> {
+    valid_page_limit(limit)?;
+    let total = state.experiments.len();
+    let mut trial_counts = BTreeMap::<&str, usize>::new();
+    let mut capture_counts = BTreeMap::<&str, usize>::new();
+    let trial_experiments: BTreeMap<_, _> = state
+        .trials
+        .iter()
+        .map(|trial| {
+            *trial_counts
+                .entry(trial.experiment_id.as_str())
+                .or_default() += 1;
+            (trial.id.as_str(), trial.experiment_id.as_str())
+        })
+        .collect();
+    for capture in &state.captures {
+        if let Some(experiment_id) = trial_experiments.get(capture.trial_id.as_str()) {
+            *capture_counts.entry(experiment_id).or_default() += 1;
+        }
+    }
+    let experiments = state
+        .experiments
+        .iter()
+        .rev()
+        .skip(offset)
+        .take(limit)
+        .map(|experiment| {
+            let (question, question_truncated) = preview_text(&experiment.question);
+            let (prediction, prediction_truncated) = preview_text(&experiment.prediction);
+            ExperimentPreview {
+                id: experiment.id.clone(),
+                question,
+                question_truncated,
+                prediction,
+                prediction_truncated,
+                hypothesis_count: experiment.hypothesis_ids.len(),
+                hypothesis_ids: experiment.hypothesis_ids.iter().take(10).cloned().collect(),
+                hypothesis_ids_omitted: experiment.hypothesis_ids.len().saturating_sub(10),
+                trial_count: *trial_counts.get(experiment.id.as_str()).unwrap_or(&0),
+                capture_count: *capture_counts.get(experiment.id.as_str()).unwrap_or(&0),
+            }
+        })
+        .collect();
+    Ok(ExperimentPage {
+        schema_version: state.schema_version,
+        revision: state.revision,
+        total,
+        offset,
+        next_offset: (offset.saturating_add(limit) < total).then_some(offset + limit),
+        order: "newest_first",
+        experiments,
+    })
+}
+
+pub fn list_decisions(state: &State, offset: usize, limit: usize) -> Result<DecisionPage, String> {
+    valid_page_limit(limit)?;
+    let total = state.decisions.len();
+    let decisions = state
+        .decisions
+        .iter()
+        .rev()
+        .skip(offset)
+        .take(limit)
+        .map(|decision| {
+            let (text, text_truncated) = preview_text(&decision.text);
+            DecisionPreview {
+                id: decision.id.clone(),
+                text,
+                text_truncated,
+                evidence_count: decision.evidence_ids.len(),
+                evidence_ids: decision.evidence_ids.iter().take(10).cloned().collect(),
+                evidence_ids_omitted: decision.evidence_ids.len().saturating_sub(10),
+            }
+        })
+        .collect();
+    Ok(DecisionPage {
+        schema_version: state.schema_version,
+        revision: state.revision,
+        total,
+        offset,
+        next_offset: (offset.saturating_add(limit) < total).then_some(offset + limit),
+        order: "newest_first",
+        decisions,
+    })
+}
+
 pub fn corpus_summary(state: &State) -> CorpusSummary {
     let question: String = state.question.chars().take(200).collect();
     let capture_trials: BTreeMap<_, _> = state
@@ -915,7 +1133,60 @@ pub fn compare_trials<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::{Capture, Tag, Trial};
+    use crate::workflow::{Capture, Decision, Experiment, Hypothesis, Tag, Trial};
+
+    #[test]
+    fn record_pages_bound_unicode_text_and_evidence_lists() {
+        let mut state = crate::workflow::create_test_state();
+        state.hypotheses.push(Hypothesis {
+            id: "hyp-1".into(),
+            claim: "🦀".repeat(201),
+            score: Some(0.4),
+            evidence: (0..12).map(|index| format!("obs-{index}")).collect(),
+            counterexamples: vec!["obs-counterexample".into()],
+        });
+        state.experiments.push(Experiment {
+            id: "exp-1".into(),
+            question: "Q".repeat(201),
+            hypothesis_ids: vec!["hyp-1".into()],
+            prediction: "P".repeat(201),
+        });
+        state.trials.push(Trial {
+            id: "trial-1".into(),
+            experiment_id: "exp-1".into(),
+            role: "discovery".into(),
+            changed_factor: "sequence".into(),
+        });
+        state.captures.push(Capture {
+            id: "cap-1".into(),
+            trial_id: "trial-1".into(),
+            format: "pcap-icmp".into(),
+            source: "test".into(),
+            sha256: String::new(),
+            artifact: String::new(),
+            observation_count: 0,
+            run_key: None,
+        });
+        state.decisions.push(Decision {
+            id: "decision-1".into(),
+            text: "D".repeat(201),
+            evidence_ids: (0..12).map(|index| format!("obs-{index}")).collect(),
+        });
+        let hypotheses = list_hypotheses(&state, 0, 1).unwrap();
+        assert_eq!(hypotheses.hypotheses[0].claim.chars().count(), 200);
+        assert!(hypotheses.hypotheses[0].claim_truncated);
+        assert_eq!(hypotheses.hypotheses[0].evidence_ids.len(), 10);
+        assert_eq!(hypotheses.hypotheses[0].evidence_ids_omitted, 2);
+        let experiments = list_experiments(&state, 0, 1).unwrap();
+        assert_eq!(experiments.experiments[0].trial_count, 1);
+        assert_eq!(experiments.experiments[0].capture_count, 1);
+        assert!(experiments.experiments[0].prediction_truncated);
+        let decisions = list_decisions(&state, 0, 1).unwrap();
+        assert_eq!(decisions.decisions[0].evidence_ids_omitted, 2);
+        assert!(decisions.decisions[0].text_truncated);
+        assert!(list_hypotheses(&state, 0, 0).is_err());
+        assert!(list_experiments(&state, 0, 101).is_err());
+    }
 
     #[test]
     fn summary_caps_groups_and_counts_distinct_tagged_observations() {

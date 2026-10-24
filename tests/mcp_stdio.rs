@@ -130,6 +130,13 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
     assert!(names.contains(&"summary"));
     assert!(names.contains(&"capture_step"));
     assert!(names.contains(&"validate_exchanges"));
+    assert!(names.contains(&"annotate_value"));
+    assert!(names.contains(&"infer_value"));
+    assert!(names.contains(&"record_decision"));
+    assert!(names.contains(&"verify"));
+    assert!(names.contains(&"experiments"));
+    assert!(names.contains(&"hypotheses"));
+    assert!(names.contains(&"decisions"));
     let definitions = tools["tools"].as_array().unwrap();
     let search_tool = definitions
         .iter()
@@ -217,6 +224,66 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
     assert!(held_out["checks"].as_array().unwrap().iter().any(|check| {
         check["offset"] == 7 && check["counterexamples"][0]["reason"] == "bytes_differ"
     }));
+    for (index, value) in [(0, "3"), (2, "258"), (4, "4097")] {
+        client.tool(
+            "annotate_value",
+            json!({"observation_id":first["first_observation_ids"][index],"variable":"icmp-sequence","value":value,"set":"discovery"}),
+        );
+        client.tool(
+            "annotate_value",
+            json!({"observation_id":second["first_observation_ids"][index],"variable":"icmp-sequence","value":value,"set":"validation"}),
+        );
+    }
+    let inferred = client.tool("infer_value", json!({"variable":"icmp-sequence"}));
+    assert_eq!(inferred["discovery_count"], 3);
+    assert_eq!(inferred["validation_count"], 3);
+    assert!(
+        inferred["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| {
+                candidate["start"] == 6
+                    && candidate["end"] == 8
+                    && candidate["validation_matches"] == 3
+            })
+    );
+    let hypothesis = client.tool(
+        "create_hypothesis",
+        json!({"claim":"ICMP sequence bytes are echoed in replies"}),
+    );
+    let hypothesis_id = hypothesis["event"]["hypothesis"]["id"].as_str().unwrap();
+    let counterexample = held_out["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["offset"] == 7)
+        .unwrap()["counterexamples"][0]["later_observation_id"]
+        .as_str()
+        .unwrap();
+    client.tool(
+        "evaluate_hypothesis",
+        json!({"hypothesis_id":hypothesis_id,"score":0.4,"evidence_ids":[first["first_observation_ids"][0]],"counterexample_ids":[counterexample]}),
+    );
+    client.tool(
+        "record_decision",
+        json!({"text":"Collect a second mismatched reply trial","evidence_ids":[counterexample]}),
+    );
+    let revised = client.tool("summary", json!({}));
+    assert_eq!(revised["counts"]["hypotheses"], 1);
+    assert_eq!(revised["counts"]["decisions"], 1);
+    assert_eq!(revised["counts"]["known_values"], 6);
+    let experiments = client.tool("experiments", json!({"limit":1}));
+    assert_eq!(experiments["total"], 1);
+    assert_eq!(experiments["experiments"][0]["trial_count"], 2);
+    let hypotheses = client.tool("hypotheses", json!({"limit":1}));
+    assert_eq!(hypotheses["hypotheses"][0]["score"], 0.4);
+    assert_eq!(hypotheses["hypotheses"][0]["counterexample_count"], 1);
+    let decisions = client.tool("decisions", json!({"limit":1}));
+    assert_eq!(decisions["decisions"][0]["evidence_count"], 1);
+    let verified = client.tool("verify", json!({}));
+    assert_eq!(verified["captures"], 2);
+    assert_eq!(verified["observations"], 12);
     let stress = client.tool(
         "create_trial",
         json!({"experiment_id":experiment_id,"role":"stress","changed_factor":"512 sequence values"}),
@@ -241,6 +308,73 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         json!({"name":"pair_exchanges","arguments":{"capture_id":"missing"}}),
     );
     assert_eq!(failed["isError"], true);
+    client.stop();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
+    let root = workspace();
+    let root_text = root.to_str().unwrap();
+    let init = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["init", root_text, "How are these records framed?"])
+        .output()
+        .unwrap();
+    assert!(init.status.success());
+    let mut client = McpClient::start(&root);
+    client.request(
+        "initialize",
+        json!({"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"pi-test","version":"1"}}),
+    );
+    client.send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+    let experiment = client.tool(
+        "create_experiment",
+        json!({"question":"Which length prefix survives changed records?","prediction":"One model holds on validation records."}),
+    );
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let discovery = client.tool(
+        "create_trial",
+        json!({"experiment_id":experiment_id,"role":"discovery","changed_factor":"two record sets"}),
+    );
+    let discovery_id = discovery["event"]["trial"]["id"].as_str().unwrap();
+    let validation = client.tool(
+        "create_trial",
+        json!({"experiment_id":experiment_id,"role":"validation","changed_factor":"two unseen record sets"}),
+    );
+    let validation_id = validation["event"]["trial"]["id"].as_str().unwrap();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    for (trial_id, key, filename) in [
+        (discovery_id, "mcp-record-d1", "records_discovery_a.bin"),
+        (discovery_id, "mcp-record-d2", "records_discovery_b.bin"),
+        (validation_id, "mcp-record-v1", "records_validation_a.bin"),
+        (validation_id, "mcp-record-v2", "records_validation_b.bin"),
+    ] {
+        let capture = client.tool(
+            "capture_step",
+            json!({"trial_id":trial_id,"kind":"fixture","detail":filename,"phase":"stimulus","label":"record sample","step_key":key,"format":"binary","timeout_ms":5000,"command":["/bin/cat",fixtures.join(filename).to_str().unwrap()]}),
+        );
+        assert_eq!(capture["status"], "completed");
+        assert_eq!(capture["observation_count"], 1);
+    }
+    let framing = client.tool(
+        "infer_framing",
+        json!({"discovery_trial_id":discovery_id,"validation_trial_id":validation_id}),
+    );
+    assert_eq!(framing["discovery_count"], 2);
+    assert_eq!(framing["validation_count"], 2);
+    assert_eq!(framing["candidate_count"], 1);
+    assert_eq!(framing["candidates"][0]["validation_matches"], 2);
+    let tlv = client.tool(
+        "infer_tlv",
+        json!({"discovery_trial_id":discovery_id,"validation_trial_id":validation_id}),
+    );
+    assert_eq!(tlv["candidate_count"], 1);
+    assert_eq!(
+        tlv["candidates"][0]["validation_elements_with_seen_types"],
+        6
+    );
+    let verification = client.tool("verify", json!({}));
+    assert_eq!(verification["captures"], 4);
     client.stop();
     fs::remove_dir_all(root).unwrap();
 }

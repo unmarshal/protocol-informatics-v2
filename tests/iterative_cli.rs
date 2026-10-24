@@ -199,6 +199,16 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     assert_eq!(trials["total"], 1);
     assert_eq!(trials["order"], "newest_first");
     assert_eq!(trials["trials"][0]["id"], "trial-000004");
+    let experiments = cli(&["experiments", root_text, "0", "1"]);
+    assert_eq!(experiments["total"], 1);
+    assert_eq!(experiments["experiments"][0]["id"], "exp-000003");
+    assert_eq!(experiments["experiments"][0]["capture_count"], 2);
+    let hypotheses = cli(&["hypotheses", root_text, "0", "1"]);
+    assert_eq!(hypotheses["hypotheses"][0]["score"], 0.9);
+    assert_eq!(hypotheses["hypotheses"][0]["evidence_count"], 2);
+    let decisions = cli(&["decisions", root_text, "0", "1"]);
+    assert_eq!(decisions["decisions"][0]["evidence_count"], 1);
+    assert!(decisions["next_offset"].is_null());
     let page = cli(&["observations", root_text, "trial-000004", "8", "2"]);
     assert_eq!(page["total"], 48);
     assert_eq!(page["observations"].as_array().unwrap().len(), 2);

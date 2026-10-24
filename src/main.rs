@@ -115,6 +115,9 @@ fn print_help() {
     println!("  decide <dir> <decision> [evidence-ids]");
     println!("  summary <dir>                      bounded corpus overview for agents");
     println!("  trials <dir> [offset] [limit<=100]  page trial metadata newest first");
+    println!("  experiments <dir> [offset] [limit<=100]  page experiment plans");
+    println!("  hypotheses <dir> [offset] [limit<=100]  page claims and evidence counts");
+    println!("  decisions <dir> [offset] [limit<=100]  page recorded decisions");
     println!("  resume <dir> | changes <dir> <revision> | report <dir> <html-file>");
     println!("  recover-tail <dir> [--apply]       inspect or repair an unterminated final event");
     println!("  observations <dir> [trial-id|-] [offset] [limit<=100]");
@@ -196,6 +199,19 @@ fn parse_unsigned(text: &str) -> Result<u64, String> {
         text.parse()
     };
     parsed.map_err(|_| "value must be an unsigned decimal or 0x-prefixed integer".into())
+}
+
+fn page_arguments(args: &[String]) -> Result<(usize, usize), String> {
+    if args.len() > 4 {
+        return Err("expected optional offset and limit".into());
+    }
+    let offset = args.get(2).map_or(Ok(0), |value| {
+        value.parse().map_err(|_| "offset must be an integer")
+    })?;
+    let limit = args.get(3).map_or(Ok(50), |value| {
+        value.parse().map_err(|_| "limit must be an integer")
+    })?;
+    Ok((offset, limit))
 }
 
 fn direction_mode(text: Option<&String>) -> Result<bool, String> {
@@ -1644,17 +1660,30 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             print_json(&protocol_informatics_v2::query::corpus_summary(&state))
         }
         "trials" => {
-            if args.len() > 4 {
-                return Err("expected optional offset and limit".into());
-            }
-            let offset = args.get(2).map_or(Ok(0), |value| {
-                value.parse().map_err(|_| "offset must be an integer")
-            })?;
-            let limit = args.get(3).map_or(Ok(50), |value| {
-                value.parse().map_err(|_| "limit must be an integer")
-            })?;
+            let (offset, limit) = page_arguments(args)?;
             let state = workflow::load(root)?;
             print_json(&protocol_informatics_v2::query::list_trials(
+                &state, offset, limit,
+            )?)
+        }
+        "experiments" => {
+            let (offset, limit) = page_arguments(args)?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::query::list_experiments(
+                &state, offset, limit,
+            )?)
+        }
+        "hypotheses" => {
+            let (offset, limit) = page_arguments(args)?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::query::list_hypotheses(
+                &state, offset, limit,
+            )?)
+        }
+        "decisions" => {
+            let (offset, limit) = page_arguments(args)?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::query::list_decisions(
                 &state, offset, limit,
             )?)
         }

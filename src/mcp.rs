@@ -2,7 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use protocol_informatics_v2::{clustering, exchanges, query, workflow};
+use protocol_informatics_v2::{
+    checksum, clustering, exchanges, framing, inference, query, tlv, varint, workflow,
+};
 use rmcp::{
     ServerHandler, ServiceExt,
     handler::server::wrapper::Parameters,
@@ -92,6 +94,59 @@ struct TrialInput {
     experiment_id: String,
     role: String,
     changed_factor: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct HypothesisInput {
+    claim: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct EvaluateInput {
+    hypothesis_id: String,
+    /// Analyst or agent rating from 0 to 1; the engine does not calculate a probability.
+    score: f64,
+    #[serde(default)]
+    evidence_ids: Vec<String>,
+    #[serde(default)]
+    counterexample_ids: Vec<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct DecisionInput {
+    text: String,
+    #[serde(default)]
+    evidence_ids: Vec<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ValueInput {
+    observation_id: String,
+    variable: String,
+    /// Exact unsigned decimal or 0x-prefixed integer, supplied as text to preserve 64-bit values.
+    value: String,
+    /// Discovery or validation.
+    set: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct VariableInput {
+    variable: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct TrialPairInput {
+    discovery_trial_id: String,
+    validation_trial_id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ChecksumInput {
+    discovery_trial_id: String,
+    validation_trial_id: String,
+    baseline_trial_id: String,
+    variant_trial_id: String,
+    controlled_variable: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -195,6 +250,14 @@ fn compact_batch(batch: &Value) -> Value {
     })
 }
 
+fn comma_ids(ids: &[String]) -> String {
+    if ids.is_empty() {
+        "-".into()
+    } else {
+        ids.join(",")
+    }
+}
+
 #[tool_router]
 impl InvestigationServer {
     #[tool(
@@ -211,6 +274,51 @@ impl InvestigationServer {
     )]
     fn trials(&self, Parameters(input): Parameters<PageInput>) -> Result<CallToolResult, String> {
         Self::json(query::list_trials(
+            &self.load()?,
+            input.offset,
+            input.limit,
+        )?)
+    }
+
+    #[tool(
+        description = "Page experiment questions, predictions, linked hypotheses, and trial counts, newest first.",
+        annotations(read_only_hint = true)
+    )]
+    fn experiments(
+        &self,
+        Parameters(input): Parameters<PageInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(query::list_experiments(
+            &self.load()?,
+            input.offset,
+            input.limit,
+        )?)
+    }
+
+    #[tool(
+        description = "Page hypothesis claims, current analyst or agent ratings, and bounded evidence IDs, newest first.",
+        annotations(read_only_hint = true)
+    )]
+    fn hypotheses(
+        &self,
+        Parameters(input): Parameters<PageInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(query::list_hypotheses(
+            &self.load()?,
+            input.offset,
+            input.limit,
+        )?)
+    }
+
+    #[tool(
+        description = "Page recorded decisions and bounded evidence IDs, newest first.",
+        annotations(read_only_hint = true)
+    )]
+    fn decisions(
+        &self,
+        Parameters(input): Parameters<PageInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(query::list_decisions(
             &self.load()?,
             input.offset,
             input.limit,
@@ -306,6 +414,91 @@ impl InvestigationServer {
     }
 
     #[tool(
+        description = "Infer exact unsigned field positions from separately annotated discovery and validation observations; returns bounded candidates, not field semantics.",
+        annotations(read_only_hint = true)
+    )]
+    fn infer_value(
+        &self,
+        Parameters(input): Parameters<VariableInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(inference::infer_unsigned_field(
+            &self.load()?,
+            &input.variable,
+        )?)
+    }
+
+    #[tool(
+        description = "Test bounded length-prefix record models on distinct discovery and validation trials.",
+        annotations(read_only_hint = true)
+    )]
+    fn infer_framing(
+        &self,
+        Parameters(input): Parameters<TrialPairInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(framing::infer_length_prefix(
+            &self.load()?,
+            &input.discovery_trial_id,
+            &input.validation_trial_id,
+        )?)
+    }
+
+    #[tool(
+        description = "Test typed length-value record models on distinct discovery and validation trials.",
+        annotations(read_only_hint = true)
+    )]
+    fn infer_tlv(
+        &self,
+        Parameters(input): Parameters<TrialPairInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(tlv::infer_tlv(
+            &self.load()?,
+            &input.discovery_trial_id,
+            &input.validation_trial_id,
+        )?)
+    }
+
+    #[tool(
+        description = "Test unsigned LEB128 length-prefix models on distinct discovery and validation trials.",
+        annotations(read_only_hint = true)
+    )]
+    fn infer_varint(
+        &self,
+        Parameters(input): Parameters<TrialPairInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(varint::infer_varint(
+            &self.load()?,
+            &input.discovery_trial_id,
+            &input.validation_trial_id,
+        )?)
+    }
+
+    #[tool(
+        description = "Test Internet checksum candidates against independent examples and a controlled intervention.",
+        annotations(read_only_hint = true)
+    )]
+    fn infer_checksum(
+        &self,
+        Parameters(input): Parameters<ChecksumInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(checksum::infer_internet_checksum(
+            &self.load()?,
+            &input.discovery_trial_id,
+            &input.validation_trial_id,
+            &input.baseline_trial_id,
+            &input.variant_trial_id,
+            &input.controlled_variable,
+        )?)
+    }
+
+    #[tool(
+        description = "Verify event replay, artifact hashes, and extracted observations against capture bytes.",
+        annotations(read_only_hint = true)
+    )]
+    fn verify(&self) -> Result<CallToolResult, String> {
+        Self::json(workflow::verify(&self.root)?)
+    }
+
+    #[tool(
         description = "Create an experiment with a falsifiable question and prediction. This operation is not keyed."
     )]
     async fn create_experiment(
@@ -333,6 +526,60 @@ impl InvestigationServer {
             vec![input.experiment_id, input.role, input.changed_factor],
         )
         .await
+    }
+
+    #[tool(
+        description = "Create a claim for later evidence evaluation. This operation is not keyed."
+    )]
+    async fn create_hypothesis(
+        &self,
+        Parameters(input): Parameters<HypothesisInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke("hypothesis", vec![input.claim]).await
+    }
+
+    #[tool(
+        description = "Record an analyst or agent supplied 0–1 rating with supporting and contradicting evidence IDs. This is not a calculated probability and is not keyed."
+    )]
+    async fn evaluate_hypothesis(
+        &self,
+        Parameters(input): Parameters<EvaluateInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke(
+            "evaluate",
+            vec![
+                input.hypothesis_id,
+                input.score.to_string(),
+                comma_ids(&input.evidence_ids),
+                comma_ids(&input.counterexample_ids),
+            ],
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Annotate an externally known unsigned value on one observation for exact held-out field inference. This operation is not keyed."
+    )]
+    async fn annotate_value(
+        &self,
+        Parameters(input): Parameters<ValueInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke(
+            "value",
+            vec![input.observation_id, input.variable, input.value, input.set],
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Record a decision with evidence IDs in the append-only investigation. This operation is not keyed."
+    )]
+    async fn record_decision(
+        &self,
+        Parameters(input): Parameters<DecisionInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke("decide", vec![input.text, comma_ids(&input.evidence_ids)])
+            .await
     }
 
     #[tool(

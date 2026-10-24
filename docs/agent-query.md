@@ -1,6 +1,6 @@
 # Agent evidence navigation
 
-Start with `summary <dir>`, then use `trials <dir> [offset] [limit]` and `search-observations <dir> <json-filter>` to narrow the corpus. Read exact bytes with `span <dir> <observation-id> <start> <end>`. A search returns `revision`, `total`, `offset`, `next_offset`, and at most 100 observation previews. Results follow capture import order, so a new import can change page offsets; pin the revision while paging and restart if it changes.
+Start with `summary <dir>`, then use `experiments`, `trials`, `hypotheses`, and `decisions` with `[offset] [limit]` to page the investigation records. Use `search-observations <dir> <json-filter>` to narrow the corpus. Read exact bytes with `span <dir> <observation-id> <start> <end>`. Each record page and search returns `revision`, `total`, `offset`, `next_offset`, and at most 100 bounded previews. Results follow capture import order, so a new import can change page offsets; pin the revision while paging and restart if it changes.
 
 The filter is one JSON object. All supplied fields are combined with AND. Unknown field names and unknown experiment, trial, capture, or framing IDs are errors. An empty object returns the first 50 observations.
 
@@ -21,6 +21,9 @@ Examples:
 
 ```sh
 cargo run -- summary /tmp/pi-icmp
+cargo run -- experiments /tmp/pi-icmp 0 20
+cargo run -- hypotheses /tmp/pi-icmp 0 20
+cargo run -- decisions /tmp/pi-icmp 0 20
 cargo run -- search-observations /tmp/pi-icmp '{"trial_id":"trial-000004","direction":"192.0.2.1 -> 192.0.2.2","min_bytes":8,"offset":0,"limit":20}'
 cargo run -- search-observations /tmp/pi-icmp '{"tag_phase":"stimulus","tag_label":"sequence 256"}'
 cargo run -- search-observations /tmp/pi-dns '{"format":"pcap-udp","destination_port":53}'
