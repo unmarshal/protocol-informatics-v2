@@ -88,6 +88,7 @@ fn print_help() {
     println!("  trials <dir> [offset] [limit<=100]  page trial metadata newest first");
     println!("  resume <dir> | changes <dir> <revision> | report <dir> <html-file>");
     println!("  observations <dir> [trial-id|-] [offset] [limit<=100]");
+    println!("  search-observations <dir> <json-filter>  bounded multi-filter query");
     println!("  span <dir> <obs-id> <start> <end>    read half-open message byte span");
     println!("  diff <dir> <left-obs-id> <right-obs-id>");
     println!("  compare-trials <dir> <baseline-trial-id> <variant-trial-id>");
@@ -1087,6 +1088,16 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             })?;
             print_json(&protocol_informatics_v2::query::list_observations(
                 &state, trial_id, offset, limit,
+            )?)
+        }
+        "search-observations" => {
+            require_len(args, 3)?;
+            let query: protocol_informatics_v2::query::ObservationSearch =
+                serde_json::from_str(&args[2])
+                    .map_err(|error| format!("invalid observation filter: {error}"))?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::query::search_observations(
+                &state, &query,
             )?)
         }
         "span" => {

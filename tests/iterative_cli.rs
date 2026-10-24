@@ -205,6 +205,63 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     assert_eq!(page["observations"][0]["id"], "obs-000006-0008");
     assert_eq!(page["observations"][0]["tags"][0]["label"], "sequence 255");
     assert_eq!(page["next_offset"], 10);
+    let direction = corpus["top_directions"][0]["direction"].as_str().unwrap();
+    let direction_query =
+        serde_json::json!({"trial_id":"trial-000004","direction":direction,"offset":2,"limit":3})
+            .to_string();
+    let matches = cli(&["search-observations", root_text, &direction_query]);
+    assert_eq!(matches["schema_version"], 9);
+    assert_eq!(matches["total"], 24);
+    assert_eq!(matches["observations"].as_array().unwrap().len(), 3);
+    assert_eq!(matches["next_offset"], 5);
+    assert!(
+        matches["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|observation| observation["direction"] == direction)
+    );
+    let tag_query =
+        serde_json::json!({"tag_phase":"stimulus","tag_label":"sequence 256"}).to_string();
+    let tagged = cli(&["search-observations", root_text, &tag_query]);
+    assert_eq!(tagged["total"], 1);
+    assert_eq!(tagged["observations"][0]["id"], "obs-000006-0010");
+    let first_timestamp = capture["event"]["observations"][0]["timestamp_ns"]
+        .as_u64()
+        .unwrap();
+    let time_query = serde_json::json!({"capture_id":capture["event"]["capture"]["id"],
+        "timestamp_start_ns":first_timestamp.to_string(),"timestamp_end_ns":(first_timestamp+1).to_string()}).to_string();
+    let time_matches = cli(&["search-observations", root_text, &time_query]);
+    assert_eq!(time_matches["total"], 1);
+    assert_eq!(time_matches["observations"][0]["id"], "obs-000006-0000");
+    let invalid_filter = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "search-observations",
+            root_text,
+            "{\"trial\":\"trial-000004\"}",
+        ])
+        .output()
+        .unwrap();
+    assert!(!invalid_filter.status.success());
+    assert!(String::from_utf8_lossy(&invalid_filter.stderr).contains("unknown field"));
+    let invalid_range =
+        serde_json::json!({"timestamp_start_ns":"5","timestamp_end_ns":"5"}).to_string();
+    let rejected_range = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["search-observations", root_text, &invalid_range])
+        .output()
+        .unwrap();
+    assert!(!rejected_range.status.success());
+    assert!(String::from_utf8_lossy(&rejected_range.stderr).contains("half-open"));
+    let exact_length = serde_json::json!({"min_bytes":14,"max_bytes":14}).to_string();
+    let length_matches = cli(&["search-observations", root_text, &exact_length]);
+    assert!(length_matches["total"].as_u64().unwrap() > 0);
+    assert!(
+        length_matches["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|observation| observation["length"] == 14)
+    );
     let span = cli(&["span", root_text, "obs-000006-0010", "6", "8"]);
     assert_eq!(span["bytes_hex"], "0100");
     assert_eq!(span["source_file_offset"], 680);
@@ -1125,6 +1182,20 @@ fn agent_can_investigate_dns_over_udp_without_a_dns_specific_decoder() {
     assert_eq!(capture["event"]["observations"][1]["source_port"], 53);
     let page = cli(&["observations", root_text, trial_id, "0", "1"]);
     assert_eq!(page["observations"][0]["source_port"], 40000);
+    let request_query = serde_json::json!({"format":"pcap-udp","destination_port":53}).to_string();
+    let requests = cli(&["search-observations", root_text, &request_query]);
+    assert_eq!(requests["total"], 6);
+    assert!(
+        requests["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["destination_port"] == 53)
+    );
+    let one_port_query = serde_json::json!({"source_port":40000,"destination_port":53}).to_string();
+    let one_port = cli(&["search-observations", root_text, &one_port_query]);
+    assert_eq!(one_port["total"], 1);
+    assert_eq!(one_port["observations"][0]["id"], "obs-000004-0000");
     let span = cli(&["span", root_text, "obs-000004-0000", "0", "2"]);
     assert_eq!(span["bytes_hex"], "0000");
     assert_eq!(span["source_file_offset"], 82);
@@ -1971,6 +2042,18 @@ fn agent_infers_a_field_with_held_out_committed_frames() {
     assert_eq!(corpus["counts"]["frames"], 6);
     assert_eq!(corpus["counts"]["frame_known_values"], 6);
     assert_eq!(corpus["recent_trials"][0]["frames"], 3);
+    let framed_query = serde_json::json!({"framing_key":"type-discovery"}).to_string();
+    let framed = cli(&["search-observations", root_text, &framed_query]);
+    assert_eq!(framed["total"], 1);
+    assert_eq!(
+        framed["observations"][0]["id"],
+        runs[0]["run"]["observation_id"]
+    );
+    let unknown_direction = serde_json::json!({"direction":"<unknown>"}).to_string();
+    assert_eq!(
+        cli(&["search-observations", root_text, &unknown_direction])["total"],
+        2
+    );
     cli(&[
         "frame-value",
         root_text,

@@ -1,6 +1,6 @@
 //! Bounded, stable navigation over a replayed investigation state.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::reassembly::SourceSpan;
@@ -99,6 +99,7 @@ pub struct TrialPreview {
 
 #[derive(Debug, Serialize)]
 pub struct TrialPage {
+    pub schema_version: u32,
     pub revision: u64,
     pub total: usize,
     pub offset: usize,
@@ -128,6 +129,7 @@ pub fn list_trials(state: &State, offset: usize, limit: usize) -> Result<TrialPa
         })
         .collect();
     Ok(TrialPage {
+        schema_version: state.schema_version,
         revision: state.revision,
         total,
         offset,
@@ -364,11 +366,58 @@ pub struct ObservationPreview<'a> {
 
 #[derive(Debug, Serialize)]
 pub struct ObservationPage<'a> {
+    pub schema_version: u32,
     pub revision: u64,
     pub total: usize,
     pub offset: usize,
     pub next_offset: Option<usize>,
     pub observations: Vec<ObservationPreview<'a>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ObservationSearch {
+    pub trial_id: Option<String>,
+    pub experiment_id: Option<String>,
+    pub capture_id: Option<String>,
+    pub framing_key: Option<String>,
+    pub format: Option<String>,
+    pub direction: Option<String>,
+    pub source_port: Option<u16>,
+    pub destination_port: Option<u16>,
+    pub timestamp_start_ns: Option<String>,
+    pub timestamp_end_ns: Option<String>,
+    pub min_bytes: Option<usize>,
+    pub max_bytes: Option<usize>,
+    pub tag_phase: Option<String>,
+    pub tag_label: Option<String>,
+    pub stream_gap_before: Option<bool>,
+    pub offset: usize,
+    pub limit: usize,
+}
+
+impl Default for ObservationSearch {
+    fn default() -> Self {
+        Self {
+            trial_id: None,
+            experiment_id: None,
+            capture_id: None,
+            framing_key: None,
+            format: None,
+            direction: None,
+            source_port: None,
+            destination_port: None,
+            timestamp_start_ns: None,
+            timestamp_end_ns: None,
+            min_bytes: None,
+            max_bytes: None,
+            tag_phase: None,
+            tag_label: None,
+            stream_gap_before: None,
+            offset: 0,
+            limit: 50,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -455,26 +504,180 @@ pub fn list_observations<'a>(
     offset: usize,
     limit: usize,
 ) -> Result<ObservationPage<'a>, String> {
-    if limit == 0 || limit > 100 {
+    search_observations(
+        state,
+        &ObservationSearch {
+            trial_id: trial_id.map(str::to_owned),
+            offset,
+            limit,
+            ..ObservationSearch::default()
+        },
+    )
+}
+
+pub fn search_observations<'a>(
+    state: &'a State,
+    query: &ObservationSearch,
+) -> Result<ObservationPage<'a>, String> {
+    if query.limit == 0 || query.limit > 100 {
         return Err("limit must be between 1 and 100".into());
     }
-    if let Some(id) = trial_id
-        && !state.trials.iter().any(|trial| trial.id == id)
+    if let Some(id) = &query.trial_id
+        && !state.trials.iter().any(|trial| trial.id == *id)
     {
         return Err(format!("unknown trial {id}"));
     }
-    let matches: Vec<_> = state
-        .observations
+    if let Some(id) = &query.experiment_id
+        && !state
+            .experiments
+            .iter()
+            .any(|experiment| experiment.id == *id)
+    {
+        return Err(format!("unknown experiment {id}"));
+    }
+    if let Some(id) = &query.capture_id
+        && !state.captures.iter().any(|capture| capture.id == *id)
+    {
+        return Err(format!("unknown capture {id}"));
+    }
+    let framing_observation_id = if let Some(key) = &query.framing_key {
+        Some(
+            state
+                .framing_runs
+                .iter()
+                .find(|run| run.key == *key)
+                .ok_or_else(|| format!("unknown framing key {key}"))?
+                .observation_id
+                .as_str(),
+        )
+    } else {
+        None
+    };
+    let parse_ns = |value: Option<&str>, name: &str| -> Result<Option<u64>, String> {
+        value
+            .map(|text| {
+                text.parse::<u64>()
+                    .map_err(|_| format!("{name} must be a decimal UTC nanosecond string"))
+            })
+            .transpose()
+    };
+    let timestamp_start_ns = parse_ns(query.timestamp_start_ns.as_deref(), "timestamp_start_ns")?;
+    let timestamp_end_ns = parse_ns(query.timestamp_end_ns.as_deref(), "timestamp_end_ns")?;
+    if timestamp_start_ns
+        .zip(timestamp_end_ns)
+        .is_some_and(|(start, end)| start >= end)
+    {
+        return Err("timestamp range must be half-open with start before end".into());
+    }
+    if query
+        .min_bytes
+        .zip(query.max_bytes)
+        .is_some_and(|(min, max)| min > max)
+    {
+        return Err("min_bytes must not exceed max_bytes".into());
+    }
+    let capture_by_id: BTreeMap<_, _> = state
+        .captures
         .iter()
-        .filter(|observation| {
-            trial_id.is_none_or(|id| capture_for(state, observation).trial_id == id)
-        })
+        .map(|capture| (capture.id.as_str(), capture))
         .collect();
-    let total = matches.len();
-    let observations = matches
+    let trial_by_id: BTreeMap<_, _> = state
+        .trials
+        .iter()
+        .map(|trial| (trial.id.as_str(), trial))
+        .collect();
+    let mut tags_by_observation: BTreeMap<&str, Vec<&Tag>> = BTreeMap::new();
+    for tag in &state.tags {
+        tags_by_observation
+            .entry(&tag.observation_id)
+            .or_default()
+            .push(tag);
+    }
+    let mut total = 0;
+    let mut selected = Vec::new();
+    for observation in &state.observations {
+        let capture = capture_by_id
+            .get(observation.capture_id.as_str())
+            .expect("replayed state has valid capture references");
+        if query
+            .trial_id
+            .as_ref()
+            .is_some_and(|id| capture.trial_id != *id)
+            || query
+                .capture_id
+                .as_ref()
+                .is_some_and(|id| capture.id != *id)
+            || query
+                .format
+                .as_ref()
+                .is_some_and(|format| capture.format != *format)
+            || query.experiment_id.as_ref().is_some_and(|id| {
+                trial_by_id
+                    .get(capture.trial_id.as_str())
+                    .is_none_or(|trial| trial.experiment_id != *id)
+            })
+            || framing_observation_id.is_some_and(|id| observation.id != id)
+            || query.direction.as_ref().is_some_and(|direction| {
+                if direction == "<unknown>" {
+                    observation.direction.is_some()
+                } else {
+                    observation.direction.as_deref() != Some(direction.as_str())
+                }
+            })
+            || query
+                .source_port
+                .is_some_and(|port| observation.source_port != Some(port))
+            || query
+                .destination_port
+                .is_some_and(|port| observation.destination_port != Some(port))
+            || query
+                .stream_gap_before
+                .is_some_and(|gap| observation.stream_gap_before != gap)
+            || query
+                .min_bytes
+                .is_some_and(|min| observation.bytes_hex.len() / 2 < min)
+            || query
+                .max_bytes
+                .is_some_and(|max| observation.bytes_hex.len() / 2 > max)
+            || timestamp_start_ns.is_some_and(|start| {
+                observation
+                    .timestamp_ns
+                    .is_none_or(|timestamp| timestamp < start)
+            })
+            || timestamp_end_ns.is_some_and(|end| {
+                observation
+                    .timestamp_ns
+                    .is_none_or(|timestamp| timestamp >= end)
+            })
+        {
+            continue;
+        }
+        if query.tag_phase.is_some() || query.tag_label.is_some() {
+            let matching_tag = tags_by_observation
+                .get(observation.id.as_str())
+                .is_some_and(|tags| {
+                    tags.iter().any(|tag| {
+                        query
+                            .tag_phase
+                            .as_ref()
+                            .is_none_or(|phase| tag.phase == *phase)
+                            && query
+                                .tag_label
+                                .as_ref()
+                                .is_none_or(|label| tag.label == *label)
+                    })
+                });
+            if !matching_tag {
+                continue;
+            }
+        }
+        if total >= query.offset && selected.len() < query.limit {
+            selected.push(observation);
+        }
+        total += 1;
+    }
+    let observations = selected
         .into_iter()
-        .skip(offset)
-        .take(limit)
         .map(|observation| ObservationPreview {
             id: &observation.id,
             capture_id: &observation.capture_id,
@@ -495,10 +698,12 @@ pub fn list_observations<'a>(
         })
         .collect();
     Ok(ObservationPage {
+        schema_version: state.schema_version,
         revision: state.revision,
         total,
-        offset,
-        next_offset: (offset.saturating_add(limit) < total).then_some(offset + limit),
+        offset: query.offset,
+        next_offset: (query.offset.saturating_add(query.limit) < total)
+            .then_some(query.offset + query.limit),
         observations,
     })
 }
@@ -730,8 +935,8 @@ mod tests {
             state.tags.push(Tag {
                 id: format!("tag-{index}"),
                 observation_id: "obs-00".into(),
-                label: "same observation".into(),
-                phase: "stimulus".into(),
+                label: if index == 0 { "alpha" } else { "beta" }.into(),
+                phase: if index == 0 { "stimulus" } else { "response" }.into(),
                 action_id: None,
             });
         }
@@ -758,5 +963,17 @@ mod tests {
         assert_eq!(page.trials[0].id, "trial-04");
         assert_eq!(page.trials[4].id, "trial-00");
         assert_eq!(page.next_offset, None);
+        let matching = ObservationSearch {
+            tag_phase: Some("stimulus".into()),
+            tag_label: Some("alpha".into()),
+            ..ObservationSearch::default()
+        };
+        assert_eq!(search_observations(&state, &matching).unwrap().total, 1);
+        let crossed = ObservationSearch {
+            tag_phase: Some("stimulus".into()),
+            tag_label: Some("beta".into()),
+            ..ObservationSearch::default()
+        };
+        assert_eq!(search_observations(&state, &crossed).unwrap().total, 0);
     }
 }
