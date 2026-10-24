@@ -28,7 +28,7 @@ The CLI aligns messages and reports each aligned column's consensus byte, number
 - The CPU backend limits its dynamic-programming matrix to 25 million cells to avoid unbounded allocation.
 - Column statistics describe variation. They do **not** prove field boundaries or field meaning. In the toy example, even the length byte may shift into different aligned columns. Sample bias, repeated byte patterns, mixed message types, compression, and encryption can mislead this method.
 
-The `PairwiseAligner` trait is the backend boundary for optimized CPU and GPU implementations. Any new backend should match the CPU baseline on a fixed corpus before performance claims are made. GPU work should start with a benchmark of batched independent alignments; transfer overhead and traceback costs may outweigh gains on small messages.
+The `PairwiseAligner` trait lets us compare alignment methods against the same corpus. For now, correctness and useful inference matter more than hardware acceleration. We will profile representative workloads before considering SIMD or GPU implementations.
 
 ## Next milestones
 
@@ -36,7 +36,7 @@ The `PairwiseAligner` trait is the backend boundary for optimized CPU and GPU im
 2. Cluster message types before alignment and add affine-gap or profile alignment for variable fields.
 3. Infer and score testable hypotheses such as lengths, counters, checksums, delimiters, and request/response correlations.
 4. Expose evidence and hypothesis tests through agent-friendly tools. Generate parsers and dissectors only after validating against held-out traffic.
-5. Benchmark CPU, SIMD, and GPU backends on representative binary and text protocol corpora.
+5. Build a representative benchmark corpus and profile the CPU implementation. Consider acceleration only where measured workloads justify it.
 
 ## Licensing
 
