@@ -1,6 +1,6 @@
 //! Ethernet/IPv4 transport extraction from classic pcap and pcapng.
 //! ICMP messages, UDP datagrams, and TCP segment payloads share capture parsing and retain exact
-//! byte offsets into the original capture.
+//! byte offsets into the original capture. Ethernet VLAN tags are unwrapped before IPv4 parsing.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportMessage {
@@ -19,6 +19,7 @@ pub struct TransportMessage {
 
 pub type IcmpMessage = TransportMessage;
 
+#[derive(Debug)]
 struct TransportSlice<'a> {
     offset: usize,
     source_ipv4: [u8; 4],
@@ -374,10 +375,24 @@ fn extract_ethernet_transport(
     if frame.len() < 14 {
         return Err("truncated Ethernet frame".into());
     }
-    if frame[12..14] != [0x08, 0x00] {
+    let mut ip_start = 14;
+    let mut ether_type = u16::from_be_bytes([frame[12], frame[13]]);
+    let mut vlan_depth = 0;
+    while matches!(ether_type, 0x8100 | 0x88a8 | 0x9100) {
+        if vlan_depth == 4 {
+            return Err("Ethernet frame has more than four VLAN tags".into());
+        }
+        if frame.len() < ip_start + 4 {
+            return Err("truncated Ethernet VLAN tag".into());
+        }
+        ether_type = u16::from_be_bytes([frame[ip_start + 2], frame[ip_start + 3]]);
+        ip_start += 4;
+        vlan_depth += 1;
+    }
+    if ether_type != 0x0800 {
         return Ok(None);
     }
-    let ip = &frame[14..];
+    let ip = &frame[ip_start..];
     if ip.len() < 20 {
         return Err("truncated IPv4 header".into());
     }
@@ -449,7 +464,7 @@ fn extract_ethernet_transport(
     let source_ipv4 = ip[12..16].try_into().expect("validated IPv4 header");
     let destination_ipv4 = ip[16..20].try_into().expect("validated IPv4 header");
     Ok(Some(TransportSlice {
-        offset: 14 + header_length + transport_header_length,
+        offset: ip_start + header_length + transport_header_length,
         source_ipv4,
         destination_ipv4,
         source_port,
@@ -701,6 +716,143 @@ mod tests {
         block.extend(padded);
         block.extend(length.to_be_bytes());
         block
+    }
+
+    fn vlan_frame(frame: &[u8], tag_types: &[u16]) -> Vec<u8> {
+        let mut tagged = frame[..12].to_vec();
+        for tag_type in tag_types {
+            tagged.extend(tag_type.to_be_bytes());
+            tagged.extend(1_u16.to_be_bytes());
+        }
+        tagged.extend(&frame[12..]);
+        tagged
+    }
+
+    fn classic_packet_header(raw: &[u8], packet_index: usize) -> usize {
+        let mut packet_header = 24;
+        for _ in 0..packet_index {
+            let length = u32::from_le_bytes(
+                raw[packet_header + 8..packet_header + 12]
+                    .try_into()
+                    .unwrap(),
+            ) as usize;
+            packet_header += 16 + length;
+        }
+        packet_header
+    }
+
+    fn tagged_classic_packet(raw: &[u8], packet_index: usize, tag_types: &[u16]) -> Vec<u8> {
+        let packet_header = classic_packet_header(raw, packet_index);
+        let frame_length = u32::from_le_bytes(
+            raw[packet_header + 8..packet_header + 12]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let frame = &raw[packet_header + 16..packet_header + 16 + frame_length];
+        let tagged = vlan_frame(frame, tag_types);
+        let mut classic = raw[..24].to_vec();
+        classic.extend(&raw[packet_header..packet_header + 16]);
+        classic[32..36].copy_from_slice(&(tagged.len() as u32).to_le_bytes());
+        classic[36..40].copy_from_slice(&(tagged.len() as u32).to_le_bytes());
+        classic.extend(tagged);
+        classic
+    }
+
+    #[test]
+    fn vlan_tags_preserve_udp_and_tcp_payload_offsets() {
+        let dns = include_bytes!("../examples/dns_udp.pcap");
+        let expected_udp = extract_udp_messages(dns).unwrap().remove(0);
+        let tagged_udp = tagged_classic_packet(dns, expected_udp.packet_index, &[0x8100]);
+        let udp = extract_udp_messages(&tagged_udp).unwrap().remove(0);
+        assert_eq!(udp.bytes, expected_udp.bytes);
+        assert_eq!(udp.source_port, expected_udp.source_port);
+        assert_eq!(udp.destination_port, expected_udp.destination_port);
+        assert_eq!(udp.source_offset, expected_udp.source_offset + 4);
+        assert_eq!(
+            &tagged_udp[udp.source_offset..udp.source_offset + udp.bytes.len()],
+            udp.bytes
+        );
+
+        let tcp_raw = include_bytes!("../examples/tcp_payload.pcap");
+        let expected_tcp = extract_tcp_segments(tcp_raw).unwrap().remove(0);
+        let tagged_tcp =
+            tagged_classic_packet(tcp_raw, expected_tcp.packet_index, &[0x88a8, 0x8100]);
+        let tcp = extract_tcp_segments(&tagged_tcp).unwrap().remove(0);
+        assert_eq!(tcp.bytes, expected_tcp.bytes);
+        assert_eq!(tcp.tcp_sequence, expected_tcp.tcp_sequence);
+        assert_eq!(tcp.source_port, expected_tcp.source_port);
+        assert_eq!(tcp.destination_port, expected_tcp.destination_port);
+        let original_frame_start = classic_packet_header(tcp_raw, expected_tcp.packet_index) + 16;
+        assert_eq!(
+            tcp.source_offset,
+            40 + expected_tcp.source_offset - original_frame_start + 8
+        );
+        assert_eq!(
+            &tagged_tcp[tcp.source_offset..tcp.source_offset + tcp.bytes.len()],
+            tcp.bytes
+        );
+    }
+
+    #[test]
+    fn vlan_tagged_frames_preserve_icmp_bytes_and_file_offsets() {
+        let original = include_bytes!("../examples/icmp_echo.pcap");
+        let frame_length = u32::from_le_bytes(original[32..36].try_into().unwrap()) as usize;
+        let frame = &original[40..40 + frame_length];
+        let expected = extract_icmp_messages(original).unwrap().remove(0);
+
+        for tag_types in [
+            vec![0x8100],
+            vec![0x88a8, 0x8100],
+            vec![0x9100, 0x88a8, 0x8100, 0x8100],
+        ] {
+            let tagged = vlan_frame(frame, &tag_types);
+            let mut classic = original[..40].to_vec();
+            classic[32..36].copy_from_slice(&(tagged.len() as u32).to_le_bytes());
+            classic[36..40].copy_from_slice(&(tagged.len() as u32).to_le_bytes());
+            classic.extend(&tagged);
+            let message = extract_icmp_messages(&classic).unwrap().remove(0);
+            assert_eq!(message.bytes, expected.bytes);
+            assert_eq!(
+                message.source_offset,
+                expected.source_offset + 4 * tag_types.len()
+            );
+            assert_eq!(
+                &classic[message.source_offset..message.source_offset + message.bytes.len()],
+                message.bytes
+            );
+
+            let mut enhanced = block_le(
+                0x0a0d0d0a,
+                &[
+                    0x4d, 0x3c, 0x2b, 0x1a, 1, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                    0xff,
+                ],
+            );
+            enhanced.extend(block_le(1, &[1, 0, 0, 0, 0xff, 0xff, 0, 0]));
+            let mut packet = vec![0; 12];
+            packet.extend((tagged.len() as u32).to_le_bytes());
+            packet.extend((tagged.len() as u32).to_le_bytes());
+            packet.extend(&tagged);
+            enhanced.extend(block_le(6, &packet));
+            let ng_message = extract_pcapng_icmp_messages(&enhanced).unwrap().remove(0);
+            assert_eq!(ng_message.bytes, expected.bytes);
+            assert_eq!(
+                &enhanced
+                    [ng_message.source_offset..ng_message.source_offset + ng_message.bytes.len()],
+                ng_message.bytes
+            );
+        }
+
+        let partial = vlan_frame(frame, &[0x8100]);
+        assert_eq!(
+            extract_ethernet_transport(&partial[..16], Transport::Icmp).unwrap_err(),
+            "truncated Ethernet VLAN tag"
+        );
+        assert!(
+            extract_ethernet_transport(&vlan_frame(frame, &[0x8100; 5]), Transport::Icmp)
+                .unwrap_err()
+                .contains("more than four VLAN tags")
+        );
     }
 
     #[test]

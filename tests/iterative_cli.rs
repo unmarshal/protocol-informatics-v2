@@ -977,6 +977,47 @@ fn imports_pcapng_through_the_same_investigation_workflow() {
 }
 
 #[test]
+fn tagged_ethernet_capture_keeps_exact_span_provenance() {
+    let root = workspace();
+    let root_text = path(&root);
+    let original = include_bytes!("../examples/icmp_echo.pcap");
+    let frame_length = u32::from_le_bytes(original[32..36].try_into().unwrap()) as usize;
+    let frame = &original[40..40 + frame_length];
+    let mut tagged_frame = frame[..12].to_vec();
+    tagged_frame.extend(0x88a8_u16.to_be_bytes());
+    tagged_frame.extend(1_u16.to_be_bytes());
+    tagged_frame.extend(0x8100_u16.to_be_bytes());
+    tagged_frame.extend(2_u16.to_be_bytes());
+    tagged_frame.extend(&frame[12..]);
+    let mut pcap = original[..40].to_vec();
+    pcap[32..36].copy_from_slice(&(tagged_frame.len() as u32).to_le_bytes());
+    pcap[36..40].copy_from_slice(&(tagged_frame.len() as u32).to_le_bytes());
+    pcap.extend(tagged_frame);
+    let fixture = root.join("tagged-icmp.pcap");
+    fs::write(&fixture, &pcap).unwrap();
+
+    cli(&[
+        "init",
+        root_text,
+        "Where is the ICMP sequence in VLAN traffic?",
+    ]);
+    let experiment = cli(&["experiment", root_text, "Tagged capture", "-", "One echo"]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&["trial", root_text, experiment_id, "baseline", "QinQ"]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let imported = cli(&["import", root_text, trial_id, "pcap-icmp", path(&fixture)]);
+    let observation = &imported["event"]["observations"][0];
+    assert_eq!(observation["source_offset"], 82);
+    assert_eq!(observation["bytes_hex"].as_str().unwrap().len() / 2, 8);
+    let id = observation["id"].as_str().unwrap();
+    let span = cli(&["span", root_text, id, "6", "8"]);
+    assert_eq!(span["source_file_offset"], 88);
+    assert_eq!(span["bytes_hex"], "0000");
+    assert_eq!(cli(&["verify", root_text])["observations"], 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn agent_can_investigate_dns_over_udp_without_a_dns_specific_decoder() {
     let root = workspace();
     let root_text = path(&root);
