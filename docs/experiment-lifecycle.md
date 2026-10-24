@@ -1,6 +1,6 @@
 # Experiment and capture lifecycle
 
-Status: design proposal, October 2026. No live capture or experiment commands are implemented yet.
+Status: partial implementation, October 2026. Experiment, trial, action marker, capture import, observation tag, and hypothesis evaluation commands exist. The managed live capture lifecycle below remains a proposal.
 
 ## Model
 
@@ -53,4 +53,4 @@ Show the experiment as a timeline: capture intervals, marked actions, message bu
 
 ## First implementation slice
 
-Implement experiment, trial, capture, action, and tag records before live capture. Support `create_experiment`, `create_trial`, `import_capture`, `mark_action`, and `tag_observations` for existing hex or pcapng input. Then add a bounded local `dumpcap` adapter and a controlled trial runner. This exercises the provenance model before adding process management and live collection.
+Experiment, trial, capture, action, and tag records are implemented for hex lines and classic Ethernet/IPv4/ICMP PCAP. `capture-command` is a bounded synchronous acquisition hook. Next add pcapng and TCP extraction, then a managed `dumpcap` adapter with explicit start, status, and stop operations. Capture metadata such as loss, filter, and interface still needs to be recorded.

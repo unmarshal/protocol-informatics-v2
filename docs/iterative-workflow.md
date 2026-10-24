@@ -1,6 +1,6 @@
 # Iterative investigation workflow
 
-Status: design proposal, October 2026. The current Rust CLI performs a single alignment analysis; investigation persistence and orchestration are not implemented yet.
+Status: partial implementation, October 2026. The Rust CLI now persists versioned investigation events, hypotheses, experiments, trials, captures, tags, analysis records, and decisions. Automated planning and managed live capture remain proposed.
 
 ## Unit of work
 
@@ -41,4 +41,4 @@ The viewer shows a chronological investigation history alongside the evidence gr
 
 ## First implementation slice
 
-Create a local investigation store with event IDs, revisions, hypothesis records, and experiment/trial links. Add `resume_investigation`, `changes_since`, and `record_decision` to the JSON CLI. Use imported sample files initially, then connect the same loop to live capture. This establishes resumability before adding automated planning.
+The local investigation store, JSON `resume` and `changes` commands, and imported hex/classic-PCAP samples are implemented. The `capture-command` hook can execute a bounded local command that writes a capture to standard output. Next add transactional concurrent writing, controlled capture processes, automatic prediction checks, and derived-result invalidation.

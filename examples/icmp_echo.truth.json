@@ -1,0 +1,181 @@
+{
+  "capture_format": "pcap",
+  "linktype": 1,
+  "packet_count": 24,
+  "controlled_pair": [
+    "icmp_baseline_255.pcap",
+    "icmp_variant_256.pcap"
+  ],
+  "icmp_fields": {
+    "type": [
+      0,
+      1
+    ],
+    "code": [
+      1,
+      2
+    ],
+    "checksum": [
+      2,
+      4
+    ],
+    "identifier": [
+      4,
+      6
+    ],
+    "sequence": [
+      6,
+      8
+    ],
+    "payload": [
+      8,
+      null
+    ]
+  },
+  "cases": [
+    {
+      "type": 8,
+      "identifier": 4660,
+      "sequence": 0,
+      "payload_length": 0
+    },
+    {
+      "type": 0,
+      "identifier": 4660,
+      "sequence": 0,
+      "payload_length": 0
+    },
+    {
+      "type": 8,
+      "identifier": 4660,
+      "sequence": 1,
+      "payload_length": 1
+    },
+    {
+      "type": 0,
+      "identifier": 4660,
+      "sequence": 1,
+      "payload_length": 1
+    },
+    {
+      "type": 8,
+      "identifier": 4660,
+      "sequence": 2,
+      "payload_length": 2
+    },
+    {
+      "type": 0,
+      "identifier": 4660,
+      "sequence": 2,
+      "payload_length": 2
+    },
+    {
+      "type": 8,
+      "identifier": 4660,
+      "sequence": 7,
+      "payload_length": 3
+    },
+    {
+      "type": 0,
+      "identifier": 4660,
+      "sequence": 7,
+      "payload_length": 3
+    },
+    {
+      "type": 8,
+      "identifier": 4660,
+      "sequence": 255,
+      "payload_length": 4
+    },
+    {
+      "type": 0,
+      "identifier": 4660,
+      "sequence": 255,
+      "payload_length": 4
+    },
+    {
+      "type": 8,
+      "identifier": 4660,
+      "sequence": 256,
+      "payload_length": 4
+    },
+    {
+      "type": 0,
+      "identifier": 4660,
+      "sequence": 256,
+      "payload_length": 4
+    },
+    {
+      "type": 8,
+      "identifier": 9029,
+      "sequence": 257,
+      "payload_length": 6
+    },
+    {
+      "type": 0,
+      "identifier": 9029,
+      "sequence": 257,
+      "payload_length": 6
+    },
+    {
+      "type": 8,
+      "identifier": 9029,
+      "sequence": 513,
+      "payload_length": 0
+    },
+    {
+      "type": 0,
+      "identifier": 9029,
+      "sequence": 513,
+      "payload_length": 0
+    },
+    {
+      "type": 8,
+      "identifier": 9029,
+      "sequence": 1024,
+      "payload_length": 1
+    },
+    {
+      "type": 0,
+      "identifier": 9029,
+      "sequence": 1024,
+      "payload_length": 1
+    },
+    {
+      "type": 8,
+      "identifier": 9029,
+      "sequence": 4096,
+      "payload_length": 2
+    },
+    {
+      "type": 0,
+      "identifier": 9029,
+      "sequence": 4096,
+      "payload_length": 2
+    },
+    {
+      "type": 8,
+      "identifier": 9029,
+      "sequence": 32768,
+      "payload_length": 3
+    },
+    {
+      "type": 0,
+      "identifier": 9029,
+      "sequence": 32768,
+      "payload_length": 3
+    },
+    {
+      "type": 8,
+      "identifier": 9029,
+      "sequence": 65535,
+      "payload_length": 4
+    },
+    {
+      "type": 0,
+      "identifier": 9029,
+      "sequence": 65535,
+      "payload_length": 4
+    }
+  ]
+}

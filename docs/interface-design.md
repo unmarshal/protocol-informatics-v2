@@ -1,6 +1,6 @@
 # Agent and human interface design
 
-Status: proposal, October 2026. The current CLI only analyzes hex-encoded samples; the data model and interfaces below are not yet implemented.
+Status: partial implementation, October 2026. A JSON CLI and read-only HTML report now share the event-sourced investigation model. The rest of this document describes the planned agent tool server and deeper viewer.
 
 ## Principle
 
@@ -60,4 +60,4 @@ The viewer must allow a person to adjust a boundary or type, split or merge a cl
 
 ## First interface milestone
 
-Define stable observation and hypothesis schemas, then add `corpus_summary`, `list_observations`, `read_span`, and `explain_hypothesis` as JSON CLI operations. Build a read-only viewer using those same query functions before adding editing. This keeps the initial agent workflow useful and gives the human interface trustworthy navigation primitives.
+Stable IDs, versioned events, `observations` with pagination, `span` with exact byte offsets, `diff`, `resume`, and a read-only report are implemented. The next interface work is a richer corpus summary, hypothesis explanation, source-linked field overlays, and a tool server over the same operations.

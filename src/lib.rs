@@ -5,8 +5,12 @@
 
 mod alignment;
 mod input;
+pub mod pcap;
 mod profile;
+pub mod query;
+pub mod report;
+pub mod workflow;
 
 pub use alignment::{AlignError, AlignedPair, CpuAligner, PairwiseAligner};
 pub use input::{InputError, parse_hex_samples};
-pub use profile::{Analysis, ColumnStats, MultipleAlignment, analyze};
+pub use profile::{Analysis, ColumnStats, MultipleAlignment, analyze, analyze_best};

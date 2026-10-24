@@ -16,6 +16,7 @@ pub struct ColumnStats {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Analysis {
+    pub strategy: &'static str,
     pub reference_index: usize,
     pub alignment: MultipleAlignment,
     pub columns: Vec<ColumnStats>,
@@ -112,10 +113,85 @@ pub fn analyze(
         .map(|index| profile_column(rows.iter().map(|row| row[index])))
         .collect();
     Ok(Analysis {
+        strategy: "star_alignment",
         reference_index,
         alignment: MultipleAlignment { rows },
         columns,
     })
+}
+
+/// Compare position-preserving and sequence-based candidates using the
+/// observed column entropy (including gaps) plus a width penalty.
+pub fn analyze_best(
+    samples: &[Vec<u8>],
+    backend: &impl PairwiseAligner,
+) -> Result<Analysis, AlignError> {
+    let positional = position_preserving(samples)?;
+    match analyze(samples, backend) {
+        Ok(aligned) => {
+            if description_cost(&positional.alignment.rows)
+                <= description_cost(&aligned.alignment.rows)
+            {
+                Ok(positional)
+            } else {
+                Ok(aligned)
+            }
+        }
+        Err(AlignError::TooLarge) => Ok(positional),
+        Err(error) => Err(error),
+    }
+}
+
+fn position_preserving(samples: &[Vec<u8>]) -> Result<Analysis, AlignError> {
+    let width = samples
+        .iter()
+        .map(Vec::len)
+        .max()
+        .ok_or(AlignError::EmptyInput)?;
+    if samples.iter().any(Vec::is_empty) {
+        return Err(AlignError::EmptyInput);
+    }
+    let rows: Vec<Vec<Option<u8>>> = samples
+        .iter()
+        .map(|sample| {
+            sample
+                .iter()
+                .copied()
+                .map(Some)
+                .chain(std::iter::repeat_n(None, width - sample.len()))
+                .collect()
+        })
+        .collect();
+    let columns = (0..width)
+        .map(|index| profile_column(rows.iter().map(|row| row[index])))
+        .collect();
+    Ok(Analysis {
+        strategy: "position_preserving",
+        reference_index: samples
+            .iter()
+            .position(|sample| sample.len() == width)
+            .unwrap_or(0),
+        alignment: MultipleAlignment { rows },
+        columns,
+    })
+}
+
+fn description_cost(rows: &[Vec<Option<u8>>]) -> f64 {
+    let count = rows.len() as f64;
+    let width = rows[0].len();
+    let mut cost = width as f64 * 0.5;
+    for column in 0..width {
+        let mut counts = [0_usize; 257];
+        for row in rows {
+            let bucket = row[column].map_or(256, usize::from);
+            counts[bucket] += 1;
+        }
+        for frequency in counts.into_iter().filter(|value| *value > 0) {
+            let probability = frequency as f64 / count;
+            cost -= probability * probability.log2();
+        }
+    }
+    cost
 }
 
 fn profile_column(values: impl Iterator<Item = Option<u8>>) -> ColumnStats {
@@ -156,7 +232,8 @@ impl Analysis {
     /// A stable, dependency-free JSON representation for scripts and agents.
     pub fn to_json(&self) -> String {
         let mut output = format!(
-            "{{\"reference_index\":{},\"sample_count\":{},\"aligned_width\":{},\"columns\":[",
+            "{{\"strategy\":\"{}\",\"reference_index\":{},\"sample_count\":{},\"aligned_width\":{},\"columns\":[",
+            self.strategy,
             self.reference_index,
             self.alignment.rows.len(),
             self.columns.len()
@@ -222,5 +299,28 @@ mod tests {
         let analysis = analyze(&[vec![2], vec![1]], &CpuAligner).unwrap();
         assert_eq!(analysis.columns[0].consensus, Some(1));
         assert_eq!(analysis.columns[0].entropy_bits, 1.0);
+    }
+
+    #[test]
+    fn selects_positional_header_for_icmp_and_alignment_for_variable_middle() {
+        let icmp: Vec<Vec<u8>> =
+            crate::pcap::extract_icmp_messages(include_bytes!("../examples/icmp_echo.pcap"))
+                .unwrap()
+                .into_iter()
+                .map(|message| message.bytes)
+                .collect();
+        let result = analyze_best(&icmp, &CpuAligner).unwrap();
+        assert_eq!(result.strategy, "position_preserving");
+        for (row, message) in result.alignment.rows.iter().zip(&icmp) {
+            assert_eq!(
+                &row[..8],
+                &message[..8].iter().copied().map(Some).collect::<Vec<_>>()
+            );
+        }
+
+        let toy = vec![b"\xaa\x03ABC\xff".to_vec(), b"\xaa\x01D\xff".to_vec()];
+        let result = analyze_best(&toy, &CpuAligner).unwrap();
+        assert_eq!(result.strategy, "star_alignment");
+        assert_eq!(result.columns.last().unwrap().consensus, Some(0xff));
     }
 }
