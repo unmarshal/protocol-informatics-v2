@@ -13,7 +13,7 @@ use crate::pcap::{
 };
 use crate::reassembly::{SourceSpan, reassemble_tcp_segments};
 
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 6;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +102,20 @@ pub struct Tag {
     pub observation_id: String,
     pub label: String,
     pub phase: String,
+    #[serde(default)]
+    pub action_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowTag {
+    pub id: String,
+    pub key: String,
+    pub action_id: String,
+    pub start_ns: u64,
+    pub end_ns: u64,
+    pub phase: String,
+    pub label: String,
+    pub observation_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +140,8 @@ pub struct Action {
     pub trial_id: String,
     pub kind: String,
     pub detail: String,
+    #[serde(default)]
+    pub timestamp_ns: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,6 +215,10 @@ pub enum Event {
     ObservationTagged {
         tag: Tag,
     },
+    ObservationWindowTagged {
+        window: WindowTag,
+        tags: Vec<Tag>,
+    },
     ValueAnnotated {
         known_value: KnownValue,
     },
@@ -246,6 +266,12 @@ impl Event {
             Self::ObservationTagged { tag } => {
                 tag.id = format!("tag-{revision:06}");
             }
+            Self::ObservationWindowTagged { window, tags } => {
+                window.id = format!("window-{revision:06}");
+                for (index, tag) in tags.iter_mut().enumerate() {
+                    tag.id = format!("tag-{revision:06}-{index:04}");
+                }
+            }
             Self::ValueAnnotated { known_value } => {
                 known_value.id = format!("value-{revision:06}");
             }
@@ -280,6 +306,7 @@ pub struct State {
     pub observations: Vec<Observation>,
     pub actions: Vec<Action>,
     pub tags: Vec<Tag>,
+    pub window_tags: Vec<WindowTag>,
     pub known_values: Vec<KnownValue>,
     pub analyses: Vec<AnalysisRecord>,
     pub decisions: Vec<Decision>,
@@ -299,6 +326,7 @@ impl State {
             observations: Vec::new(),
             actions: Vec::new(),
             tags: Vec::new(),
+            window_tags: Vec::new(),
             known_values: Vec::new(),
             analyses: Vec::new(),
             decisions: Vec::new(),
@@ -500,11 +528,67 @@ impl State {
                 }
                 if tag.label.trim().is_empty()
                     || tag.phase.trim().is_empty()
+                    || tag.action_id.is_some()
                     || self.tags.iter().any(|t| t.id == tag.id)
                 {
                     return Err("empty or duplicate tag".into());
                 }
                 self.tags.push(tag.clone());
+            }
+            Event::ObservationWindowTagged { window, tags } => {
+                let action = self
+                    .actions
+                    .iter()
+                    .find(|action| action.id == window.action_id)
+                    .ok_or_else(|| format!("unknown action {}", window.action_id))?;
+                let start_ns = action
+                    .timestamp_ns
+                    .ok_or_else(|| format!("action {} has no timestamp", action.id))?;
+                if window.key.is_empty()
+                    || window.key.len() > 128
+                    || window.key.chars().any(char::is_control)
+                    || self
+                        .window_tags
+                        .iter()
+                        .any(|old| old.key == window.key || old.id == window.id)
+                    || window.start_ns != start_ns
+                    || window.end_ns <= start_ns
+                    || window.phase.trim().is_empty()
+                    || window.label.trim().is_empty()
+                    || tags.is_empty()
+                    || tags.len() > 1000
+                    || tags.len() != window.observation_ids.len()
+                {
+                    return Err("invalid or duplicate observation window".into());
+                }
+                let selected: Vec<_> = eligible_window_observations(
+                    self,
+                    action,
+                    window.end_ns,
+                    &window.phase,
+                    &window.label,
+                )?
+                .into_iter()
+                .map(|observation| observation.id.clone())
+                .collect();
+                if selected != window.observation_ids {
+                    return Err(
+                        "observation window selection changed; retry with the same key".into(),
+                    );
+                }
+                for (index, tag) in tags.iter().enumerate() {
+                    if tag.observation_id != selected[index]
+                        || tag.phase != window.phase
+                        || tag.label != window.label
+                        || tag.action_id.as_deref() != Some(window.action_id.as_str())
+                        || self.tags.iter().any(|old| old.id == tag.id)
+                        || tags[..index].iter().any(|old| old.id == tag.id)
+                    {
+                        return Err("invalid observation window tag".into());
+                    }
+                }
+                self.window_tags.push(window.clone());
+                self.tags.extend(tags.clone());
             }
             Event::ValueAnnotated { known_value } => {
                 if !self
@@ -571,6 +655,43 @@ impl State {
             Ok(())
         }
     }
+}
+
+pub fn eligible_window_observations<'a>(
+    state: &'a State,
+    action: &Action,
+    end_ns: u64,
+    phase: &str,
+    label: &str,
+) -> Result<Vec<&'a Observation>, String> {
+    let start_ns = action
+        .timestamp_ns
+        .ok_or_else(|| format!("action {} has no timestamp", action.id))?;
+    if end_ns <= start_ns {
+        return Err("window end must be after the action timestamp".into());
+    }
+    Ok(state
+        .observations
+        .iter()
+        .filter(|observation| {
+            observation
+                .timestamp_ns
+                .is_some_and(|timestamp| timestamp >= start_ns && timestamp < end_ns)
+        })
+        .filter(|observation| {
+            state.captures.iter().any(|capture| {
+                capture.id == observation.capture_id && capture.trial_id == action.trial_id
+            })
+        })
+        .filter(|observation| {
+            !state.tags.iter().any(|tag| {
+                tag.observation_id == observation.id
+                    && tag.action_id.as_deref() == Some(action.id.as_str())
+                    && tag.phase == phase
+                    && tag.label == label
+            })
+        })
+        .collect())
 }
 
 fn event_path(root: &Path) -> PathBuf {
@@ -736,6 +857,13 @@ fn now_ms() -> Result<u64, String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?;
     u64::try_from(duration.as_millis()).map_err(|error| error.to_string())
+}
+
+pub fn now_ns() -> Result<u64, String> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?;
+    u64::try_from(duration.as_nanos()).map_err(|error| error.to_string())
 }
 
 pub fn next_id(root: &Path, prefix: &str) -> Result<String, String> {

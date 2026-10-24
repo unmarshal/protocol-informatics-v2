@@ -61,7 +61,19 @@ cargo run -- capture-status /tmp/pi-icmp icmp-sweep-1
 
 The command runs locally with a 1–600000 ms deadline and a 32 MiB output limit. On Unix, timeout or overflow stops its process group. The key reserves one run in the event log: a concurrent call sees `running`; a successful retry returns the original capture; a failed or interrupted key never executes again. Use a new key for an intentional repeat. `capture-status` reports `running`, `interrupted`, `completed`, or `failed`. Command arguments and the working directory are represented by a SHA-256 fingerprint in the log rather than stored verbatim. This is a bounded acquisition hook, not yet a managed network capture service with explicit start and stop. Capture commands execute as the current user.
 
-The generated report is a self-contained, read-only HTML view with experiments, capture command runs, actions, hypotheses, decisions, candidate format groups, observation filters, tags, candidate fields, and a byte inspector. A unique shortest candidate that matches held-out values is outlined at its original byte offsets. Regenerate the report after new events. The append-only source record is `/tmp/pi-icmp/.pi/events.jsonl`; immutable raw captures and analysis JSON live under `/tmp/pi-icmp/.pi/artifacts/` with SHA-256 names. Keep the whole directory to preserve provenance.
+`mark` records a stimulus with the current UTC time in nanoseconds. For an imported trace or another synchronized clock, `mark-at` accepts the exact UTC nanosecond timestamp. After importing the capture, `tag-window` tags observations in the action's trial with capture timestamps in the half-open interval `[action time, end time)`. Its stable key makes retries safe, including concurrent retries; `window-status` retrieves the recorded selection. A new key after a later import tags only matching observations not already tagged with the same action, phase, and label. Each window is limited to 1000 observations; divide larger intervals. Clock synchronization matters for live captures. A reassembled TCP run uses its earliest contributing packet timestamp; use segment observations when a time boundary falls inside a run.
+
+```sh
+cargo run -- init /tmp/pi-timed 'Which packets followed the stimulus?'
+cargo run -- experiment /tmp/pi-timed 'Vary sequence' - 'Isolate the changed request'
+cargo run -- trial /tmp/pi-timed exp-000002 stimulus 'sequence 255'
+cargo run -- mark-at /tmp/pi-timed trial-000003 1700000004000000000 stimulus 'Set sequence to 255'
+cargo run -- import /tmp/pi-timed trial-000003 pcap-icmp examples/icmp_echo.pcap
+cargo run -- tag-window /tmp/pi-timed action-000004 1700000005000000000 stimulus 'sequence 255' sequence-255-window
+cargo run -- window-status /tmp/pi-timed sequence-255-window
+```
+
+The generated report is a self-contained, read-only HTML view with experiments, capture command runs, timestamped actions, tagged action windows, hypotheses, decisions, candidate format groups, observation filters, tags, candidate fields, and a byte inspector. A unique shortest candidate that matches held-out values is outlined at its original byte offsets. Regenerate the report after new events. The append-only source record is `/tmp/pi-icmp/.pi/events.jsonl`; immutable raw captures and analysis JSON live under `/tmp/pi-icmp/.pi/artifacts/` with SHA-256 names. Keep the whole directory to preserve provenance.
 
 ## Second format: DNS over UDP
 

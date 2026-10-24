@@ -80,6 +80,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
     <section class="panel"><h2>Hypotheses</h2><div id="hypotheses"></div></section>
     <section class="panel"><h2>Experiments and trials</h2><div id="experiments"></div></section>
     <section class="panel"><h2>Capture command runs</h2><div id="captureRuns"></div></section>
+    <section class="panel"><h2>Tagged action windows</h2><div id="tagWindows"></div></section>
     <section class="panel"><h2>Candidate format groups</h2><div id="clusters"></div></section>
     <section class="panel"><h2>Candidate fields</h2><div id="fieldCandidates"></div></section>
     <section class="panel"><h2>Analyses</h2><div id="analyses"></div></section>
@@ -125,7 +126,7 @@ for(const experiment of state.experiments) {
   for(const trial of state.trials.filter(x=>x.experiment_id===experiment.id)) {
     const captures=state.captures.filter(x=>x.trial_id===trial.id);
     row.append(node('div',trial.id+' · '+trial.role+' · '+trial.changed_factor+' · '+captures.length+' capture(s)','small'));
-    for(const action of state.actions.filter(x=>x.trial_id===trial.id)) row.append(node('div','↳ '+action.kind+': '+action.detail,'small muted'));
+    for(const action of state.actions.filter(x=>x.trial_id===trial.id)) row.append(node('div','↳ '+action.id+' · '+action.kind+': '+action.detail+(action.timestamp_ns===null?'':' · UTC ns '+action.timestamp_ns),'small muted'));
   }
   byId('experiments').append(row);
 }
@@ -137,6 +138,12 @@ for(const run of state.capture_runs) {
   byId('captureRuns').append(row);
 }
 if(!state.capture_runs.length) byId('captureRuns').append(node('div','No command runs recorded.','small muted'));
+for(const window of state.window_tags) {
+  const row=node('div','', 'row');
+  row.append(node('strong',window.id+' · '+window.key),node('div',window.phase+': '+window.label+' · '+window.observation_ids.length+' observation(s)','small'),node('div','Action '+window.action_id+' · UTC ns ['+window.start_ns+', '+window.end_ns+')','small muted'));
+  byId('tagWindows').append(row);
+}
+if(!state.window_tags.length) byId('tagWindows').append(node('div','No action windows tagged.','small muted'));
 if(state.cluster_report) {
   for(const cluster of state.cluster_report.clusters) {
     const row=node('div','', 'row');
@@ -207,7 +214,7 @@ function showDetail(observation) {
     for(const span of observation.source_spans) sources.append(node('div','Message ['+span.message_start+', '+span.message_end+') ← packet '+span.packet_index+' at file offset '+span.file_offset,'small muted'));
     detail.append(sources);
   }
-  for(const tag of tagsFor(observation.id)) detail.append(node('span',tag.phase+': '+tag.label,'pill'));
+  for(const tag of tagsFor(observation.id)) detail.append(node('span',tag.phase+': '+tag.label+(tag.action_id?' · '+tag.action_id:''),'pill'));
   for(const value of valuesFor(observation.id)) detail.append(node('span',value.variable+'='+value.value+' ('+value.set+')','pill'));
   const total=observation.bytes_hex.length/2, pageSize=256;
   const bytes=node('div','', 'bytes'); const navigation=node('div','', 'byte-nav small');

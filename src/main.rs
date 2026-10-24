@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use protocol_informatics_v2::workflow::{
     self, Action, AnalysisRecord, AnalysisScope, CaptureRun, CaptureRunStatus, Decision, Event,
-    Experiment, Hypothesis, KnownValue, Observation, Tag, Trial, ValueSet,
+    Experiment, Hypothesis, KnownValue, Observation, Tag, Trial, ValueSet, WindowTag,
 };
 use protocol_informatics_v2::{CpuAligner, analyze_best, parse_hex_samples};
 use serde::Serialize;
@@ -49,7 +49,10 @@ fn print_help() {
     );
     println!("  capture-status <dir> <key>           inspect a reserved capture command");
     println!("  mark <dir> <trial-id> <kind> <detail>");
+    println!("  mark-at <dir> <trial-id> <timestamp-ns> <kind> <detail>");
     println!("  tag <dir> <obs-id> <phase> <label>");
+    println!("  tag-window <dir> <action-id> <end-ns> <phase> <label> <key>");
+    println!("  window-status <dir> <key>             inspect a completed tag window");
     println!("  value <dir> <obs-id> <variable> <unsigned> <discovery|validation>");
     println!("  infer-value <dir> <variable>         find exact unsigned field candidates");
     println!(
@@ -333,6 +336,93 @@ fn capture_command(root: &Path, args: &[String]) -> Result<(), String> {
     print_json(&capture_run_view(&updated, run, None))
 }
 
+fn window_view(state: &workflow::State, window: &WindowTag, replayed: bool) -> serde_json::Value {
+    json!({"revision": state.revision, "window": window, "replayed": replayed})
+}
+
+fn tag_window(root: &Path, args: &[String]) -> Result<(), String> {
+    require_len(args, 7)?;
+    let action_id = &args[2];
+    let end_ns: u64 = args[3]
+        .parse()
+        .map_err(|_| "window end must be UTC nanoseconds as an unsigned integer".to_string())?;
+    let phase = &args[4];
+    let label = &args[5];
+    let key = &args[6];
+    if key.is_empty()
+        || key.len() > 128
+        || key.chars().any(char::is_control)
+        || phase.trim().is_empty()
+        || label.trim().is_empty()
+    {
+        return Err(
+            "window key, phase, and label must be nonempty; key has a 128-byte limit".into(),
+        );
+    }
+    let matches_request = |window: &WindowTag| {
+        &window.action_id == action_id
+            && window.end_ns == end_ns
+            && &window.phase == phase
+            && &window.label == label
+    };
+    let state = workflow::load(root)?;
+    if let Some(existing) = state.window_tags.iter().find(|window| &window.key == key) {
+        return if matches_request(existing) {
+            print_json(&window_view(&state, existing, true))
+        } else {
+            Err(format!(
+                "window key {key} was used with different arguments"
+            ))
+        };
+    }
+    let action = state
+        .actions
+        .iter()
+        .find(|action| &action.id == action_id)
+        .ok_or_else(|| format!("unknown action {action_id}"))?;
+    let selected = workflow::eligible_window_observations(&state, action, end_ns, phase, label)?;
+    if selected.is_empty() {
+        return Err("window has no new timestamped observations in the action's trial".into());
+    }
+    if selected.len() > 1000 {
+        return Err("window contains more than 1000 observations; use shorter intervals".into());
+    }
+    let observation_ids: Vec<String> = selected.iter().map(|item| item.id.clone()).collect();
+    let tags = observation_ids
+        .iter()
+        .map(|observation_id| Tag {
+            id: String::new(),
+            observation_id: observation_id.clone(),
+            phase: phase.clone(),
+            label: label.clone(),
+            action_id: Some(action_id.clone()),
+        })
+        .collect();
+    let window = WindowTag {
+        id: String::new(),
+        key: key.clone(),
+        action_id: action_id.clone(),
+        start_ns: action.timestamp_ns.expect("selection requires a timestamp"),
+        end_ns,
+        phase: phase.clone(),
+        label: label.clone(),
+        observation_ids,
+    };
+    let appended = workflow::append(root, Event::ObservationWindowTagged { window, tags });
+    let updated = workflow::load(root)?;
+    if let Some(existing) = updated.window_tags.iter().find(|window| &window.key == key) {
+        if matches_request(existing) {
+            return print_json(&window_view(&updated, existing, appended.is_err()));
+        }
+        return Err(format!(
+            "window key {key} was used with different arguments"
+        ));
+    }
+    Err(appended
+        .err()
+        .unwrap_or_else(|| "window event was not recorded".into()))
+}
+
 fn run_investigation_command(args: &[String]) -> Result<(), String> {
     let command = args[0].as_str();
     if args.len() < 2 {
@@ -430,6 +520,21 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 trial_id: args[2].clone(),
                 kind: args[3].clone(),
                 detail: args[4].clone(),
+                timestamp_ns: Some(workflow::now_ns()?),
+            };
+            print_json(&workflow::append(root, Event::ActionMarked { action })?)
+        }
+        "mark-at" => {
+            require_len(args, 6)?;
+            let timestamp_ns = args[3].parse().map_err(|_| {
+                "timestamp must be UTC nanoseconds as an unsigned integer".to_string()
+            })?;
+            let action = Action {
+                id: workflow::next_id(root, "action")?,
+                trial_id: args[2].clone(),
+                kind: args[4].clone(),
+                detail: args[5].clone(),
+                timestamp_ns: Some(timestamp_ns),
             };
             print_json(&workflow::append(root, Event::ActionMarked { action })?)
         }
@@ -440,8 +545,20 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 observation_id: args[2].clone(),
                 phase: args[3].clone(),
                 label: args[4].clone(),
+                action_id: None,
             };
             print_json(&workflow::append(root, Event::ObservationTagged { tag })?)
+        }
+        "tag-window" => tag_window(root, args),
+        "window-status" => {
+            require_len(args, 3)?;
+            let state = workflow::load(root)?;
+            let window = state
+                .window_tags
+                .iter()
+                .find(|window| window.key == args[2])
+                .ok_or_else(|| format!("unknown window key {}", args[2]))?;
+            print_json(&json!({"revision": state.revision, "window": window}))
         }
         "value" => {
             require_len(args, 6)?;
@@ -573,6 +690,7 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 "hypotheses": state.hypotheses, "experiments": state.experiments,
                 "trials": state.trials, "captures": state.captures,
                 "capture_runs": state.capture_runs,
+                "actions": state.actions, "window_tags": state.window_tags,
                 "observation_count": state.observations.len(), "tag_count": state.tags.len(),
                 "known_value_count": state.known_values.len(),
                 "analyses": state.analyses, "decisions": state.decisions}),

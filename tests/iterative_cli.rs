@@ -225,6 +225,148 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn agent_can_mark_a_stimulus_and_tag_its_capture_window_idempotently() {
+    let root = workspace();
+    let root_text = path(&root);
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/icmp_echo.pcap");
+    cli(&["init", root_text, "Which packets followed the stimulus?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Timed stimulus",
+        "-",
+        "Tag only matching packets",
+    ]);
+    let exp_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&[
+        "trial",
+        root_text,
+        exp_id,
+        "stimulus",
+        "sequence 255 interval",
+    ]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let other = cli(&["trial", root_text, exp_id, "control", "same timestamps"]);
+    let other_id = other["event"]["trial"]["id"].as_str().unwrap();
+    let start = "1700000004000000000";
+    let end = "1700000005000000000";
+    let marker = cli(&[
+        "mark-at",
+        root_text,
+        trial_id,
+        start,
+        "stimulus",
+        "Set sequence to 255",
+    ]);
+    let action_id = marker["event"]["action"]["id"].as_str().unwrap();
+    assert_eq!(
+        marker["event"]["action"]["timestamp_ns"],
+        start.parse::<u64>().unwrap()
+    );
+    cli(&["import", root_text, trial_id, "pcap-icmp", path(&fixture)]);
+    cli(&["import", root_text, other_id, "pcap-icmp", path(&fixture)]);
+    let (first, retry) = thread::scope(|scope| {
+        let one = scope.spawn(|| {
+            cli(&[
+                "tag-window",
+                root_text,
+                action_id,
+                end,
+                "stimulus",
+                "sequence 255",
+                "stimulus-window-once",
+            ])
+        });
+        let two = scope.spawn(|| {
+            cli(&[
+                "tag-window",
+                root_text,
+                action_id,
+                end,
+                "stimulus",
+                "sequence 255",
+                "stimulus-window-once",
+            ])
+        });
+        (one.join().unwrap(), two.join().unwrap())
+    });
+    assert_eq!(first["window"]["id"], retry["window"]["id"]);
+    assert_ne!(first["replayed"], retry["replayed"]);
+    assert_eq!(
+        first["window"]["observation_ids"],
+        serde_json::json!(["obs-000006-0008", "obs-000006-0009"])
+    );
+    let status = cli(&["window-status", root_text, "stimulus-window-once"]);
+    assert_eq!(status["window"]["id"], first["window"]["id"]);
+    assert_eq!(cli(&["resume", root_text])["tag_count"], 2);
+    let mismatched = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "tag-window",
+            root_text,
+            action_id,
+            end,
+            "control",
+            "sequence 255",
+            "stimulus-window-once",
+        ])
+        .output()
+        .unwrap();
+    assert!(!mismatched.status.success());
+    assert!(String::from_utf8_lossy(&mismatched.stderr).contains("different arguments"));
+    cli(&["import", root_text, trial_id, "pcap-icmp", path(&fixture)]);
+    let replay = cli(&[
+        "tag-window",
+        root_text,
+        action_id,
+        end,
+        "stimulus",
+        "sequence 255",
+        "stimulus-window-once",
+    ]);
+    assert_eq!(
+        replay["window"]["observation_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let later = cli(&[
+        "tag-window",
+        root_text,
+        action_id,
+        end,
+        "stimulus",
+        "sequence 255",
+        "later-capture-window",
+    ]);
+    assert_eq!(
+        later["window"]["observation_ids"],
+        serde_json::json!(["obs-000009-0008", "obs-000009-0009"])
+    );
+    assert_eq!(cli(&["resume", root_text])["tag_count"], 4);
+    let live_marker = cli(&[
+        "mark",
+        root_text,
+        trial_id,
+        "observation",
+        "Current clock marker",
+    ]);
+    assert!(
+        live_marker["event"]["action"]["timestamp_ns"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(cli(&["verify", root_text])["observations"], 72);
+    let report = root.join("timed-report.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("Tagged action windows"));
+    assert!(html.contains("stimulus-window-once"));
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn capture_timeout_records_failure_and_same_key_does_not_rerun() {
@@ -1251,7 +1393,7 @@ fn controlled_intervention_locates_checksum_candidate_on_new_packets() {
 }
 
 #[test]
-fn replays_v1_log_and_appends_v5_events() {
+fn replays_v1_log_and_appends_v6_events() {
     let root = workspace();
     let events = root.join(".pi/events.jsonl");
     fs::create_dir_all(events.parent().unwrap()).unwrap();
@@ -1265,7 +1407,7 @@ fn replays_v1_log_and_appends_v5_events() {
         "Old investigation"
     );
     let appended = cli(&["hypothesis", path(&root), "A new claim"]);
-    assert_eq!(appended["schema_version"], 5);
+    assert_eq!(appended["schema_version"], 6);
     assert_eq!(appended["revision"], 2);
     assert_eq!(
         cli(&["changes", path(&root), "0"])
