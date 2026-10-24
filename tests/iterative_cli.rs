@@ -183,6 +183,22 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     assert_eq!(summary["capture_runs"][0]["status"], "completed");
     assert_eq!(summary["observation_count"], 48);
     assert_eq!(summary["hypotheses"][0]["score"], 0.9);
+    let corpus = cli(&["summary", root_text]);
+    assert_eq!(corpus["schema_version"], 9);
+    assert_eq!(corpus["revision"], 13);
+    assert_eq!(corpus["counts"]["captures"], 2);
+    assert_eq!(corpus["counts"]["observations"], 48);
+    assert_eq!(corpus["counts"]["tagged_observations"], 2);
+    assert_eq!(corpus["counts"]["completed_capture_runs"], 1);
+    assert_eq!(corpus["formats"][0]["format"], "pcap-icmp");
+    assert_eq!(corpus["formats"][0]["observations"], 48);
+    assert_eq!(corpus["top_directions"].as_array().unwrap().len(), 2);
+    assert_eq!(corpus["recent_trials"][0]["observations"], 48);
+    assert!(corpus["timestamp_range_ns"].is_array());
+    let trials = cli(&["trials", root_text, "0", "1"]);
+    assert_eq!(trials["total"], 1);
+    assert_eq!(trials["order"], "newest_first");
+    assert_eq!(trials["trials"][0]["id"], "trial-000004");
     let page = cli(&["observations", root_text, "trial-000004", "8", "2"]);
     assert_eq!(page["total"], 48);
     assert_eq!(page["observations"].as_array().unwrap().len(), 2);
@@ -216,6 +232,8 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     assert!(html.contains("Which bytes carry the ICMP sequence?"));
     assert!(html.contains("obs-000006-0010"));
     assert!(html.contains("Capture command runs"));
+    assert!(html.contains("Corpus overview"));
+    assert!(html.contains("corpus_summary"));
     assert!(html.contains("repeat-icmp"));
 
     let invalid = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
@@ -1948,6 +1966,11 @@ fn agent_infers_a_field_with_held_out_committed_frames() {
     );
     assert_eq!(challenged["preferred_candidate_count"], 0);
     assert_eq!(cli(&["resume", root_text])["frame_known_value_count"], 6);
+    let corpus = cli(&["summary", root_text]);
+    assert_eq!(corpus["counts"]["observations"], 2);
+    assert_eq!(corpus["counts"]["frames"], 6);
+    assert_eq!(corpus["counts"]["frame_known_values"], 6);
+    assert_eq!(corpus["recent_trials"][0]["frames"], 3);
     cli(&[
         "frame-value",
         root_text,

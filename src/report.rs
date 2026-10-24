@@ -14,6 +14,8 @@ pub fn render(state: &State) -> String {
         .filter_map(|variable| crate::inference::infer_unsigned_field(state, variable).ok())
         .collect();
     let mut view = serde_json::to_value(state).expect("state is serializable");
+    view["corpus_summary"] = serde_json::to_value(crate::query::corpus_summary(state))
+        .expect("corpus summary is serializable");
     view["field_inferences"] =
         serde_json::to_value(inferences).expect("inferences are serializable");
     let frame_variables: BTreeSet<&str> = state
@@ -129,6 +131,8 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
 .byte-nav button { background:#243448; color:#e9eef5; border:1px solid #4a607a; border-radius:5px; padding:4px 8px; cursor:pointer }
 .byte-nav button:disabled { opacity:.4; cursor:default }
 .legend { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px }
+.bar-track { height:5px; background:#0e1622; border-radius:4px; overflow:hidden; margin:3px 0 8px }
+.bar-fill { height:100%; background:#79bce6 }
 @media(max-width:850px) { .layout { grid-template-columns:1fr } }
 </style>
 </head>
@@ -136,6 +140,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
 <header><div class="muted">Protocol Informatics v2 · investigation revision <span id="revision"></span></div><h1 id="question"></h1><div class="metrics" id="metrics"></div></header>
 <main class="layout">
   <div class="stack">
+    <section class="panel"><h2>Corpus overview</h2><div id="corpusSummary"></div></section>
     <section class="panel"><h2>Hypotheses</h2><div id="hypotheses"></div></section>
     <section class="panel"><h2>Experiments and trials</h2><div id="experiments"></div></section>
     <section class="panel"><h2>Capture command runs</h2><div id="captureRuns"></div></section>
@@ -179,9 +184,19 @@ const frameFieldOverlays = (state.frame_field_inferences||[]).flatMap(inference 
 });
 byId('revision').textContent=state.revision;
 byId('question').textContent=state.question;
-for(const [label,count] of [['Observations',state.observations.length],['Captures',state.captures.length],['Hypotheses',state.hypotheses.length],['Experiments',state.experiments.length]]) {
+for(const [label,count] of [['Observations',state.observations.length],['Captures',state.captures.length],['Frames',state.corpus_summary.counts.frames],['Trials',state.trials.length],['Hypotheses',state.hypotheses.length],['Experiments',state.experiments.length]]) {
   const box=node('div','', 'metric'); box.append(node('strong',String(count)),node('span',label)); byId('metrics').append(box);
 }
+const corpus=state.corpus_summary, lengths=corpus.observation_lengths_bytes;
+byId('corpusSummary').append(node('div',corpus.counts.observation_bytes+' observed bytes · '+corpus.counts.tagged_observations+'/'+corpus.counts.observations+' tagged observations · '+(corpus.counts.observations-corpus.missing_timestamp_observations)+' timestamped','small'));
+byId('corpusSummary').append(node('div','Message length (bytes): '+(lengths.min===null?'no observations':lengths.min+' min · '+lengths.median+' median · '+lengths.p90+' p90 · '+lengths.max+' max'),'small muted'));
+if(corpus.stream_gap_observations) byId('corpusSummary').append(node('div',corpus.stream_gap_observations+' TCP run(s) follow a sequence gap','small muted'));
+for(const format of corpus.formats) byId('corpusSummary').append(node('div',format.format+': '+format.observations+' observations from '+format.captures+' capture(s)','small'));
+for(const direction of corpus.top_directions.slice(0,8)) {
+  const row=node('div','', 'small'); row.append(node('span',direction.direction+' · '+direction.observations));
+  const track=node('div','', 'bar-track'), fill=node('div','', 'bar-fill'); fill.style.width=(corpus.counts.observations?100*direction.observations/corpus.counts.observations:0)+'%'; track.append(fill); row.append(track); byId('corpusSummary').append(row);
+}
+if(corpus.top_directions.length>8||corpus.directions_omitted) byId('corpusSummary').append(node('div','Additional directions: '+Math.max(0,corpus.top_directions.length-8)+' in the JSON summary, '+corpus.directions_omitted+' omitted ('+corpus.other_direction_observations+' observations)','small muted'));
 for(const h of state.hypotheses) {
   const row=node('div','', 'row'); row.append(node('strong',h.id+' · '+h.claim),node('div','Agent/analyst rating: '+(h.score===null?'unscored':h.score.toFixed(3))+' · evidence: '+h.evidence.length+' · counterexamples: '+h.counterexamples.length,'small muted')); byId('hypotheses').append(row);
 }

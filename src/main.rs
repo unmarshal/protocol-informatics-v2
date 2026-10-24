@@ -84,6 +84,8 @@ fn print_help() {
     println!("  cluster <dir> [trial-id|-] [respect|ignore]");
     println!("  analyze-cluster <dir> <cluster-id> [trial-id|-] [respect|ignore]");
     println!("  decide <dir> <decision> [evidence-ids]");
+    println!("  summary <dir>                      bounded corpus overview for agents");
+    println!("  trials <dir> [offset] [limit<=100]  page trial metadata newest first");
     println!("  resume <dir> | changes <dir> <revision> | report <dir> <html-file>");
     println!("  observations <dir> [trial-id|-] [offset] [limit<=100]");
     println!("  span <dir> <obs-id> <start> <end>    read half-open message byte span");
@@ -1050,6 +1052,26 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 "frame_known_value_count": state.frame_known_values.len(),
                 "analyses": state.analyses, "decisions": state.decisions}),
             )
+        }
+        "summary" => {
+            require_len(args, 2)?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::query::corpus_summary(&state))
+        }
+        "trials" => {
+            if args.len() > 4 {
+                return Err("expected optional offset and limit".into());
+            }
+            let offset = args.get(2).map_or(Ok(0), |value| {
+                value.parse().map_err(|_| "offset must be an integer")
+            })?;
+            let limit = args.get(3).map_or(Ok(50), |value| {
+                value.parse().map_err(|_| "limit must be an integer")
+            })?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::query::list_trials(
+                &state, offset, limit,
+            )?)
         }
         "observations" => {
             if args.len() > 5 {
