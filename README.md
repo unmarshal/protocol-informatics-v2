@@ -168,7 +168,29 @@ The candidate `[6, 8)` big-endian matches both held-out values. IPv6 parsing fol
 
 ## Standalone binary files
 
-`binary` imports one file as one observation, keeping original byte offsets. It accepts nonempty files up to 1 MiB. Multiple files can be imported into the same trial, and all the usual tagging, grouping, byte-span, comparison, alignment, and inference commands apply. This works without a file-format parser; it does not yet segment files into nested records.
+`binary` imports one file as one observation, keeping original byte offsets. It accepts nonempty files up to 1 MiB. Multiple files can be imported into the same trial, and all the usual tagging, grouping, byte-span, comparison, alignment, and inference commands apply.
+
+`probe-framing` tests a length-prefix boundary model on one binary or TCP-stream observation. Its parameters are the first record offset, the length field's offset within each record, the field width and byte order, whether the value counts the entire record or just its payload, and record alignment. It returns half-open record spans, length values, previews, source offsets or packet spans, and a specific status if parsing stops early. It does not modify the investigation. At most 256 records and 16 source spans per record are returned; `source_span_count` and `source_spans_truncated` expose the limit. Use paged `span` calls for exact bytes and provenance in a long record.
+
+`infer-framing` searches a bounded set of those models across two discovery observations or more in one trial. It requires each discovery observation to parse into at least two records with varying length values, then reports exact fits and counterexamples from a separate validation trial in the same experiment. Its search covers start offsets 0–8, length-field offsets 0–4, field widths 1/2/4, both byte orders where relevant, total/payload lengths, and alignments 1/2/4. It examines at most 16 observations per trial and 64 KiB per observation. A structural fit is a candidate, not proof that the bytes encode a length. Framed child observations are not yet persisted.
+
+```sh
+python3 examples/generate_records_fixture.py
+cargo run -- init /tmp/pi-records 'Where are record boundaries?'
+cargo run -- experiment /tmp/pi-records 'Vary payload lengths' - 'Length prefix predicts boundaries'
+cargo run -- trial /tmp/pi-records exp-000002 discovery 'two files'
+cargo run -- trial /tmp/pi-records exp-000002 validation 'two held-out files'
+cargo run -- import /tmp/pi-records trial-000003 binary examples/records_discovery_a.bin
+cargo run -- import /tmp/pi-records trial-000003 binary examples/records_discovery_b.bin
+cargo run -- import /tmp/pi-records trial-000004 binary examples/records_validation_a.bin
+cargo run -- import /tmp/pi-records trial-000004 binary examples/records_validation_b.bin
+cargo run -- infer-framing /tmp/pi-records trial-000003 trial-000004
+cargo run -- probe-framing /tmp/pi-records obs-000005-0000 4 1 2 big payload 2
+```
+
+The fixture has a four-byte preamble and three aligned records per file. Only one searched model fits both discovery files and both held-out files: a two-byte big-endian payload length at record offset 1, with two-byte alignment. The probe maps its first file's records to `[4, 8)`, `[8, 16)`, and `[16, 276)`.
+
+The [framing method](docs/framing-method.md) describes the evidence rule, counterexamples, and model families still to add.
 
 The WAV fixture generator makes four tiny PCM files with the same sample data and different sample rates. Python's `wave` reader and the system `file` command independently recognize the outputs.
 
@@ -201,7 +223,7 @@ Hex input has one extracted message per line; spaces and colons are allowed. Bla
 
 ## Current scope and next work
 
-Classic PCAP and pcapng ingestion currently support Ethernet with up to four VLAN tags, unfragmented IPv4 and IPv6, ICMP and ICMPv6 messages, UDP application payloads, individual TCP segment payloads, and contiguous TCP runs with per-span provenance. The pcapng reader accepts Enhanced Packet Blocks and rejects legacy packet blocks. VLAN tags are unwrapped for transport extraction but their IDs are not yet exposed as observation metadata. UDP extraction checks the declared datagram length but does not verify its checksum or parse its application payload. TCP extraction validates its data offset and excludes empty payloads; its reassembly does not identify application message boundaries or connection lifetimes. Binary files are one observation each, with a 1 MiB limit until the event store can reference large byte spans without copying them into events. It does not support file-format record boundaries or a dedicated network interface capture adapter. The HTML view is read-only and pages bytes in 256-byte chunks. Local event writers use file locks and assign IDs at commit time; the concurrent CLI test covers simultaneous hypotheses, imports, and keyed capture retries. Distributed coordination, a resumable live capture service, and interrupted event-write recovery remain open work. The fixtures test parsing, exact source offsets, ICMP checksums, and the alignment strategy against independent known answers.
+Classic PCAP and pcapng ingestion currently support Ethernet with up to four VLAN tags, unfragmented IPv4 and IPv6, ICMP and ICMPv6 messages, UDP application payloads, individual TCP segment payloads, and contiguous TCP runs with per-span provenance. The pcapng reader accepts Enhanced Packet Blocks and rejects legacy packet blocks. VLAN tags are unwrapped for transport extraction but their IDs are not yet exposed as observation metadata. UDP extraction checks the declared datagram length but does not verify its checksum or parse its application payload. TCP extraction validates its data offset and excludes empty payloads; its reassembly does not identify application message boundaries or connection lifetimes. Binary files are one observation each, with a 1 MiB limit until the event store can reference large byte spans without copying them into events. Length-prefix record boundaries can be probed and validated, but not yet committed as derived observations; other framing families remain open. A dedicated network interface capture adapter is also pending. The HTML view is read-only and pages bytes in 256-byte chunks. Local event writers use file locks and assign IDs at commit time; the concurrent CLI test covers simultaneous hypotheses, imports, and keyed capture retries. Distributed coordination, a resumable live capture service, and interrupted event-write recovery remain open work. The fixtures test parsing, exact source offsets, ICMP checksums, and the alignment strategy against independent known answers.
 
 The next inference step is to measure cluster stability across new captures, then test candidate lengths and request/response relations on held-out examples. See the [workflow](docs/iterative-workflow.md), [interface design](docs/interface-design.md), and [experiment lifecycle](docs/experiment-lifecycle.md) for the fuller direction. GPU acceleration can wait for representative CPU profiles.
 

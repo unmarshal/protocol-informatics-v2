@@ -63,6 +63,10 @@ fn print_help() {
     println!("  value <dir> <obs-id> <variable> <unsigned> <discovery|validation>");
     println!("  infer-value <dir> <variable>         find exact unsigned field candidates");
     println!(
+        "  probe-framing <dir> <obs-id> <start> <field-offset> <width> <big|little> <total|payload> <alignment>"
+    );
+    println!("  infer-framing <dir> <discovery-trial> <validation-trial>");
+    println!(
         "  infer-checksum <dir> <discovery-trial> <validation-trial> <baseline-trial> <variant-trial> <controlled-variable>"
     );
     println!("  analyze-investigation <dir> [trial-id]");
@@ -730,6 +734,33 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             let state = workflow::load(root)?;
             print_json(&protocol_informatics_v2::inference::infer_unsigned_field(
                 &state, &args[2],
+            )?)
+        }
+        "probe-framing" => {
+            require_len(args, 9)?;
+            let parse = |value: &str, name: &str| {
+                value
+                    .parse::<usize>()
+                    .map_err(|_| format!("{name} must be an unsigned integer"))
+            };
+            let config = protocol_informatics_v2::framing::FramingConfig {
+                start_offset: parse(&args[3], "start offset")?,
+                prefix_offset: parse(&args[4], "length field offset")?,
+                prefix_width: parse(&args[5], "length field width")?,
+                byte_order: protocol_informatics_v2::framing::ByteOrder::parse(&args[6])?,
+                length_mode: protocol_informatics_v2::framing::LengthMode::parse(&args[7])?,
+                alignment: parse(&args[8], "record alignment")?,
+            };
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::framing::probe_observation(
+                &state, &args[2], config,
+            )?)
+        }
+        "infer-framing" => {
+            require_len(args, 4)?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::framing::infer_length_prefix(
+                &state, &args[2], &args[3],
             )?)
         }
         "infer-checksum" => {

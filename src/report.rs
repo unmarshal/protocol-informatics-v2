@@ -27,6 +27,47 @@ pub fn render(state: &State) -> String {
             view["cluster_error"] = serde_json::Value::String(error);
         }
     }
+    let mut framing_inferences = Vec::new();
+    let mut framing_previews = Vec::new();
+    for experiment in state.experiments.iter().take(8) {
+        let discovery = state
+            .trials
+            .iter()
+            .find(|trial| trial.experiment_id == experiment.id && trial.role == "discovery");
+        let validation = state
+            .trials
+            .iter()
+            .find(|trial| trial.experiment_id == experiment.id && trial.role == "validation");
+        let (Some(discovery), Some(validation)) = (discovery, validation) else {
+            continue;
+        };
+        if let Ok(inference) =
+            crate::framing::infer_length_prefix(state, &discovery.id, &validation.id)
+        {
+            if inference.candidate_count == 1
+                && let Some(candidate) = inference.candidates.first()
+                && candidate.validation_matches == inference.validation_count
+                && let Some(observation) = state.observations.iter().find(|observation| {
+                    state.captures.iter().any(|capture| {
+                        capture.id == observation.capture_id && capture.trial_id == discovery.id
+                    })
+                })
+                && let Ok(probe) =
+                    crate::framing::probe_observation(state, &observation.id, candidate.config)
+            {
+                framing_previews.push(serde_json::json!({
+                    "experiment_id": experiment.id,
+                    "probe": probe,
+                }));
+            }
+            framing_inferences.push(serde_json::json!({
+                "experiment_id": experiment.id,
+                "inference": inference,
+            }));
+        }
+    }
+    view["framing_inferences"] = serde_json::Value::Array(framing_inferences);
+    view["framing_previews"] = serde_json::Value::Array(framing_previews);
     let data = serde_json::to_string(&view)
         .expect("state is serializable")
         .replace('<', "\\u003c")
@@ -66,6 +107,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
 .byte.changed { background:#75502c; color:#fff0c9 }
 .byte.candidate { outline:2px solid #5cd6ab; background:#174c43 }
 .byte.packet-start { box-shadow:inset 3px 0 #8bb8ff }
+.byte.record-start { border-left:3px solid #f0c674 }
 .byte-nav { display:flex; gap:10px; align-items:center; margin-top:12px }
 .byte-nav button { background:#243448; color:#e9eef5; border:1px solid #4a607a; border-radius:5px; padding:4px 8px; cursor:pointer }
 .byte-nav button:disabled { opacity:.4; cursor:default }
@@ -83,6 +125,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
     <section class="panel"><h2>Tagged action windows</h2><div id="tagWindows"></div></section>
     <section class="panel"><h2>Candidate format groups</h2><div id="clusters"></div></section>
     <section class="panel"><h2>Candidate fields</h2><div id="fieldCandidates"></div></section>
+    <section class="panel"><h2>Candidate record framing</h2><div id="framingCandidates"></div></section>
     <section class="panel"><h2>Analyses</h2><div id="analyses"></div></section>
     <section class="panel"><h2>Decisions</h2><div id="decisions"></div></section>
   </div>
@@ -99,6 +142,7 @@ const node = (tag, text, className) => { const el=document.createElement(tag); e
 const captureById = new Map(state.captures.map(x=>[x.id,x]));
 const trialById = new Map(state.trials.map(x=>[x.id,x]));
 const clusterById = new Map((state.cluster_report?.clusters||[]).map(x=>[x.id,x]));
+const framingPreviewById = new Map((state.framing_previews||[]).map(x=>[x.probe.observation_id,x.probe]));
 const tagsFor = id => state.tags.filter(x=>x.observation_id===id);
 const valuesFor = id => state.known_values.filter(x=>x.observation_id===id);
 const fieldOverlays = state.field_inferences.flatMap(inference => {
@@ -121,6 +165,22 @@ for(const inference of state.field_inferences) {
   byId('fieldCandidates').append(row);
 }
 if(!state.field_inferences.length) byId('fieldCandidates').append(node('div','Annotate controlled values to search for exact numeric fields.','small muted'));
+for(const item of state.framing_inferences||[]) {
+  const inference=item.inference, row=node('div','', 'row');
+  row.append(node('strong',item.experiment_id+' · '+inference.candidate_count+' model(s)'),node('div',inference.discovery_count+' discovery observation(s) · '+inference.validation_count+' held-out observation(s)','small muted'));
+  for(const candidate of inference.candidates.slice(0,5)) {
+    const config=candidate.config;
+    row.append(node('div','start '+config.start_offset+' · field +'+config.prefix_offset+' / '+config.prefix_width+' byte(s) '+config.byte_order+' · '+config.length_mode+' · align '+config.alignment+' · held-out '+candidate.validation_matches+'/'+inference.validation_count,'small'));
+    for(const failed of candidate.validation_counterexamples.slice(0,3)) row.append(node('div','↳ '+failed.observation_id+' stopped at '+failed.next_offset+' ('+failed.status+')','small muted'));
+  }
+  const preview=(state.framing_previews||[]).find(x=>x.experiment_id===item.experiment_id)?.probe;
+  if(preview) {
+    row.append(node('div','Proposed records in '+preview.observation_id+': '+preview.records.map(record=>'['+record.start+', '+record.end+')').join(' '),'small muted'));
+    const button=node('button','Inspect proposed records','small'); button.onclick=()=>{ const observation=state.observations.find(x=>x.id===preview.observation_id); if(observation) showDetail(observation); }; row.append(button);
+  }
+  byId('framingCandidates').append(row);
+}
+if(!(state.framing_inferences||[]).length) byId('framingCandidates').append(node('div','Use discovery and validation trials to test length-prefix record boundaries.','small muted'));
 for(const experiment of state.experiments) {
   const row=node('div','', 'row'); row.append(node('strong',experiment.id+' · '+experiment.question),node('div','Prediction: '+experiment.prediction,'small muted'));
   for(const trial of state.trials.filter(x=>x.experiment_id===experiment.id)) {
@@ -204,6 +264,7 @@ renderComparison();
 function showDetail(observation) {
   const capture=captureById.get(observation.capture_id);
   const trial=trialById.get(capture.trial_id);
+  const framing=framingPreviewById.get(observation.id);
   const detail=byId('detail'); detail.replaceChildren();
   detail.append(node('strong',observation.id),node('div','Trial '+trial.id+' ('+trial.role+') · capture '+capture.id,'small'));
   detail.append(node('div','Source '+capture.source+' · '+capture.format+' · source index '+observation.source_index+(observation.source_offset===null?'':' · file offset '+observation.source_offset),'small muted'));
@@ -216,6 +277,7 @@ function showDetail(observation) {
   }
   for(const tag of tagsFor(observation.id)) detail.append(node('span',tag.phase+': '+tag.label+(tag.action_id?' · '+tag.action_id:''),'pill'));
   for(const value of valuesFor(observation.id)) detail.append(node('span',value.variable+'='+value.value+' ('+value.set+')','pill'));
+  if(framing) detail.append(node('div','Candidate record spans: '+framing.records.map(record=>'['+record.start+', '+record.end+')').join(' '),'small muted'));
   const total=observation.bytes_hex.length/2, pageSize=256;
   const bytes=node('div','', 'bytes'); const navigation=node('div','', 'byte-nav small');
   const previous=node('button','Previous'), next=node('button','Next'), status=node('span','');
@@ -226,8 +288,9 @@ function showDetail(observation) {
       const overlay=fieldOverlays.find(field=>field.observationIds.has(observation.id)&&offset>=field.start&&offset<field.end);
       const source=observation.source_spans?.find(span=>offset>=span.message_start&&offset<span.message_end);
       const packetStart=source&&source.message_start===offset&&offset!==0;
-      const cell=node('span',observation.bytes_hex.slice(2*offset,2*offset+2),(overlay?'byte candidate':'byte')+(packetStart?' packet-start':''));
-      cell.title=(overlay?overlay.variable+' candidate ['+overlay.start+', '+overlay.end+')':'byte '+offset)+(source?' · packet '+source.packet_index+' · file offset '+(source.file_offset+offset-source.message_start):'');
+      const recordStart=framing?.records.find(record=>record.start===offset);
+      const cell=node('span',observation.bytes_hex.slice(2*offset,2*offset+2),(overlay?'byte candidate':'byte')+(packetStart?' packet-start':'')+(recordStart?' record-start':''));
+      cell.title=(overlay?overlay.variable+' candidate ['+overlay.start+', '+overlay.end+')':'byte '+offset)+(recordStart?' · proposed record '+recordStart.index:'')+(source?' · packet '+source.packet_index+' · file offset '+(source.file_offset+offset-source.message_start):'');
       bytes.append(cell);
     }
     status.textContent='Bytes ['+start+', '+end+') of '+total; previous.disabled=page===0; next.disabled=end>=total;
@@ -236,6 +299,7 @@ function showDetail(observation) {
   if(total>pageSize) { navigation.append(previous,status,next); detail.append(navigation); }
   detail.append(bytes); draw();
   if(observation.source_spans?.length>1) detail.append(node('div','Blue left edge marks the first byte contributed by another packet. Hover a byte for its source offset.','small muted legend'));
+  if(framing) detail.append(node('div','Gold left edge marks a proposed record boundary supported by the held-out framing check.','small muted legend'));
   detail.append(node('div','Green outline marks the unique shortest candidate matching held-out values. Longer encodings may also fit; boundaries and meaning need protocol-level confirmation.','small muted legend'));
 }
 function renderObservations() {

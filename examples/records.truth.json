@@ -1,0 +1,125 @@
+{
+  "preamble_hex": "50493221",
+  "cases": [
+    {
+      "file": "records_discovery_a.bin",
+      "length": 276,
+      "records": [
+        {
+          "start": 4,
+          "logical_end": 8,
+          "end": 8,
+          "length_field_start": 5,
+          "length": 1,
+          "kind": 160
+        },
+        {
+          "start": 8,
+          "logical_end": 15,
+          "end": 16,
+          "length_field_start": 9,
+          "length": 4,
+          "kind": 161
+        },
+        {
+          "start": 16,
+          "logical_end": 275,
+          "end": 276,
+          "length_field_start": 17,
+          "length": 256,
+          "kind": 162
+        }
+      ]
+    },
+    {
+      "file": "records_discovery_b.bin",
+      "length": 280,
+      "records": [
+        {
+          "start": 4,
+          "logical_end": 9,
+          "end": 10,
+          "length_field_start": 5,
+          "length": 2,
+          "kind": 160
+        },
+        {
+          "start": 10,
+          "logical_end": 20,
+          "end": 20,
+          "length_field_start": 11,
+          "length": 7,
+          "kind": 161
+        },
+        {
+          "start": 20,
+          "logical_end": 280,
+          "end": 280,
+          "length_field_start": 21,
+          "length": 257,
+          "kind": 162
+        }
+      ]
+    },
+    {
+      "file": "records_validation_a.bin",
+      "length": 282,
+      "records": [
+        {
+          "start": 4,
+          "logical_end": 10,
+          "end": 10,
+          "length_field_start": 5,
+          "length": 3,
+          "kind": 160
+        },
+        {
+          "start": 10,
+          "logical_end": 18,
+          "end": 18,
+          "length_field_start": 11,
+          "length": 5,
+          "kind": 161
+        },
+        {
+          "start": 18,
+          "logical_end": 281,
+          "end": 282,
+          "length_field_start": 19,
+          "length": 260,
+          "kind": 162
+        }
+      ]
+    },
+    {
+      "file": "records_validation_b.bin",
+      "length": 288,
+      "records": [
+        {
+          "start": 4,
+          "logical_end": 11,
+          "end": 12,
+          "length_field_start": 5,
+          "length": 4,
+          "kind": 160
+        },
+        {
+          "start": 12,
+          "logical_end": 24,
+          "end": 24,
+          "length_field_start": 13,
+          "length": 9,
+          "kind": 161
+        },
+        {
+          "start": 24,
+          "logical_end": 288,
+          "end": 288,
+          "length_field_start": 25,
+          "length": 261,
+          "kind": 162
+        }
+      ]
+    }
+  ]
+}

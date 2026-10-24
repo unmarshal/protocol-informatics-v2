@@ -1383,6 +1383,29 @@ fn agent_can_infer_across_tcp_segments_and_trace_each_byte() {
     assert_eq!(sources[0]["message_end"], 5);
     assert_eq!(sources[1]["message_start"], 5);
     assert_eq!(sources[1]["message_end"], 6);
+    // A single-record structural fit is deliberately weak evidence, but its
+    // proposed boundary must still trace through both source packets.
+    let framing = cli(&[
+        "probe-framing",
+        root_text,
+        "obs-000004-0000",
+        "0",
+        "6",
+        "1",
+        "big",
+        "payload",
+        "1",
+    ]);
+    assert_eq!(framing["status"], "complete");
+    assert_eq!(framing["record_count"], 1);
+    assert_eq!(framing["records"][0]["source_file_offset"], Value::Null);
+    assert_eq!(
+        framing["records"][0]["source_spans"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     for source in sources {
         let offset = source["file_offset"].as_u64().unwrap() as usize;
         let start = source["message_start"].as_u64().unwrap() as usize;
@@ -1527,6 +1550,136 @@ fn agent_can_infer_a_field_from_standalone_binary_files() {
         .output()
         .unwrap();
     assert!(!rejected_empty.status.success());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn agent_can_probe_and_validate_length_prefixed_binary_records() {
+    let root = workspace();
+    let root_text = path(&root);
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let truth: Value =
+        serde_json::from_str(include_str!("../examples/records.truth.json")).unwrap();
+    cli(&["init", root_text, "Where do binary records begin and end?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Vary record payload lengths",
+        "-",
+        "Length prefix predicts every boundary",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let discovery = cli(&["trial", root_text, experiment_id, "discovery", "two files"]);
+    let validation = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "validation",
+        "two held-out files",
+    ]);
+    let discovery_id = discovery["event"]["trial"]["id"].as_str().unwrap();
+    let validation_id = validation["event"]["trial"]["id"].as_str().unwrap();
+    let mut observation_ids = Vec::new();
+    for (index, trial_id) in [discovery_id, discovery_id, validation_id, validation_id]
+        .into_iter()
+        .enumerate()
+    {
+        let filename = truth["cases"][index]["file"].as_str().unwrap();
+        let imported = cli(&[
+            "import",
+            root_text,
+            trial_id,
+            "binary",
+            path(&examples.join(filename)),
+        ]);
+        observation_ids.push(
+            imported["event"]["observations"][0]["id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    let first = &observation_ids[0];
+    let probe = cli(&[
+        "probe-framing",
+        root_text,
+        first,
+        "4",
+        "1",
+        "2",
+        "big",
+        "payload",
+        "2",
+    ]);
+    assert_eq!(probe["status"], "complete");
+    assert_eq!(probe["record_count"], 3);
+    assert_eq!(probe["remaining_bytes"], 0);
+    for (record, expected) in probe["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(truth["cases"][0]["records"].as_array().unwrap())
+    {
+        assert_eq!(record["start"], expected["start"]);
+        assert_eq!(record["logical_end"], expected["logical_end"]);
+        assert_eq!(record["end"], expected["end"]);
+        assert_eq!(record["length_field_start"], expected["length_field_start"]);
+        assert_eq!(record["length_value"], expected["length"]);
+        assert_eq!(record["source_file_offset"], expected["start"]);
+    }
+    let wrong = cli(&[
+        "probe-framing",
+        root_text,
+        first,
+        "4",
+        "1",
+        "2",
+        "little",
+        "payload",
+        "2",
+    ]);
+    assert_ne!(wrong["status"], "complete");
+    assert!(wrong["record_count"].as_u64().unwrap() < 3);
+
+    let inferred = cli(&["infer-framing", root_text, discovery_id, validation_id]);
+    assert_eq!(inferred["discovery_count"], 2);
+    assert_eq!(inferred["validation_count"], 2);
+    assert_eq!(inferred["candidate_count"], 1);
+    assert_eq!(inferred["candidates"][0]["config"], probe["config"]);
+    assert_eq!(inferred["candidates"][0]["validation_matches"], 2);
+    let report = root.join("framing-report.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(&report).unwrap();
+    assert!(html.contains("Candidate record framing"));
+    assert!(html.contains("framing_previews"));
+    assert!(html.contains("framing_inferences"));
+
+    let mut corrupted = fs::read(examples.join("records_validation_a.bin")).unwrap();
+    corrupted[5] = 0xff;
+    let corrupted_path = root.join("corrupted-validation.bin");
+    fs::write(&corrupted_path, corrupted).unwrap();
+    let corrupted_import = cli(&[
+        "import",
+        root_text,
+        validation_id,
+        "binary",
+        path(&corrupted_path),
+    ]);
+    let corrupted_id = corrupted_import["event"]["observations"][0]["id"]
+        .as_str()
+        .unwrap();
+    let challenged = cli(&["infer-framing", root_text, discovery_id, validation_id]);
+    assert_eq!(challenged["validation_count"], 3);
+    assert_eq!(challenged["candidates"][0]["validation_matches"], 2);
+    assert_eq!(
+        challenged["candidates"][0]["validation_counterexamples"][0]["observation_id"],
+        corrupted_id
+    );
+    assert_eq!(
+        challenged["candidates"][0]["validation_counterexamples"][0]["status"],
+        "truncated_record"
+    );
+    assert_eq!(cli(&["verify", root_text])["observations"], 5);
     fs::remove_dir_all(root).unwrap();
 }
 
