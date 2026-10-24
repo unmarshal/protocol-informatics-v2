@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use protocol_informatics_v2::{
-    checksum, clustering, exchanges, framing, inference, query, tlv, varint, workflow,
+    checksum, clustering, delimiter, exchanges, framing, inference, query, tlv, varint, workflow,
 };
 use rmcp::{
     ServerHandler, ServiceExt,
@@ -138,6 +138,13 @@ struct VariableInput {
 struct TrialPairInput {
     discovery_trial_id: String,
     validation_trial_id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct DelimiterProbeInput {
+    observation_id: String,
+    start_offset: usize,
+    delimiter_hex: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -436,6 +443,39 @@ impl InvestigationServer {
         Parameters(input): Parameters<TrialPairInput>,
     ) -> Result<CallToolResult, String> {
         Self::json(framing::infer_length_prefix(
+            &self.load()?,
+            &input.discovery_trial_id,
+            &input.validation_trial_id,
+        )?)
+    }
+
+    #[tool(
+        description = "Probe one candidate delimiter-terminated record layout with exact byte and source spans.",
+        annotations(read_only_hint = true)
+    )]
+    fn probe_delimiter(
+        &self,
+        Parameters(input): Parameters<DelimiterProbeInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(delimiter::probe_observation(
+            &self.load()?,
+            &input.observation_id,
+            delimiter::DelimiterConfig {
+                start_offset: input.start_offset,
+                delimiter_hex: input.delimiter_hex,
+            },
+        )?)
+    }
+
+    #[tool(
+        description = "Test suffix-derived delimiter candidates on distinct trials and report held-out counterexamples.",
+        annotations(read_only_hint = true)
+    )]
+    fn infer_delimiter(
+        &self,
+        Parameters(input): Parameters<TrialPairInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(delimiter::infer_delimiter(
             &self.load()?,
             &input.discovery_trial_id,
             &input.validation_trial_id,

@@ -3808,3 +3808,137 @@ fn agent_can_validate_exchange_bytes_on_distinct_trials_and_inspect_counterexamp
     assert!(html.contains("held_out_varying_equal_bytes_v1"));
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn held_out_delimiter_inference_rejects_strict_crlf_on_lf_records() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&["init", root_text, "How are records terminated?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Test delimiter changes",
+        "-",
+        "A byte terminator persists on held-out records",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let discovery = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "discovery",
+        "CRLF records",
+    ]);
+    let discovery_id = discovery["event"]["trial"]["id"].as_str().unwrap();
+    let validation = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "validation",
+        "CRLF and LF records",
+    ]);
+    let validation_id = validation["event"]["trial"]["id"].as_str().unwrap();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let truth: Value =
+        serde_json::from_slice(&fs::read(fixtures.join("delimiter.truth.json")).unwrap()).unwrap();
+    let mut observation_ids = Vec::new();
+    for (trial_id, filename) in [
+        (discovery_id, "delimiter_discovery_a.bin"),
+        (discovery_id, "delimiter_discovery_b.bin"),
+        (validation_id, "delimiter_validation_a.bin"),
+        (validation_id, "delimiter_validation_b.bin"),
+    ] {
+        let imported = cli(&[
+            "import",
+            root_text,
+            trial_id,
+            "binary",
+            path(&fixtures.join(filename)),
+        ]);
+        observation_ids.push(
+            imported["event"]["observations"][0]["id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    let probe = cli(&[
+        "probe-delimiter",
+        root_text,
+        &observation_ids[0],
+        "0",
+        "0D0A",
+    ]);
+    assert_eq!(probe["status"], "complete");
+    assert_eq!(probe["config"]["delimiter_hex"], "0d0a");
+    assert_eq!(probe["record_count"], 3);
+    for (actual, expected) in probe["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(truth["cases"][0]["records"].as_array().unwrap())
+    {
+        assert_eq!(actual["start"], expected["start"]);
+        assert_eq!(actual["payload_end"], expected["payload_end"]);
+        assert_eq!(actual["end"], expected["end"]);
+        assert_eq!(actual["source_file_offset"], expected["start"]);
+    }
+    let lf_probe = cli(&["probe-delimiter", root_text, &observation_ids[3], "0", "0a"]);
+    assert_eq!(lf_probe["status"], "complete");
+    for (actual, expected) in lf_probe["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(truth["cases"][3]["records"].as_array().unwrap())
+    {
+        assert_eq!(actual["start"], expected["start"]);
+        assert_eq!(actual["payload_end"], expected["payload_end"]);
+        assert_eq!(actual["end"], expected["end"]);
+    }
+    let inferred = cli(&["infer-delimiter", root_text, discovery_id, validation_id]);
+    assert_eq!(inferred["discovery_count"], 2);
+    assert_eq!(inferred["validation_count"], 2);
+    let candidates = inferred["candidates"].as_array().unwrap();
+    let lf = candidates
+        .iter()
+        .find(|candidate| {
+            candidate["config"]["start_offset"] == 0 && candidate["config"]["delimiter_hex"] == "0a"
+        })
+        .unwrap();
+    assert_eq!(lf["validation_matches"], 2);
+    let crlf = candidates
+        .iter()
+        .find(|candidate| {
+            candidate["config"]["start_offset"] == 0
+                && candidate["config"]["delimiter_hex"] == "0d0a"
+        })
+        .unwrap();
+    assert_eq!(crlf["validation_matches"], 1);
+    assert_eq!(
+        crlf["validation_counterexamples"][0]["observation_id"],
+        observation_ids[3]
+    );
+    let report = root.join("delimiter-report.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("Candidate delimiter records"));
+    assert!(!html.contains("\"delimiter_inferences\":[]"));
+    assert!(html.contains("delimiterCandidates"));
+    let unfinished = cli(&[
+        "import",
+        root_text,
+        validation_id,
+        "binary",
+        path(&fixtures.join("delimiter_unterminated.bin")),
+    ]);
+    let unfinished_id = unfinished["event"]["observations"][0]["id"]
+        .as_str()
+        .unwrap();
+    let incomplete = cli(&["probe-delimiter", root_text, unfinished_id, "0", "0d0a"]);
+    assert_eq!(incomplete["status"], "unterminated_record");
+    assert_eq!(incomplete["record_count"], 2);
+    assert_eq!(incomplete["next_offset"], 10);
+    assert_eq!(incomplete["remaining_bytes"], 4);
+    assert_eq!(cli(&["verify", root_text])["observations"], 5);
+    fs::remove_dir_all(root).unwrap();
+}

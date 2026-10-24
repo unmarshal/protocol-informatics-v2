@@ -127,6 +127,8 @@ pub fn render(state: &State) -> String {
     let mut tlv_inferences = Vec::new();
     let mut varint_inferences = Vec::new();
     let mut varint_previews = Vec::new();
+    let mut delimiter_inferences = Vec::new();
+    let mut delimiter_previews = Vec::new();
     for experiment in state.experiments.iter().take(8) {
         let discovery = state
             .trials
@@ -199,12 +201,44 @@ pub fn render(state: &State) -> String {
                 "inference": inference,
             }));
         }
+        if let Ok(inference) =
+            crate::delimiter::infer_delimiter(state, &discovery.id, &validation.id)
+            && inference.candidate_count > 0
+        {
+            if inference.fully_validated_candidate_count == 1
+                && let Some(candidate) = inference
+                    .candidates
+                    .iter()
+                    .find(|candidate| candidate.validation_matches == inference.validation_count)
+                && let Some(observation) = state.observations.iter().find(|observation| {
+                    state.captures.iter().any(|capture| {
+                        capture.id == observation.capture_id && capture.trial_id == discovery.id
+                    })
+                })
+                && let Ok(probe) = crate::delimiter::probe_observation(
+                    state,
+                    &observation.id,
+                    candidate.config.clone(),
+                )
+            {
+                delimiter_previews.push(serde_json::json!({
+                    "experiment_id": experiment.id,
+                    "probe": probe,
+                }));
+            }
+            delimiter_inferences.push(serde_json::json!({
+                "experiment_id": experiment.id,
+                "inference": inference,
+            }));
+        }
     }
     view["framing_inferences"] = serde_json::Value::Array(framing_inferences);
     view["framing_previews"] = serde_json::Value::Array(framing_previews);
     view["tlv_inferences"] = serde_json::Value::Array(tlv_inferences);
     view["varint_inferences"] = serde_json::Value::Array(varint_inferences);
     view["varint_previews"] = serde_json::Value::Array(varint_previews);
+    view["delimiter_inferences"] = serde_json::Value::Array(delimiter_inferences);
+    view["delimiter_previews"] = serde_json::Value::Array(delimiter_previews);
     let data = serde_json::to_string(&view)
         .expect("state is serializable")
         .replace('<', "\\u003c")
@@ -272,6 +306,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
     <section class="panel"><h2>Candidate record framing</h2><div id="framingCandidates"></div></section>
     <section class="panel"><h2>Candidate typed records</h2><div id="tlvCandidates"></div></section>
     <section class="panel"><h2>Candidate variable-length records</h2><div id="varintCandidates"></div></section>
+    <section class="panel"><h2>Candidate delimiter records</h2><div id="delimiterCandidates"></div></section>
     <section class="panel"><h2>Committed frames</h2><div id="committedFrames"></div></section>
     <section class="panel"><h2>Frame fields</h2><div id="frameFields"></div></section>
     <section class="panel"><h2>Analyses</h2><div id="analyses"></div></section>
@@ -380,6 +415,21 @@ for(const item of state.varint_inferences||[]) {
   byId('varintCandidates').append(row);
 }
 if(!(state.varint_inferences||[]).length) byId('varintCandidates').append(node('div','Cross a varint width boundary in discovery trials to test this model.','small muted'));
+for(const item of state.delimiter_inferences||[]) {
+  const inference=item.inference, row=node('div','', 'row');
+  row.append(node('strong',item.experiment_id+' · '+inference.candidate_count+' delimiter model(s)'),node('div',inference.discovery_count+' discovery · '+inference.validation_count+' held-out observations · '+inference.fully_validated_candidate_count+' fully validated','small muted'));
+  for(const candidate of inference.candidates.slice(0,5)) {
+    row.append(node('div','start '+candidate.config.start_offset+' · delimiter 0x'+candidate.config.delimiter_hex+' · '+candidate.discovery_records+' discovery records · held-out '+candidate.validation_matches+'/'+inference.validation_count,'small'));
+    for(const failed of candidate.validation_counterexamples.slice(0,3)) row.append(node('div','↳ '+failed.observation_id+' stopped at '+failed.next_offset+' ('+failed.status+')','small muted'));
+  }
+  const preview=(state.delimiter_previews||[]).find(x=>x.experiment_id===item.experiment_id)?.probe;
+  if(preview) {
+    row.append(node('div','Proposed records in '+preview.observation_id+': '+preview.records.map(record=>'['+record.start+', '+record.payload_end+') payload, ['+record.payload_end+', '+record.end+') delimiter').join(' '),'small muted'));
+    const button=node('button','Inspect source bytes','small'); button.onclick=()=>{const observation=state.observations.find(x=>x.id===preview.observation_id); if(observation) showDetail(observation);}; row.append(button);
+  }
+  byId('delimiterCandidates').append(row);
+}
+if(!(state.delimiter_inferences||[]).length) byId('delimiterCandidates').append(node('div','Probe or infer short terminators across controlled trials.','small muted'));
 for(const run of committedRuns) {
   const row=node('div','', 'row');
   const model=run.id.startsWith('varint-') ? 'unsigned LEB128 '+run.config.length_mode+' length · field +'+run.config.field_offset : run.config.prefix_width+' byte '+run.config.byte_order+' '+run.config.length_mode+' length';

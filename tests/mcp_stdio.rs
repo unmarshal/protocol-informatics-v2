@@ -373,8 +373,95 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
         tlv["candidates"][0]["validation_elements_with_seen_types"],
         6
     );
+    let delimiter_experiment = client.tool(
+        "create_experiment",
+        json!({"question":"Which delimiter survives changed line endings?","prediction":"LF validates both held-out files."}),
+    );
+    let delimiter_experiment_id = delimiter_experiment["event"]["experiment"]["id"]
+        .as_str()
+        .unwrap();
+    let delimiter_discovery = client.tool(
+        "create_trial",
+        json!({"experiment_id":delimiter_experiment_id,"role":"discovery","changed_factor":"CRLF records"}),
+    );
+    let delimiter_discovery_id = delimiter_discovery["event"]["trial"]["id"]
+        .as_str()
+        .unwrap();
+    let delimiter_validation = client.tool(
+        "create_trial",
+        json!({"experiment_id":delimiter_experiment_id,"role":"validation","changed_factor":"CRLF and LF records"}),
+    );
+    let delimiter_validation_id = delimiter_validation["event"]["trial"]["id"]
+        .as_str()
+        .unwrap();
+    let mut first_delimiter_observation = String::new();
+    for (trial_id, key, filename) in [
+        (
+            delimiter_discovery_id,
+            "mcp-delimiter-d1",
+            "delimiter_discovery_a.bin",
+        ),
+        (
+            delimiter_discovery_id,
+            "mcp-delimiter-d2",
+            "delimiter_discovery_b.bin",
+        ),
+        (
+            delimiter_validation_id,
+            "mcp-delimiter-v1",
+            "delimiter_validation_a.bin",
+        ),
+        (
+            delimiter_validation_id,
+            "mcp-delimiter-v2",
+            "delimiter_validation_b.bin",
+        ),
+    ] {
+        let capture = client.tool(
+            "capture_step",
+            json!({"trial_id":trial_id,"kind":"fixture","detail":filename,"phase":"stimulus","label":"delimiter sample","step_key":key,"format":"binary","timeout_ms":5000,"command":["/bin/cat",fixtures.join(filename).to_str().unwrap()]}),
+        );
+        if first_delimiter_observation.is_empty() {
+            first_delimiter_observation = capture["first_observation_ids"][0]
+                .as_str()
+                .unwrap()
+                .to_owned();
+        }
+    }
+    let delimiter_probe = client.tool(
+        "probe_delimiter",
+        json!({"observation_id":first_delimiter_observation,"start_offset":0,"delimiter_hex":"0d0a"}),
+    );
+    assert_eq!(delimiter_probe["status"], "complete");
+    assert_eq!(delimiter_probe["record_count"], 3);
+    let delimiter_result = client.tool(
+        "infer_delimiter",
+        json!({"discovery_trial_id":delimiter_discovery_id,"validation_trial_id":delimiter_validation_id}),
+    );
+    assert!(
+        delimiter_result["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| {
+                candidate["config"]["start_offset"] == 0
+                    && candidate["config"]["delimiter_hex"] == "0a"
+                    && candidate["validation_matches"] == 2
+            })
+    );
+    assert!(
+        delimiter_result["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| {
+                candidate["config"]["start_offset"] == 0
+                    && candidate["config"]["delimiter_hex"] == "0d0a"
+                    && candidate["validation_matches"] == 1
+            })
+    );
     let verification = client.tool("verify", json!({}));
-    assert_eq!(verification["captures"], 4);
+    assert_eq!(verification["captures"], 8);
     client.stop();
     fs::remove_dir_all(root).unwrap();
 }

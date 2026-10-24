@@ -218,7 +218,11 @@ fn probe_bytes(bytes: &[u8], config: FramingConfig) -> CoreProbe {
     }
 }
 
-fn clipped_spans(observation: &Observation, start: usize, end: usize) -> Vec<SourceSpan> {
+pub(crate) fn clipped_spans(
+    observation: &Observation,
+    start: usize,
+    end: usize,
+) -> Vec<SourceSpan> {
     observation
         .source_spans
         .iter()
@@ -339,7 +343,7 @@ pub(crate) fn trial_observations<'a>(
         .collect();
     if selected.is_empty() || selected.len() > MAX_INFERENCE_OBSERVATIONS {
         return Err(format!(
-            "trial {trial_id} needs 1 to {MAX_INFERENCE_OBSERVATIONS} observations for framing inference"
+            "trial {trial_id} needs 1 to {MAX_INFERENCE_OBSERVATIONS} observations for structural inference"
         ));
     }
     if selected
@@ -347,7 +351,7 @@ pub(crate) fn trial_observations<'a>(
         .any(|observation| observation.bytes_hex.len() / 2 > MAX_INFERENCE_BYTES)
     {
         return Err(format!(
-            "framing inference supports at most {MAX_INFERENCE_BYTES} bytes per observation"
+            "structural inference supports at most {MAX_INFERENCE_BYTES} bytes per observation"
         ));
     }
     Ok(selected)

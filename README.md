@@ -190,6 +190,8 @@ The candidate `[6, 8)` big-endian matches both held-out values. IPv6 parsing fol
 
 `probe-varint` tests unsigned LEB128 length prefixes with a variable number of encoded bytes. `infer-varint` searches candidate record starts, prefix offsets, length modes, and alignments; it requires a multibyte prefix in discovery and reports every discovery fit with held-out counterexamples. `commit-varint` persists a complete interpretation with retry-safe keys and stable frame IDs. Paged `frames`, `frame-span`, `frame-value`, and `infer-frame-value` work on these derived records. See [the varint method](docs/varint-method.md) and the independent four-file fixture in `examples/varint_*.bin`.
 
+`probe-delimiter` tests a 1–4-byte record terminator and reports payload and terminator spans with source provenance. `infer-delimiter` searches suffix-derived terminators and start offsets across discovery observations, then reports held-out matches and counterexamples. The `examples/delimiter_*.bin` fixture includes CRLF discovery records and an LF-only validation observation that rejects the strict CRLF model. See [the delimiter method](docs/delimiter-method.md). The report shows candidate delimiters and proposed spans; delimiter frames are not yet committed.
+
 `commit-framing` records a complete model with at least two records for one observation. Its caller-supplied key makes retries safe; a different model cannot reuse the key. Commit-time frame IDs and half-open offsets persist in the event log, and replay checks them against the original observation. `framing-status` and paged `frames` expose the result; `frame-span` reads up to 4096 bytes per call in frame-relative coordinates, with the parent observation offsets and exact source-file or TCP packet provenance. Frames form a separate derived layer, so they are not silently counted as raw observations by clustering or alignment. The HTML report shows committed boundaries alongside proposed ones.
 
 `frame-value` attaches a controlled unsigned value to a committed frame as discovery or validation evidence. `infer-frame-value` runs the same exact-match search as `infer-value`, using frame-relative logical bytes (excluding alignment padding) and returning frame IDs for held-out counterexamples. At least three discovery frames with two distinct values are required. Discovery and validation frames must come from separate captures; the result lists those capture IDs. A later annotation of the same variable on the same frame supersedes the earlier one in the materialized state, while both events remain in the log. The HTML report shows frame field candidates and highlights a unique shortest validated candidate in the parent observation.
@@ -235,6 +237,23 @@ cargo run -- frame-span /tmp/pi-varint frame-000009-0002 0 3
 
 Use the actual frame IDs returned by `commit-varint`; they depend on the investigation revision. This run stores the byte boundaries and checks them against the original observation during event replay.
 
+To compare CRLF and LF terminators, generate the delimiter fixtures and import the two discovery files into one trial and the two validation files into another. Use the observation ID returned by import for an explicit probe.
+
+```sh
+python3 examples/generate_delimiter_fixture.py
+cargo run -- init /tmp/pi-delimiter 'Where do records end?'
+cargo run -- experiment /tmp/pi-delimiter 'Change line endings' - 'A terminator predicts record boundaries'
+cargo run -- trial /tmp/pi-delimiter exp-000002 discovery 'CRLF records'
+cargo run -- trial /tmp/pi-delimiter exp-000002 validation 'CRLF and LF records'
+cargo run -- import /tmp/pi-delimiter trial-000003 binary examples/delimiter_discovery_a.bin
+cargo run -- import /tmp/pi-delimiter trial-000003 binary examples/delimiter_discovery_b.bin
+cargo run -- import /tmp/pi-delimiter trial-000004 binary examples/delimiter_validation_a.bin
+cargo run -- import /tmp/pi-delimiter trial-000004 binary examples/delimiter_validation_b.bin
+cargo run -- infer-delimiter /tmp/pi-delimiter trial-000003 trial-000004
+cargo run -- probe-delimiter /tmp/pi-delimiter obs-000005-0000 0 0d0a
+cargo run -- report /tmp/pi-delimiter /tmp/pi-delimiter-report.html
+```
+
 The [framing method](docs/framing-method.md) describes the evidence rule, counterexamples, and model families still to add.
 
 The WAV fixture generator makes four tiny PCM files with the same sample data and different sample rates. Python's `wave` reader and the system `file` command independently recognize the outputs.
@@ -268,9 +287,9 @@ Hex input has one extracted message per line; spaces and colons are allowed. Bla
 
 ## Current scope and next work
 
-Classic PCAP and pcapng ingestion currently support Ethernet with up to four VLAN tags, unfragmented IPv4 and IPv6, ICMP and ICMPv6 messages, UDP application payloads, individual TCP segment payloads, and contiguous TCP runs with per-span provenance. The pcapng reader accepts Enhanced Packet Blocks and rejects legacy packet blocks. VLAN tags are unwrapped for transport extraction but their IDs are not yet exposed as observation metadata. UDP extraction checks the declared datagram length but does not verify its checksum or parse its application payload. TCP extraction validates its data offset and excludes empty payloads; its reassembly does not identify application message boundaries or connection lifetimes. Binary files are one observation each, with a 1 MiB limit until the event store can reference large byte spans without copying them into events. Length-prefix record boundaries can be probed, validated, and committed as a separate derived layer; other framing families remain open. A dedicated network interface capture adapter is also pending. The HTML view is read-only and pages bytes in 256-byte chunks. Local event writers use file locks and assign IDs at commit time; the concurrent CLI test covers simultaneous hypotheses, imports, and keyed capture retries. Explicit final-line recovery is available after an interrupted write; distributed coordination, a resumable live capture service, and broader transaction recovery remain open work. The fixtures test parsing, exact source offsets, ICMP checksums, and the alignment strategy against independent known answers.
+Classic PCAP and pcapng ingestion currently support Ethernet with up to four VLAN tags, unfragmented IPv4 and IPv6, ICMP and ICMPv6 messages, UDP application payloads, individual TCP segment payloads, and contiguous TCP runs with per-span provenance. The pcapng reader accepts Enhanced Packet Blocks and rejects legacy packet blocks. VLAN tags are unwrapped for transport extraction but their IDs are not yet exposed as observation metadata. UDP extraction checks the declared datagram length but does not verify its checksum or parse its application payload. TCP extraction validates its data offset and excludes empty payloads; its reassembly does not identify application message boundaries or connection lifetimes. Binary files are one observation each, with a 1 MiB limit until the event store can reference large byte spans without copying them into events. Length-prefix and unsigned LEB128 record boundaries can be probed, validated, and committed as a separate derived layer. Typed length-value and delimiter-terminated records can be probed and checked on held-out captures; committing those models remains open. A dedicated network interface capture adapter is also pending. The HTML view is read-only and pages bytes in 256-byte chunks. Local event writers use file locks and assign IDs at commit time; the concurrent CLI test covers simultaneous hypotheses, imports, and keyed capture retries. Explicit final-line recovery is available after an interrupted write; distributed coordination, a resumable live capture service, and broader transaction recovery remain open work. The fixtures test parsing, exact source offsets, ICMP checksums, and the alignment strategy against independent known answers.
 
-Next work includes richer exchange correlation, candidate lengths across more framing families, group stability across independent capture settings, and a dedicated network capture adapter. See the [workflow](docs/iterative-workflow.md), [interface design](docs/interface-design.md), and [experiment lifecycle](docs/experiment-lifecycle.md) for the fuller direction. GPU acceleration can wait for representative CPU profiles.
+Next work includes richer exchange correlation, candidate boundaries across more framing families, group stability across independent capture settings, and a dedicated network capture adapter. See the [workflow](docs/iterative-workflow.md), [interface design](docs/interface-design.md), and [experiment lifecycle](docs/experiment-lifecycle.md) for the fuller direction. GPU acceleration can wait for representative CPU profiles.
 
 ## Licensing
 

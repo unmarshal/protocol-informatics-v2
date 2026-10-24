@@ -87,6 +87,8 @@ fn print_help() {
         "  probe-framing <dir> <obs-id> <start> <field-offset> <width> <big|little> <total|payload> <alignment>"
     );
     println!("  infer-framing <dir> <discovery-trial> <validation-trial>");
+    println!("  probe-delimiter <dir> <obs-id> <start> <delimiter-hex>");
+    println!("  infer-delimiter <dir> <discovery-trial> <validation-trial>");
     println!(
         "  probe-tlv <dir> <obs-id> <start> <type-width> <length-width> <big|little> <total|payload> <alignment>"
     );
@@ -1279,6 +1281,28 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             let state = workflow::load(root)?;
             print_json(&protocol_informatics_v2::inference::infer_unsigned_field(
                 &state, &args[2],
+            )?)
+        }
+        "probe-delimiter" => {
+            require_len(args, 5)?;
+            let start_offset: usize = args[3]
+                .parse()
+                .map_err(|_| "start offset must be an unsigned integer".to_string())?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::delimiter::probe_observation(
+                &state,
+                &args[2],
+                protocol_informatics_v2::delimiter::DelimiterConfig {
+                    start_offset,
+                    delimiter_hex: args[4].clone(),
+                },
+            )?)
+        }
+        "infer-delimiter" => {
+            require_len(args, 4)?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::delimiter::infer_delimiter(
+                &state, &args[2], &args[3],
             )?)
         }
         "frame-value" => {
