@@ -1,5 +1,6 @@
 //! Bounded, stable navigation over a replayed investigation state.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -392,7 +393,7 @@ pub struct ObservationPage<'a> {
     pub observations: Vec<ObservationPreview<'a>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ObservationSearch {
     pub trial_id: Option<String>,

@@ -18,6 +18,8 @@ use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+mod mcp;
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -37,12 +39,17 @@ fn run() -> Result<(), String> {
     if args[0] == "analyze" {
         return run_standalone_analysis(&args[1..]);
     }
+    if args[0] == "mcp-stdio" {
+        require_len(&args, 2)?;
+        return mcp::serve(Path::new(&args[1]));
+    }
     run_investigation_command(&args)
 }
 
 fn print_help() {
     println!("Protocol Informatics v2\n");
     println!("  analyze <hex-file> [--json]          one-shot alignment");
+    println!("  mcp-stdio <dir>                     serve investigation tools over MCP stdio");
     println!("  init <dir> <question>                create investigation");
     println!("  hypothesis <dir> <claim>             add hypothesis");
     println!("  evaluate <dir> <hyp-id> <score> <evidence-ids> <counterexample-ids>");
