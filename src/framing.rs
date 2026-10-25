@@ -83,7 +83,7 @@ impl FramingConfig {
         self.prefix_offset + self.prefix_width
     }
 
-    fn boundary_rule(self) -> FramingBoundaryRule {
+    pub(crate) fn boundary_rule(self) -> FramingBoundaryRule {
         FramingBoundaryRule {
             start_offset: self.start_offset,
             prefix_offset: self.prefix_offset,

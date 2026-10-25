@@ -206,6 +206,7 @@ pub fn render(root: &Path, state: &State) -> String {
     let mut varint_previews = Vec::new();
     let mut delimiter_inferences = Vec::new();
     let mut delimiter_previews = Vec::new();
+    let mut frame_crc32_inferences = Vec::new();
     let mut trial_reviews = Vec::new();
     for experiment in state.experiments.iter().take(8) {
         let discovery = state
@@ -346,6 +347,32 @@ pub fn render(root: &Path, state: &State) -> String {
                 "inference": inference,
             }));
         }
+        let run_keys_for_trial = |trial_id: &str| -> Vec<String> {
+            state
+                .framing_runs
+                .iter()
+                .filter(|run| {
+                    state.observations.iter().any(|observation| {
+                        observation.id == run.observation_id
+                            && state.captures.iter().any(|capture| {
+                                capture.id == observation.capture_id && capture.trial_id == trial_id
+                            })
+                    })
+                })
+                .map(|run| run.key.clone())
+                .collect()
+        };
+        let discovery_keys = run_keys_for_trial(&discovery.id);
+        let validation_keys = run_keys_for_trial(&validation.id);
+        if let Ok(inference) =
+            crate::frame_crc32::infer_frame_crc32(state, &discovery_keys, &validation_keys)
+            && inference.candidate_count > 0
+        {
+            frame_crc32_inferences.push(serde_json::json!({
+                "experiment_id": experiment.id,
+                "inference": inference,
+            }));
+        }
     }
     view["framing_inferences"] = serde_json::Value::Array(framing_inferences);
     view["framing_previews"] = serde_json::Value::Array(framing_previews);
@@ -356,6 +383,7 @@ pub fn render(root: &Path, state: &State) -> String {
     view["varint_previews"] = serde_json::Value::Array(varint_previews);
     view["delimiter_inferences"] = serde_json::Value::Array(delimiter_inferences);
     view["delimiter_previews"] = serde_json::Value::Array(delimiter_previews);
+    view["frame_crc32_inferences"] = serde_json::Value::Array(frame_crc32_inferences);
     view["trial_reviews"] = serde_json::to_value(trial_reviews).expect("reviews are serializable");
     let data = serde_json::to_string(&view)
         .expect("state is serializable")
@@ -436,6 +464,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
     <section class="panel"><h2>Candidate delimiter records</h2><div id="delimiterCandidates"></div></section>
     <section class="panel"><h2>Committed frames</h2><div id="committedFrames"></div></section>
     <section class="panel"><h2>Frame fields</h2><div id="frameFields"></div></section>
+    <section class="panel"><h2>Frame CRC32 candidates</h2><div id="frameCrc32"></div></section>
     <section class="panel"><h2>Analyses</h2><div id="analyses"></div></section>
     <section class="panel"><h2>Decisions</h2><div id="decisions"></div></section>
   </div>
@@ -601,6 +630,20 @@ for(const inference of state.frame_field_inferences||[]) {
 }
 for(const failure of state.frame_field_errors||[]) byId('frameFields').append(node('div',failure.variable+': '+failure.error,'small muted'));
 if(!(state.frame_field_inferences||[]).length&&!(state.frame_field_errors||[]).length) byId('frameFields').append(node('div','Annotate committed frames with controlled values to locate fields inside records.','small muted'));
+for(const item of state.frame_crc32_inferences||[]) {
+  const inference=item.inference, row=node('div','', 'row');
+  row.append(node('strong',item.experiment_id+' · '+inference.candidate_count+' CRC32 coverage candidate(s)'),node('div',inference.discovery_frame_count+' frames from '+inference.discovery_capture_count+' discovery captures · '+inference.validation_frame_count+' held-out frames','small muted'));
+  for(const candidate of inference.candidates.slice(0,5)) {
+    row.append(node('div','CRC32 of logical frame bytes ['+candidate.coverage_start+', end−4), stored in last four bytes '+candidate.stored_byte_order+' · held-out '+candidate.validation_matches+'/'+candidate.validation_total,'small'));
+    for(const frameId of candidate.first_validation_counterexample_frame_ids.slice(0,3)) {
+      const button=node('button','↳ '+frameId+' contradicts this coverage','small');
+      button.onclick=()=>{const parent=frameById.get(frameId)?.run.observation_id;const observation=state.observations.find(value=>value.id===parent);if(observation) showDetail(observation);};
+      row.append(button);
+    }
+  }
+  byId('frameCrc32').append(row);
+}
+if(!(state.frame_crc32_inferences||[]).length) byId('frameCrc32').append(node('div','Commit the same framing rule on separate discovery and validation captures to test a trailing IEEE CRC32.','small muted'));
 for(const experiment of state.experiments) {
   const row=node('div','', 'row'); row.append(node('strong',experiment.id+' · '+experiment.question),node('div','Prediction: '+experiment.prediction,'small muted'));
   for(const trial of state.trials.filter(x=>x.experiment_id===experiment.id)) {

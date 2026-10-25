@@ -203,6 +203,16 @@ cargo run -- commit-framing /tmp/pi-png obs-000005-0000 8 0 4 big payload 1 png-
 cargo run -- report /tmp/pi-png /tmp/pi-png-report.html
 ```
 
+After confirming the chunk boundaries, commit the same model for the second discovery file and held-out file, then test a trailing CRC32 hypothesis over the derived frames:
+
+```sh
+cargo run -- commit-framing /tmp/pi-png obs-000006-0000 8 0 4 big payload 1 png-chunks-d2 8
+cargo run -- commit-framing /tmp/pi-png obs-000007-0000 8 0 4 big payload 1 png-chunks-heldout 8
+cargo run -- infer-frame-crc32 /tmp/pi-png png-chunks-v1,png-chunks-d2 png-chunks-heldout
+```
+
+The [frame CRC32 method](docs/frame-crc32-method.md) gives the exact coverage and counterexample rule.
+
 The first run reports two distinct boundary rules and recommends crossing a length value of 65,536. Add the supplied follow-up files to the same trials and infer again:
 
 ```sh

@@ -369,6 +369,30 @@ fn riff_chunks_use_little_endian_lengths_and_even_byte_padding() {
     let first_frame_id = committed["run"]["records"][0]["id"].as_str().unwrap();
     let header = cli(&["frame-span", root_text, first_frame_id, "0", "8"]);
     assert_eq!(header["bytes_hex"], "666d742010000000");
+    for (observation_id, key) in observation_ids[1..]
+        .iter()
+        .zip(["riff-chunks-discovery-b", "riff-chunks-validation"])
+    {
+        cli(&[
+            "commit-framing",
+            root_text,
+            observation_id,
+            "12",
+            "4",
+            "4",
+            "little",
+            "payload",
+            "2",
+            key,
+        ]);
+    }
+    let crc = cli(&[
+        "infer-frame-crc32",
+        root_text,
+        "riff-chunks-discovery-a,riff-chunks-discovery-b",
+        "riff-chunks-validation",
+    ]);
+    assert_eq!(crc["candidate_count"], 0);
     let report = root.join("riff-report.html");
     cli(&["report", root_text, path(&report)]);
     let html = fs::read_to_string(report).unwrap();
@@ -419,6 +443,150 @@ fn riff_chunks_use_little_endian_lengths_and_even_byte_padding() {
         65536
     );
     assert_eq!(cli(&["verify", root_text])["observations"], 5);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn committed_png_frames_support_held_out_crc32_and_a_counterexample() {
+    let root = workspace();
+    let root_text = path(&root);
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let truth: Value =
+        serde_json::from_slice(&fs::read(examples.join("png_chunks.truth.json")).unwrap()).unwrap();
+    cli(&["init", root_text, "Do PNG chunks have a trailing CRC32?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Vary PNG chunk data",
+        "-",
+        "CRC32 of type and data predicts trailing four bytes",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let discovery = cli(&["trial", root_text, experiment_id, "discovery", "two files"]);
+    let discovery_id = discovery["event"]["trial"]["id"].as_str().unwrap();
+    let validation = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "validation",
+        "third file",
+    ]);
+    let validation_id = validation["event"]["trial"]["id"].as_str().unwrap();
+    let keys = ["crc-png-d1", "crc-png-d2", "crc-png-v1"];
+    for (index, file) in truth["files"].as_array().unwrap().iter().enumerate() {
+        let trial_id = if index < 2 {
+            discovery_id
+        } else {
+            validation_id
+        };
+        let source = examples.join(file["file"].as_str().unwrap());
+        let imported = cli(&["import", root_text, trial_id, "binary", path(&source)]);
+        let observation_id = imported["event"]["observations"][0]["id"].as_str().unwrap();
+        cli(&[
+            "commit-framing",
+            root_text,
+            observation_id,
+            "8",
+            "0",
+            "4",
+            "big",
+            "payload",
+            "1",
+            keys[index],
+            "8",
+        ]);
+    }
+    let inferred = cli(&[
+        "infer-frame-crc32",
+        root_text,
+        "crc-png-d1,crc-png-d2",
+        "crc-png-v1",
+    ]);
+    assert_eq!(inferred["method"], "crc32_ieee_suffix_v1");
+    assert_eq!(inferred["discovery_capture_count"], 2);
+    assert_eq!(inferred["discovery_frame_count"], 8);
+    assert_eq!(inferred["validation_frame_count"], 4);
+    assert!(
+        inferred["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| {
+                candidate["coverage_start"] == 4
+                    && candidate["stored_byte_order"] == "big_endian"
+                    && candidate["validation_matches"] == 4
+                    && candidate["validation_counterexample_count"] == 0
+            })
+    );
+    let self_validation = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["infer-frame-crc32", root_text, "crc-png-d1", "crc-png-d1"])
+        .output()
+        .unwrap();
+    assert!(!self_validation.status.success());
+    assert!(String::from_utf8_lossy(&self_validation.stderr).contains("disjoint"));
+
+    let report = root.join("png-crc32-report.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("Frame CRC32 candidates"));
+    assert!(html.contains("crc32_ieee_suffix_v1"));
+
+    let mut corrupted = fs::read(examples.join("png_chunk_validation.png")).unwrap();
+    let second_chunk_end = truth["files"][2]["chunks"][1]["end"].as_u64().unwrap() as usize;
+    corrupted[second_chunk_end - 1] ^= 1;
+    let corrupt_path = root.join("corrupted-crc.png");
+    fs::write(&corrupt_path, corrupted).unwrap();
+    let negative_trial = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "validation_corrupt",
+        "one CRC byte flipped",
+    ]);
+    let negative_trial_id = negative_trial["event"]["trial"]["id"].as_str().unwrap();
+    let imported = cli(&[
+        "import",
+        root_text,
+        negative_trial_id,
+        "binary",
+        path(&corrupt_path),
+    ]);
+    let negative_observation = imported["event"]["observations"][0]["id"].as_str().unwrap();
+    let negative_run = cli(&[
+        "commit-framing",
+        root_text,
+        negative_observation,
+        "8",
+        "0",
+        "4",
+        "big",
+        "payload",
+        "1",
+        "crc-png-corrupt",
+        "8",
+    ]);
+    let contradicted_frame_id = negative_run["run"]["records"][1]["id"].as_str().unwrap();
+    let challenged = cli(&[
+        "infer-frame-crc32",
+        root_text,
+        "crc-png-d1,crc-png-d2",
+        "crc-png-corrupt",
+    ]);
+    let candidate = challenged["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| {
+            candidate["coverage_start"] == 4 && candidate["stored_byte_order"] == "big_endian"
+        })
+        .unwrap();
+    assert_eq!(candidate["validation_matches"], 3);
+    assert_eq!(candidate["validation_counterexample_count"], 1);
+    assert_eq!(
+        candidate["first_validation_counterexample_frame_ids"][0],
+        contradicted_frame_id
+    );
+    assert_eq!(cli(&["verify", root_text])["observations"], 4);
     fs::remove_dir_all(root).unwrap();
 }
 

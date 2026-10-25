@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use protocol_informatics_v2::{
-    checksum, clustering, delimiter, exchanges, frame_alignment, framing, inference, query, review,
-    tlv, varint, workflow,
+    checksum, clustering, delimiter, exchanges, frame_alignment, frame_crc32, framing, inference,
+    query, review, tlv, varint, workflow,
 };
 use rmcp::{
     ServerHandler, ServiceExt,
@@ -316,6 +316,12 @@ struct FrameValueInput {
     value: String,
     /// Discovery or validation.
     set: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct FrameCrc32Input {
+    discovery_run_keys: Vec<String>,
+    validation_run_keys: Vec<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1086,6 +1092,21 @@ impl InvestigationServer {
         Self::json(inference::infer_frame_unsigned_field(
             &self.load()?,
             &input.variable,
+        )?)
+    }
+
+    #[tool(
+        description = "Test IEEE CRC32 in the last four logical bytes of committed fixed-width frames, searching bounded coverage starts on independent discovery captures and a held-out trial.",
+        annotations(read_only_hint = true)
+    )]
+    fn infer_frame_crc32(
+        &self,
+        Parameters(input): Parameters<FrameCrc32Input>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(frame_crc32::infer_frame_crc32(
+            &self.load()?,
+            &input.discovery_run_keys,
+            &input.validation_run_keys,
         )?)
     }
 

@@ -83,6 +83,7 @@ fn print_help() {
     println!(
         "  infer-frame-value <dir> <variable>   search logical frame bytes with held-out checks"
     );
+    println!("  infer-frame-crc32 <dir> <discovery-run-keys-csv> <validation-run-keys-csv>");
     println!(
         "  probe-framing <dir> <obs-id> <start> <field-offset> <width> <big|little> <total|payload> <alignment> [length-adjustment]"
     );
@@ -1440,6 +1441,15 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             print_json(
                 &protocol_informatics_v2::inference::infer_frame_unsigned_field(&state, &args[2])?,
             )
+        }
+        "infer-frame-crc32" => {
+            require_len(args, 4)?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::frame_crc32::infer_frame_crc32(
+                &state,
+                &ids(&args[2]),
+                &ids(&args[3]),
+            )?)
         }
         "probe-framing" => {
             if args.len() < 9 || args.len() > 10 {

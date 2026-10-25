@@ -127,8 +127,9 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 53);
+    assert_eq!(names.len(), 54);
     assert!(names.contains(&"infer_chunk_framing"));
+    assert!(names.contains(&"infer_frame_crc32"));
     assert!(names.contains(&"activity"));
     assert!(names.contains(&"frame_runs"));
     assert!(names.contains(&"cluster_frames"));
@@ -744,6 +745,7 @@ fn agent_can_infer_and_commit_png_chunks_over_mcp() {
     let validation_id = validation["event"]["trial"]["id"].as_str().unwrap();
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
     let mut first_observation_id = String::new();
+    let mut other_observation_ids = Vec::new();
     for (trial_id, filename, step_key) in [
         (discovery_id, "png_chunk_discovery_a.png", "png-d1"),
         (discovery_id, "png_chunk_discovery_b.png", "png-d2"),
@@ -761,6 +763,13 @@ fn agent_can_infer_and_commit_png_chunks_over_mcp() {
                 .as_str()
                 .unwrap()
                 .to_owned();
+        } else {
+            other_observation_ids.push(
+                captured["first_observation_ids"][0]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            );
         }
     }
     let inferred = client.tool(
@@ -794,6 +803,33 @@ fn agent_can_infer_and_commit_png_chunks_over_mcp() {
     let committed = client.tool("commit_framing", committed_config);
     assert_eq!(committed["run"]["records"].as_array().unwrap().len(), 4);
     assert_eq!(committed["run"]["config"]["length_adjustment"], 8);
+    for (observation_id, key) in other_observation_ids
+        .iter()
+        .zip(["mcp-png-d2", "mcp-png-v1"])
+    {
+        client.tool(
+            "commit_framing",
+            json!({"observation_id":observation_id,"start_offset":8,"prefix_offset":0,
+                "prefix_width":4,"byte_order":"big","length_mode":"payload",
+                "alignment":1,"length_adjustment":8,"key":key}),
+        );
+    }
+    let crc = client.tool(
+        "infer_frame_crc32",
+        json!({"discovery_run_keys":["mcp-png-chunks","mcp-png-d2"],
+            "validation_run_keys":["mcp-png-v1"]}),
+    );
+    assert!(
+        crc["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| {
+                candidate["coverage_start"] == 4
+                    && candidate["stored_byte_order"] == "big_endian"
+                    && candidate["validation_matches"] == 4
+            })
+    );
     let verified = client.tool("verify", json!({}));
     assert_eq!(verified["captures"], 3);
     for (trial_id, filename, step_key) in [
