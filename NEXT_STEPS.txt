@@ -1,0 +1,107 @@
+PROTOCOL INFORMATICS V2: NEXT STEPS
+===================================
+
+Purpose
+-------
+Make one controlled network experiment work from plan through live capture,
+evidence review, and a human-readable result. Build on the existing Rust CLI,
+MCP server, event log, PCAP/pcapng importers, capture-step workflow, attention
+queue, and HTML report. Start with the first milestone below. The later items
+are an ordered backlog, not a request to implement everything in one change.
+
+1. First milestone: a first-class network capture adapter
+---------------------------------------------------------
+The current capture commands run an arbitrary program that writes capture bytes
+to stdout. Add a structured adapter for dumpcap that writes pcapng to a bounded
+temporary file, then imports and retains that exact file as an immutable
+artifact. Reuse the existing trial, action, capture-run, observation, retry-key,
+status, stop, and verification machinery. Do not make a second investigation
+store or bypass the event log.
+
+Expose the adapter through the JSON CLI and MCP with equivalent arguments:
+trial ID, retry key, interface, capture filter, duration, output byte limit,
+optional packet limit, and extraction format (for example pcapng-icmp or
+pcapng-udp). Pass an argument vector to dumpcap; do not construct a shell
+command. Record the dumpcap executable path and version. Validate limits and
+return a structured error when dumpcap or capture permission is unavailable.
+Keep start, status, stop, and retry semantics consistent with capture-start and
+capture-status. A repeated successful key must return the same capture ID.
+
+Persist capture conditions next to the immutable artifact: backend and version,
+interface, filter, link type, snapshot length, start/end wall-clock times,
+command exit or stop reason, captured packet count, and available drop counts.
+Add optional, backward-compatible fields so existing investigations replay.
+Parse applicable pcapng Interface Description and Interface Statistics data;
+distinguish a missing statistic from a measured zero. Preserve the original
+capture bytes and their hash. A capture-scope tag means only that an observation
+was acquired during the step; it does not assert a causal response.
+
+Acceptance for this milestone:
+- An offline integration test uses a fake dumpcap executable to emit a known
+  pcapng fixture without requiring raw-socket privileges. It covers success,
+  timeout or stop, invalid output, retry, and a bounded output file.
+- Import still yields the expected observation IDs, byte spans, timestamps,
+  and source offsets; verify succeeds on the retained artifact.
+- The new capture appears in attention, activity, trial review, and the HTML
+  report with its conditions and quality metadata.
+- A short optional live smoke test on a user-controlled interface captures a
+  baseline and one changed ICMP echo sequence. It records the exact stimulus
+  and compares the resulting request/reply observations. CI must not require
+  network capture permissions.
+- cargo fmt --check, cargo test --offline, cargo clippy --offline --all-targets
+  -- -D warnings, and cargo build --offline --release pass. Update CLI, MCP,
+  schema, and capture documentation with any new commands and fields.
+
+2. Evidence dependencies and freshness
+--------------------------------------
+Extend the existing analysis-status and post-assessment capture checks into a
+general dependency view. Each saved inference or claim should identify its
+input capture/observation/frame IDs, algorithm version, parameters, and source
+revision. When new evidence, a tag correction, or a competing frame run changes
+its scope, report why it needs review. Preserve the historical result; do not
+silently rewrite it. Let attention point to the exact stale result and the
+smallest useful next inspection. Test both relevant and irrelevant new events.
+
+3. Distinguishing-experiment suggestions
+----------------------------------------
+Given two or more surviving explanations, propose a controlled change that
+would make them predict different observations. Include the target trial,
+changed variable, expected outcome under each explanation, cost or duration,
+preconditions, and stopping condition. Rank suggestions by how clearly they
+separate explanations and by capture cost; expose the rationale and unknowns.
+Keep an inconclusive outcome explicit. The existing PNG chunk-width boundary
+example and ICMP 255-to-256 sweep are good first regression cases. Suggestions
+should be read-only until an agent explicitly starts a trial.
+
+4. Human investigation workbench
+--------------------------------
+Evolve the read-only report using the same IDs and byte coordinates as the CLI
+and MCP tools. Prioritize a session/action timeline, baseline-versus-variant
+comparison, synchronized hex/ASCII/bit views, source-packet provenance, and
+supporting/counterexample links for each candidate field. Let a person correct
+a tag or proposed boundary through a versioned event, then show which saved
+results need review. Do not make browser-only state authoritative.
+
+5. Benchmarks and scale
+-----------------------
+Build a small public fixture corpus with known answers, ambiguous cases, and
+held-out trials across ICMP, DNS/UDP, TCP-framed messages, PNG, and RIFF/WAV.
+Measure verified field recovery, false claims, abstentions, useful next trials,
+response size, and runtime. Then address the current 1 MiB standalone binary
+observation and 32 MiB stdout capture limits with referenced or streamed blobs
+and an index, while preserving exact source spans and the portable event log.
+Profile representative CPU work before considering GPU alignment.
+
+Implementation notes
+--------------------
+- Keep raw artifacts immutable and content-addressed. Derived interpretations
+  remain versioned and reproducible from named inputs.
+- Use bounded agent responses with stable IDs, explicit units, pagination, and
+  clear unknown or ambiguous states. Extend existing tools where that is clearer
+  than adding another parallel workflow.
+- Preserve support for previously written investigations and dual
+  Apache-2.0/MIT licensing.
+- Relevant starting points: docs/experiment-lifecycle.md,
+  docs/capture-step.md, docs/agent-query.md, and docs/interface-design.md.
+- External references: https://www.wireshark.org/docs/man-pages/dumpcap.html
+  and https://datatracker.ietf.org/doc/draft-ietf-opsawg-pcapng/ .
