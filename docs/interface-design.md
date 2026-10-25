@@ -1,6 +1,6 @@
 # Agent and human interface design
 
-Status: partial implementation, October 2026. A JSON CLI, a stdio MCP server, and a read-only HTML report share the event-sourced investigation model. The MCP server exposes 52 navigation, workflow, and inference tools; the deeper viewer remains planned.
+Status: partial implementation, October 2026. A JSON CLI, a stdio MCP server, and a read-only HTML report share the event-sourced investigation model. The MCP server exposes 63 navigation, workflow, and inference tools; the deeper viewer remains planned.
 
 ## Principle
 
@@ -45,7 +45,7 @@ Start with the structured JSON CLI or the [stdio MCP server](mcp-server.md). The
 | `hypotheses` | paged claims, supplied scores, bounded evidence and counterexample IDs; explanation of alternatives remains open |
 | `test_hypothesis` | deterministic checks on selected observations and held-out data |
 | `trace_session` | ordered message types, request/response links, state candidates |
-| `experiments` / `trials` / `decisions` | paged plans, controlled factors, claims, capture counts, and recorded choices; richer explanations remain open |
+| `experiments` / `trials` / `decisions` | paged plans, controlled factors, claims, capture counts, and recorded choices; keyed prediction assessments link verdicts to same-experiment observation evidence |
 | `resume_investigation` / `changes_since` | current checkpoint, open questions, new evidence, changed scores, and unfinished actions |
 | `record_decision` | chosen next action, supporting evidence, expected outcome, and resulting revision |
 

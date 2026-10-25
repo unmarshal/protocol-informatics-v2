@@ -735,6 +735,7 @@ mod tests {
             question: "test".into(),
             hypotheses: Vec::new(),
             experiments: Vec::new(),
+            experiment_assessments: Vec::new(),
             trials: Vec::new(),
             captures: Vec::new(),
             capture_runs: Vec::new(),

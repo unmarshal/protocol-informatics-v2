@@ -5,7 +5,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-use crate::workflow::State;
+use crate::workflow::{ExperimentAssessment, State};
 use crate::{clustering, delimiter, framing, tlv, varint};
 
 const MAX_REPORTED_CANDIDATES: usize = 3;
@@ -222,6 +222,7 @@ pub struct TrialReview {
     pub question: String,
     pub prediction: String,
     pub prediction_assessed: bool,
+    pub latest_experiment_assessment: Option<ExperimentAssessment>,
     pub discovery_trial_id: String,
     pub validation_trial_id: String,
     pub discovery_capture_count: usize,
@@ -563,7 +564,16 @@ pub fn review_trials(
         experiment_id: experiment.id.clone(),
         question: experiment.question.clone(),
         prediction: experiment.prediction.clone(),
-        prediction_assessed: false,
+        prediction_assessed: state
+            .experiment_assessments
+            .iter()
+            .any(|assessment| assessment.experiment_id == experiment.id),
+        latest_experiment_assessment: state
+            .experiment_assessments
+            .iter()
+            .rev()
+            .find(|assessment| assessment.experiment_id == experiment.id)
+            .cloned(),
         discovery_trial_id: discovery_trial_id.into(),
         validation_trial_id: validation_trial_id.into(),
         discovery_capture_count: discovery_captures.len(),

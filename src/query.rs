@@ -18,6 +18,7 @@ const MAX_SUMMARY_GROUPS: usize = 20;
 #[derive(Debug, Serialize)]
 pub struct CorpusCounts {
     pub experiments: usize,
+    pub experiment_assessments: usize,
     pub trials: usize,
     pub captures: usize,
     pub observations: usize,
@@ -186,6 +187,21 @@ pub struct ExperimentPreview {
     pub hypothesis_ids_omitted: usize,
     pub trial_count: usize,
     pub capture_count: usize,
+    pub assessment_count: usize,
+    pub latest_verdict: Option<crate::workflow::AssessmentVerdict>,
+    pub latest_assessment_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExperimentAssessmentPage<'a> {
+    pub schema_version: u32,
+    pub revision: u64,
+    pub experiment_id: &'a str,
+    pub total: usize,
+    pub offset: usize,
+    pub next_offset: Option<usize>,
+    pub order: &'static str,
+    pub assessments: Vec<&'a crate::workflow::ExperimentAssessment>,
 }
 
 #[derive(Debug, Serialize)]
@@ -896,6 +912,15 @@ pub fn list_experiments(
             *capture_counts.entry(experiment_id).or_default() += 1;
         }
     }
+    let mut assessment_stats =
+        BTreeMap::<&str, (usize, &crate::workflow::ExperimentAssessment)>::new();
+    for assessment in &state.experiment_assessments {
+        let stats = assessment_stats
+            .entry(&assessment.experiment_id)
+            .or_insert((0, assessment));
+        stats.0 += 1;
+        stats.1 = assessment;
+    }
     let experiments = state
         .experiments
         .iter()
@@ -905,6 +930,7 @@ pub fn list_experiments(
         .map(|experiment| {
             let (question, question_truncated) = preview_text(&experiment.question);
             let (prediction, prediction_truncated) = preview_text(&experiment.prediction);
+            let assessment = assessment_stats.get(experiment.id.as_str());
             ExperimentPreview {
                 id: experiment.id.clone(),
                 question,
@@ -916,6 +942,9 @@ pub fn list_experiments(
                 hypothesis_ids_omitted: experiment.hypothesis_ids.len().saturating_sub(10),
                 trial_count: *trial_counts.get(experiment.id.as_str()).unwrap_or(&0),
                 capture_count: *capture_counts.get(experiment.id.as_str()).unwrap_or(&0),
+                assessment_count: assessment.map_or(0, |(count, _)| *count),
+                latest_verdict: assessment.map(|(_, item)| item.verdict),
+                latest_assessment_id: assessment.map(|(_, item)| item.id.clone()),
             }
         })
         .collect();
@@ -927,6 +956,48 @@ pub fn list_experiments(
         next_offset: (offset.saturating_add(limit) < total).then_some(offset + limit),
         order: "newest_first",
         experiments,
+    })
+}
+
+pub fn list_experiment_assessments<'a>(
+    state: &'a State,
+    experiment_id: &'a str,
+    offset: usize,
+    limit: usize,
+) -> Result<ExperimentAssessmentPage<'a>, String> {
+    valid_page_limit(limit)?;
+    if !state
+        .experiments
+        .iter()
+        .any(|experiment| experiment.id == experiment_id)
+    {
+        return Err(format!("unknown experiment {experiment_id}"));
+    }
+    let total = state
+        .experiment_assessments
+        .iter()
+        .filter(|item| item.experiment_id == experiment_id)
+        .count();
+    if offset > total {
+        return Err("assessment offset exceeds count".into());
+    }
+    let assessments = state
+        .experiment_assessments
+        .iter()
+        .rev()
+        .filter(|item| item.experiment_id == experiment_id)
+        .skip(offset)
+        .take(limit)
+        .collect();
+    Ok(ExperimentAssessmentPage {
+        schema_version: state.schema_version,
+        revision: state.revision,
+        experiment_id,
+        total,
+        offset,
+        next_offset: (offset.saturating_add(limit) < total).then_some(offset + limit),
+        order: "newest_first",
+        assessments,
     })
 }
 
@@ -1125,6 +1196,7 @@ pub fn corpus_summary(state: &State) -> CorpusSummary {
         question_truncated: state.question.chars().count() > 200,
         counts: CorpusCounts {
             experiments: state.experiments.len(),
+            experiment_assessments: state.experiment_assessments.len(),
             trials: state.trials.len(),
             captures: state.captures.len(),
             observations: state.observations.len(),

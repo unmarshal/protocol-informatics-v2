@@ -127,7 +127,7 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 60);
+    assert_eq!(names.len(), 63);
     assert!(names.contains(&"infer_chunk_framing"));
     assert!(names.contains(&"infer_frame_crc32"));
     assert!(names.contains(&"activity"));
@@ -159,6 +159,9 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
     assert!(names.contains(&"infer_frame_value"));
     assert!(names.contains(&"review_trials"));
     assert!(names.contains(&"experiments"));
+    assert!(names.contains(&"assess_experiment"));
+    assert!(names.contains(&"experiment_assessments"));
+    assert!(names.contains(&"experiment_assessment_status"));
     assert!(names.contains(&"hypotheses"));
     assert!(names.contains(&"decisions"));
     let definitions = tools["tools"].as_array().unwrap();
@@ -374,6 +377,27 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         "record_decision",
         json!({"text":"Collect a second mismatched reply trial","evidence_ids":[counterexample]}),
     );
+    let assessment = client.tool(
+        "assess_experiment",
+        json!({"experiment_id":experiment_id,"verdict":"contradicted","explanation":"Held-out reply changed the sequence bytes","key":"mcp-echo-assessment-1","evidence_ids":[counterexample]}),
+    );
+    assert_eq!(assessment["replayed"], false);
+    assert_eq!(client.tool("assess_experiment",
+        json!({"experiment_id":experiment_id,"verdict":"contradicted","explanation":"Held-out reply changed the sequence bytes","key":"mcp-echo-assessment-1","evidence_ids":[counterexample]}))["replayed"], true);
+    assert_eq!(
+        client.tool(
+            "experiment_assessment_status",
+            json!({"key":"mcp-echo-assessment-1"})
+        )["assessment"]["id"],
+        assessment["assessment"]["id"]
+    );
+    assert_eq!(
+        client.tool(
+            "experiment_assessments",
+            json!({"experiment_id":experiment_id,"limit":1})
+        )["assessments"][0]["verdict"],
+        "contradicted"
+    );
     let revised = client.tool("summary", json!({}));
     assert_eq!(revised["counts"]["hypotheses"], 1);
     assert_eq!(revised["counts"]["decisions"], 1);
@@ -381,6 +405,10 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
     let experiments = client.tool("experiments", json!({"limit":1}));
     assert_eq!(experiments["total"], 1);
     assert_eq!(experiments["experiments"][0]["trial_count"], 2);
+    assert_eq!(
+        experiments["experiments"][0]["latest_verdict"],
+        "contradicted"
+    );
     let hypotheses = client.tool("hypotheses", json!({"limit":1}));
     assert_eq!(hypotheses["hypotheses"][0]["score"], 0.4);
     assert_eq!(hypotheses["hypotheses"][0]["counterexample_count"], 1);

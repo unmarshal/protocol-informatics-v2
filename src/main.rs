@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 use std::os::unix::process::CommandExt;
 
 use protocol_informatics_v2::workflow::{
-    self, Action, AnalysisRecord, AnalysisScope, CaptureRun, CaptureRunStatus, CaptureStepScope,
-    CaptureTagBatch, Decision, Event, Experiment, FrameKnownValue, Hypothesis, KnownValue,
-    Observation, Tag, Trial, ValueSet, WindowTag,
+    self, Action, AnalysisRecord, AnalysisScope, AssessmentVerdict, CaptureRun, CaptureRunStatus,
+    CaptureStepScope, CaptureTagBatch, Decision, Event, Experiment, ExperimentAssessment,
+    FrameKnownValue, Hypothesis, KnownValue, Observation, Tag, Trial, ValueSet, WindowTag,
 };
 use protocol_informatics_v2::{CpuAligner, analyze_best, parse_hex_samples};
 use serde::Serialize;
@@ -54,6 +54,11 @@ fn print_help() {
     println!("  hypothesis <dir> <claim>             add hypothesis");
     println!("  evaluate <dir> <hyp-id> <score> <evidence-ids> <counterexample-ids>");
     println!("  experiment <dir> <question> <hyp-ids> <prediction>");
+    println!(
+        "  experiment-assess <dir> <exp-id> <supported|contradicted|inconclusive> <explanation> <key> [evidence-ids]"
+    );
+    println!("  experiment-assessment-status <dir> <key>");
+    println!("  experiment-assessments <dir> <exp-id> [offset] [limit<=100]");
     println!("  trial <dir> <exp-id> <role> <changed-factor>");
     println!(
         "  import <dir> <trial-id> <hex|binary|pcap-icmp|pcapng-icmp|pcap-icmpv6|pcapng-icmpv6|pcap-udp|pcapng-udp|pcap-tcp|pcapng-tcp|pcap-tcp-stream|pcapng-tcp-stream> <file>"
@@ -222,6 +227,71 @@ fn ids(text: &str) -> Vec<String> {
     } else {
         text.split(',').map(str::to_owned).collect()
     }
+}
+
+fn experiment_assess(root: &Path, args: &[String]) -> Result<(), String> {
+    if args.len() != 6 && args.len() != 7 {
+        return Err(
+            "expected experiment ID, verdict, explanation, key, and optional evidence IDs".into(),
+        );
+    }
+    let verdict = match args[3].as_str() {
+        "supported" => AssessmentVerdict::Supported,
+        "contradicted" => AssessmentVerdict::Contradicted,
+        "inconclusive" => AssessmentVerdict::Inconclusive,
+        _ => return Err("verdict must be supported, contradicted, or inconclusive".into()),
+    };
+    let evidence_ids = args.get(6).map_or_else(Vec::new, |value| ids(value));
+    let key = &args[5];
+    let matches_request = |assessment: &ExperimentAssessment| {
+        assessment.experiment_id == args[2]
+            && assessment.verdict == verdict
+            && assessment.explanation == args[4]
+            && assessment.evidence_ids == evidence_ids
+    };
+    let state = workflow::load(root)?;
+    if let Some(existing) = state
+        .experiment_assessments
+        .iter()
+        .find(|item| item.key == *key)
+    {
+        return if matches_request(existing) {
+            print_json(&json!({"revision":state.revision,"assessment":existing,"replayed":true}))
+        } else {
+            Err(format!(
+                "experiment assessment key {key} was used with different arguments"
+            ))
+        };
+    }
+    let assessment = ExperimentAssessment {
+        id: workflow::next_id(root, "assessment")?,
+        experiment_id: args[2].clone(),
+        key: key.clone(),
+        verdict,
+        explanation: args[4].clone(),
+        evidence_ids: evidence_ids.clone(),
+        basis_revision: state.revision,
+    };
+    let appended = workflow::append(root, Event::ExperimentAssessed { assessment });
+    let updated = workflow::load(root)?;
+    if let Some(existing) = updated
+        .experiment_assessments
+        .iter()
+        .find(|item| item.key == *key)
+    {
+        return if matches_request(existing) {
+            print_json(
+                &json!({"revision":updated.revision,"assessment":existing,"replayed":appended.is_err()}),
+            )
+        } else {
+            Err(format!(
+                "experiment assessment key {key} was used with different arguments"
+            ))
+        };
+    }
+    Err(appended
+        .err()
+        .unwrap_or_else(|| "experiment assessment was not recorded".into()))
 }
 
 fn print_json(value: &impl Serialize) -> Result<(), String> {
@@ -1527,6 +1597,17 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 Event::ExperimentCreated { experiment },
             )?)
         }
+        "experiment-assess" => experiment_assess(root, args),
+        "experiment-assessment-status" => {
+            require_len(args, 3)?;
+            let state = workflow::load(root)?;
+            let assessment = state
+                .experiment_assessments
+                .iter()
+                .find(|item| item.key == args[2])
+                .ok_or_else(|| format!("unknown experiment assessment key {}", args[2]))?;
+            print_json(&json!({"revision":state.revision,"assessment":assessment}))
+        }
         "trial" => {
             require_len(args, 5)?;
             let trial = Trial {
@@ -2249,6 +2330,7 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             print_json(
                 &json!({"revision": state.revision, "question": state.question,
                 "hypotheses": state.hypotheses, "experiments": state.experiments,
+                "experiment_assessments": state.experiment_assessments,
                 "trials": state.trials, "captures": state.captures,
                 "capture_runs": state.capture_runs,
                 "framing_runs": state.framing_runs,
@@ -2289,6 +2371,23 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             print_json(&protocol_informatics_v2::query::list_experiments(
                 &state, offset, limit,
             )?)
+        }
+        "experiment-assessments" => {
+            if args.len() < 3 || args.len() > 5 {
+                return Err("expected experiment ID and optional offset and limit".into());
+            }
+            let offset = args.get(3).map_or(Ok(0), |value| {
+                value.parse().map_err(|_| "offset must be an integer")
+            })?;
+            let limit = args.get(4).map_or(Ok(50), |value| {
+                value.parse().map_err(|_| "limit must be an integer")
+            })?;
+            let state = workflow::load(root)?;
+            print_json(
+                &protocol_informatics_v2::query::list_experiment_assessments(
+                    &state, &args[2], offset, limit,
+                )?,
+            )
         }
         "hypotheses" => {
             let (offset, limit) = page_arguments(args)?;

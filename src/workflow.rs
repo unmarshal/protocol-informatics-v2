@@ -18,7 +18,7 @@ use crate::pcap::{
 use crate::reassembly::{SourceSpan, reassemble_tcp_segments};
 use crate::varint::{VarintConfig, probe_varint};
 
-const SCHEMA_VERSION: u32 = 18;
+const SCHEMA_VERSION: u32 = 19;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 const MAX_RECOVERY_TAIL_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -37,6 +37,25 @@ pub struct Experiment {
     pub question: String,
     pub hypothesis_ids: Vec<String>,
     pub prediction: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssessmentVerdict {
+    Supported,
+    Contradicted,
+    Inconclusive,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExperimentAssessment {
+    pub id: String,
+    pub experiment_id: String,
+    pub key: String,
+    pub verdict: AssessmentVerdict,
+    pub explanation: String,
+    pub evidence_ids: Vec<String>,
+    pub basis_revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -407,6 +426,9 @@ pub enum Event {
     ExperimentCreated {
         experiment: Experiment,
     },
+    ExperimentAssessed {
+        assessment: ExperimentAssessment,
+    },
     TrialCreated {
         trial: Trial,
     },
@@ -481,6 +503,10 @@ impl Event {
             }
             Self::ExperimentCreated { experiment } => {
                 experiment.id = format!("exp-{revision:06}");
+            }
+            Self::ExperimentAssessed { assessment } => {
+                assessment.id = format!("assessment-{revision:06}");
+                assessment.basis_revision = revision - 1;
             }
             Self::TrialCreated { trial } => {
                 trial.id = format!("trial-{revision:06}");
@@ -566,6 +592,7 @@ pub struct State {
     pub question: String,
     pub hypotheses: Vec<Hypothesis>,
     pub experiments: Vec<Experiment>,
+    pub experiment_assessments: Vec<ExperimentAssessment>,
     pub trials: Vec<Trial>,
     pub captures: Vec<Capture>,
     pub capture_runs: Vec<CaptureRun>,
@@ -659,6 +686,7 @@ impl State {
             question: String::new(),
             hypotheses: Vec::new(),
             experiments: Vec::new(),
+            experiment_assessments: Vec::new(),
             trials: Vec::new(),
             captures: Vec::new(),
             capture_runs: Vec::new(),
@@ -741,6 +769,59 @@ impl State {
                     }
                 }
                 self.experiments.push(experiment.clone());
+            }
+            Event::ExperimentAssessed { assessment } => {
+                if record.schema_version < 19
+                    || assessment.id.is_empty()
+                    || assessment.key.is_empty()
+                    || assessment.key.len() > 128
+                    || assessment.key.chars().any(char::is_control)
+                    || assessment.explanation.trim().is_empty()
+                    || assessment.explanation.len() > 2048
+                    || assessment.evidence_ids.len() > 100
+                    || (assessment.verdict != AssessmentVerdict::Inconclusive
+                        && assessment.evidence_ids.is_empty())
+                    || assessment.basis_revision != record.revision - 1
+                    || self
+                        .experiment_assessments
+                        .iter()
+                        .any(|prior| prior.id == assessment.id || prior.key == assessment.key)
+                {
+                    return Err("invalid or duplicate experiment assessment".into());
+                }
+                if !self
+                    .experiments
+                    .iter()
+                    .any(|experiment| experiment.id == assessment.experiment_id)
+                {
+                    return Err(format!("unknown experiment {}", assessment.experiment_id));
+                }
+                let mut evidence = std::collections::BTreeSet::new();
+                for id in &assessment.evidence_ids {
+                    if !evidence.insert(id) {
+                        return Err(format!("duplicate evidence observation {id}"));
+                    }
+                    let observation = self
+                        .observations
+                        .iter()
+                        .find(|observation| observation.id == *id)
+                        .ok_or_else(|| format!("unknown evidence observation {id}"))?;
+                    let capture = self
+                        .captures
+                        .iter()
+                        .find(|capture| capture.id == observation.capture_id)
+                        .ok_or_else(|| format!("unknown capture {}", observation.capture_id))?;
+                    if !self.trials.iter().any(|trial| {
+                        trial.id == capture.trial_id
+                            && trial.experiment_id == assessment.experiment_id
+                    }) {
+                        return Err(format!(
+                            "evidence observation {id} is outside experiment {}",
+                            assessment.experiment_id
+                        ));
+                    }
+                }
+                self.experiment_assessments.push(assessment.clone());
             }
             Event::TrialCreated { trial } => {
                 if !self.experiments.iter().any(|e| e.id == trial.experiment_id) {
@@ -1917,6 +1998,12 @@ fn activity_preview(record: &EventRecord) -> ActivityPreview {
             Some(decision.id.clone()),
             json!({"evidence_count":decision.evidence_ids.len(),
                 "first_evidence_ids":decision.evidence_ids.iter().take(3).collect::<Vec<_>>() }),
+        ),
+        Event::ExperimentAssessed { assessment } => (
+            "experiment_assessed",
+            Some(assessment.id.clone()),
+            json!({"experiment_id":assessment.experiment_id,"verdict":assessment.verdict,
+                "evidence_count":assessment.evidence_ids.len(),"basis_revision":assessment.basis_revision}),
         ),
     };
     ActivityPreview {

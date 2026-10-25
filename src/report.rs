@@ -648,6 +648,18 @@ for(const item of state.frame_crc32_inferences||[]) {
 if(!(state.frame_crc32_inferences||[]).length) byId('frameCrc32').append(node('div','Commit the same framing rule on separate discovery and validation captures to test a trailing IEEE CRC32.','small muted'));
 for(const experiment of state.experiments) {
   const row=node('div','', 'row'); row.append(node('strong',experiment.id+' · '+experiment.question),node('div','Prediction: '+experiment.prediction,'small muted'));
+  const assessments=state.experiment_assessments.filter(item=>item.experiment_id===experiment.id);
+  if(assessments.length) {
+    row.append(node('div','Latest assessment: '+assessments[assessments.length-1].verdict+' · '+assessments.length+' recorded','small'));
+    for(const assessment of assessments.slice().reverse()) {
+      row.append(node('div',assessment.id+' · '+assessment.verdict+' at basis revision '+assessment.basis_revision+' · '+assessment.explanation,'small muted'));
+      for(const evidenceId of assessment.evidence_ids) {
+        const button=node('button','↳ evidence '+evidenceId,'small');
+        button.onclick=()=>{const observation=state.observations.find(value=>value.id===evidenceId);if(observation) showDetail(observation);};
+        row.append(button);
+      }
+    }
+  } else row.append(node('div','Prediction assessment pending','small muted'));
   for(const trial of state.trials.filter(x=>x.experiment_id===experiment.id)) {
     const captures=state.captures.filter(x=>x.trial_id===trial.id);
     row.append(node('div',trial.id+' · '+trial.role+' · '+trial.changed_factor+' · '+captures.length+' capture(s)','small'));
@@ -661,7 +673,7 @@ for(const experiment of state.experiments) {
 for(const review of state.trial_reviews||[]) {
   const row=node('div','', 'row');
   row.append(node('strong',review.experiment_id+' · '+review.question),node('div',review.discovery_observation_count+' discovery observations · '+review.validation_observation_count+' held-out observations','small muted'));
-  row.append(node('div','Prediction: '+review.prediction+' · analyst assessment pending','small muted'));
+  row.append(node('div','Prediction: '+review.prediction+' · '+(review.latest_experiment_assessment?'latest experiment assessment '+review.latest_experiment_assessment.verdict+' ('+review.latest_experiment_assessment.id+')':'assessment pending'),'small muted'));
   for(const method of review.methods) {
     row.append(node('div',method.method+': '+(method.status==='evaluated'?method.candidate_count+' candidate(s), best reported held-out '+(method.best_reported_validation_matches===null?'none':method.best_reported_validation_matches+'/'+method.validation_total):'unavailable — '+method.error),'small'));
     if(method.identifiability) row.append(node('div','↳ '+method.identifiability.fully_validated_candidate_count+' fully validated description(s), '+method.identifiability.distinct_boundary_rule_count+' distinct boundary rule(s)','small muted'));

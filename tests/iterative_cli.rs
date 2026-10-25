@@ -41,6 +41,171 @@ fn path(path: &Path) -> &str {
 }
 
 #[test]
+fn experiment_assessments_preserve_revisions_and_reject_foreign_evidence() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&[
+        "init",
+        root_text,
+        "Which bytes change under an intervention?",
+    ]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Vary input",
+        "-",
+        "Second byte changes",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let discovery = cli(&["trial", root_text, experiment_id, "discovery", "input A"]);
+    let discovery_id = discovery["event"]["trial"]["id"].as_str().unwrap();
+    let validation = cli(&["trial", root_text, experiment_id, "validation", "input B"]);
+    let validation_id = validation["event"]["trial"]["id"].as_str().unwrap();
+    let source = root.join("samples.hex");
+    fs::write(&source, "01 02\n01 03\n").unwrap();
+    let imported = cli(&["import", root_text, discovery_id, "hex", path(&source)]);
+    let evidence_id = imported["event"]["observations"][0]["id"].as_str().unwrap();
+    cli(&["import", root_text, validation_id, "hex", path(&source)]);
+
+    let other = cli(&[
+        "experiment",
+        root_text,
+        "Other protocol",
+        "-",
+        "Unrelated prediction",
+    ]);
+    let other_id = other["event"]["experiment"]["id"].as_str().unwrap();
+    let foreign_trial = cli(&["trial", root_text, other_id, "discovery", "other input"]);
+    let foreign_id = foreign_trial["event"]["trial"]["id"].as_str().unwrap();
+    let foreign_import = cli(&["import", root_text, foreign_id, "hex", path(&source)]);
+    let foreign_observation = foreign_import["event"]["observations"][0]["id"]
+        .as_str()
+        .unwrap();
+    let invalid = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "experiment-assess",
+            root_text,
+            experiment_id,
+            "supported",
+            "wrong source",
+            "bad-source",
+            foreign_observation,
+        ])
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("outside experiment"));
+    let unsupported = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "experiment-assess",
+            root_text,
+            experiment_id,
+            "supported",
+            "no cited evidence",
+            "no-evidence",
+        ])
+        .output()
+        .unwrap();
+    assert!(!unsupported.status.success());
+    assert!(
+        String::from_utf8_lossy(&unsupported.stderr)
+            .contains("invalid or duplicate experiment assessment")
+    );
+
+    let args = [
+        "experiment-assess",
+        root_text,
+        experiment_id,
+        "inconclusive",
+        "Two examples do not rule out a constant header",
+        "assessment-v1",
+        evidence_id,
+    ];
+    let first = cli(&args);
+    assert_eq!(first["replayed"], false);
+    assert_eq!(first["assessment"]["evidence_ids"], json!([evidence_id]));
+    assert_eq!(
+        first["assessment"]["basis_revision"],
+        first["revision"].as_u64().unwrap() - 1
+    );
+    assert_eq!(cli(&args)["replayed"], true);
+    let key_conflict = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "experiment-assess",
+            root_text,
+            experiment_id,
+            "inconclusive",
+            "different rationale",
+            "assessment-v1",
+            evidence_id,
+        ])
+        .output()
+        .unwrap();
+    assert!(!key_conflict.status.success());
+    assert!(String::from_utf8_lossy(&key_conflict.stderr).contains("different arguments"));
+    assert_eq!(
+        cli(&["experiment-assessment-status", root_text, "assessment-v1"])["assessment"],
+        first["assessment"]
+    );
+    let revised = cli(&[
+        "experiment-assess",
+        root_text,
+        experiment_id,
+        "contradicted",
+        "Held-out byte stayed constant",
+        "assessment-v2",
+        evidence_id,
+    ]);
+    assert_eq!(revised["assessment"]["verdict"], "contradicted");
+    let page = cli(&["experiment-assessments", root_text, experiment_id, "0", "1"]);
+    assert_eq!(page["total"], 2);
+    assert_eq!(page["next_offset"], 1);
+    assert_eq!(page["assessments"][0]["id"], revised["assessment"]["id"]);
+    assert_eq!(
+        cli(&["experiment-assessments", root_text, experiment_id, "1", "1"])["assessments"][0]["id"],
+        first["assessment"]["id"]
+    );
+    let listed = cli(&["experiments", root_text]);
+    let preview = listed["experiments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|value| value["id"] == experiment_id)
+        .unwrap();
+    assert_eq!(preview["assessment_count"], 2);
+    assert_eq!(preview["latest_verdict"], "contradicted");
+    let review = cli(&["review-trials", root_text, discovery_id, validation_id]);
+    assert_eq!(review["prediction_assessed"], true);
+    assert_eq!(
+        review["latest_experiment_assessment"]["id"],
+        revised["assessment"]["id"]
+    );
+    let activity = cli(&[
+        "activity",
+        root_text,
+        &first["assessment"]["basis_revision"]
+            .as_u64()
+            .unwrap()
+            .to_string(),
+        "20",
+    ]);
+    assert!(
+        activity["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["kind"] == "experiment_assessed")
+    );
+    let report = root.join("report.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(&report).unwrap();
+    assert!(html.contains("Latest assessment:"));
+    assert!(html.contains("state.experiment_assessments"));
+    assert_eq!(cli(&["verify", root_text])["observations"], 6);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn png_chunks_need_uncounted_length_bytes_and_survive_holdout() {
     let root = workspace();
     let root_text = path(&root);
@@ -726,7 +891,7 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
     );
     let event_log = root.join(".pi/events.jsonl");
     let prior_log = fs::read_to_string(&event_log).unwrap();
-    let legacy_log = prior_log.replace("\"schema_version\":18", "\"schema_version\":13");
+    let legacy_log = prior_log.replace("\"schema_version\":19", "\"schema_version\":13");
     assert_ne!(legacy_log, prior_log);
     fs::write(&event_log, legacy_log).unwrap();
     let recorded = cli(&[
@@ -739,7 +904,7 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
     ]);
     let saved = &recorded["event"]["analysis"];
     let analysis_id = saved["id"].as_str().unwrap();
-    assert_eq!(recorded["schema_version"], 18);
+    assert_eq!(recorded["schema_version"], 19);
     assert_eq!(saved["scope"]["kind"], "frame_cluster");
     assert_eq!(saved["frame_ids"], alignment["frame_ids"]);
     assert_eq!(saved["scope"]["source_revision"], alignment["revision"]);
@@ -1119,7 +1284,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     assert_eq!(summary["observation_count"], 48);
     assert_eq!(summary["hypotheses"][0]["score"], 0.9);
     let corpus = cli(&["summary", root_text]);
-    assert_eq!(corpus["schema_version"], 18);
+    assert_eq!(corpus["schema_version"], 19);
     assert_eq!(corpus["revision"], 13);
     assert_eq!(corpus["counts"]["captures"], 2);
     assert_eq!(corpus["counts"]["observations"], 48);
@@ -1155,7 +1320,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
         serde_json::json!({"trial_id":"trial-000004","direction":direction,"offset":2,"limit":3})
             .to_string();
     let matches = cli(&["search-observations", root_text, &direction_query]);
-    assert_eq!(matches["schema_version"], 18);
+    assert_eq!(matches["schema_version"], 19);
     assert_eq!(matches["total"], 24);
     assert_eq!(matches["observations"].as_array().unwrap().len(), 3);
     assert_eq!(matches["next_offset"], 5);
@@ -3579,7 +3744,7 @@ fn replays_v1_log_and_appends_current_events() {
         "Old investigation"
     );
     let appended = cli(&["hypothesis", path(&root), "A new claim"]);
-    assert_eq!(appended["schema_version"], 18);
+    assert_eq!(appended["schema_version"], 19);
     assert_eq!(appended["revision"], 2);
     assert_eq!(
         cli(&["changes", path(&root), "0"])

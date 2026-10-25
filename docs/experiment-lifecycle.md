@@ -1,6 +1,6 @@
 # Experiment and capture lifecycle
 
-Status: partial implementation, October 2026. Experiment, trial, keyed action marker, capture import, observation tag, hypothesis evaluation, read-only trial review, repeatable capture steps, and bounded keyed capture commands with background start and explicit stop exist. A dedicated network capture adapter remains a proposal.
+Status: partial implementation, October 2026. Experiment, trial, keyed action marker, capture import, observation tag, hypothesis evaluation, keyed prediction assessment, read-only trial review, repeatable capture steps, and bounded keyed capture commands with background start and explicit stop exist. A dedicated network capture adapter remains a proposal.
 
 ## Model
 
@@ -44,10 +44,13 @@ The capture adapter and action driver are separate. A first network adapter can 
 | `retract_observation_tag` | implemented keyed withdrawal with a reason; active searches exclude the old tag |
 | `compare_trials` | changed factors, matched observations, predicted and actual outcomes |
 | `review_trials` | implemented read-only evidence summary, counterexample IDs, and next tool actions for one controlled pair |
-| `evaluate_experiment` | planned prediction assessment and evidence for each hypothesis |
+| `assess_experiment` | implemented keyed prediction verdict, rationale, same-experiment observation evidence, and basis revision |
+| `experiment_assessments` | implemented paged reassessment history, newest first |
 | `record_decision` | selected next action and a link to the new investigation revision |
 
 Start and stop calls accept idempotency keys so retries do not create duplicate captures. Long-running captures return handles and status updates. Failed or interrupted captures remain inspectable with their partial artifact and failure reason.
+
+After a trial review, `experiment-assess` or MCP `assess_experiment` records `supported`, `contradicted`, or `inconclusive` for the experiment's prediction. Supported and contradicted verdicts must cite at least one observation from the experiment's trials. Every verdict includes a reason and the evidence revision it assessed; a later key creates another assessment. The tool records a human or agent interpretation of the evidence rather than promoting a structural fit to proof. Use `experiment-assessments` or MCP `experiment_assessments` to page the history and `experiment-assessment-status` or MCP `experiment_assessment_status` to inspect one retry key.
 
 ## Human view
 

@@ -160,6 +160,26 @@ struct ExperimentInput {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct ExperimentAssessmentInput {
+    experiment_id: String,
+    /// Supported, contradicted, or inconclusive. This is an agent or analyst judgment.
+    verdict: String,
+    explanation: String,
+    key: String,
+    #[serde(default)]
+    evidence_ids: Vec<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ExperimentAssessmentPageInput {
+    experiment_id: String,
+    #[serde(default)]
+    offset: usize,
+    #[serde(default = "default_page_limit")]
+    limit: usize,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct TrialInput {
     experiment_id: String,
     role: String,
@@ -601,6 +621,22 @@ impl InvestigationServer {
     ) -> Result<CallToolResult, String> {
         Self::json(query::list_experiments(
             &self.load()?,
+            input.offset,
+            input.limit,
+        )?)
+    }
+
+    #[tool(
+        description = "Page an experiment's prediction assessments, newest first, including verdict, rationale, evidence observation IDs, and basis revision.",
+        annotations(read_only_hint = true)
+    )]
+    fn experiment_assessments(
+        &self,
+        Parameters(input): Parameters<ExperimentAssessmentPageInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(query::list_experiment_assessments(
+            &self.load()?,
+            &input.experiment_id,
             input.offset,
             input.limit,
         )?)
@@ -1218,6 +1254,43 @@ impl InvestigationServer {
             input.hypothesis_ids.join(",")
         };
         self.invoke("experiment", vec![input.question, ids, input.prediction])
+            .await
+    }
+
+    #[tool(
+        description = "Retry-safely record an analyst or agent verdict on an experiment's prediction, with a rationale and observation IDs from that experiment. A later key records a revised assessment.",
+        annotations(idempotent_hint = true)
+    )]
+    async fn assess_experiment(
+        &self,
+        Parameters(input): Parameters<ExperimentAssessmentInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke(
+            "experiment-assess",
+            vec![
+                input.experiment_id,
+                input.verdict,
+                input.explanation,
+                input.key,
+                if input.evidence_ids.is_empty() {
+                    "-".into()
+                } else {
+                    input.evidence_ids.join(",")
+                },
+            ],
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Inspect an experiment prediction assessment by its retry key.",
+        annotations(read_only_hint = true)
+    )]
+    async fn experiment_assessment_status(
+        &self,
+        Parameters(input): Parameters<KeyInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke("experiment-assessment-status", vec![input.key])
             .await
     }
 
