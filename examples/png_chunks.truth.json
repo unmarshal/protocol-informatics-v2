@@ -118,5 +118,85 @@
         }
       ]
     }
+  ],
+  "followup_files": [
+    {
+      "file": "png_chunk_large_discovery.png",
+      "width": 1,
+      "height": 1,
+      "chunks": [
+        {
+          "index": 0,
+          "start": 8,
+          "end": 33,
+          "length": 13,
+          "type": "IHDR",
+          "crc32": "907753de"
+        },
+        {
+          "index": 1,
+          "start": 33,
+          "end": 66077,
+          "length": 66032,
+          "type": "tEXt",
+          "crc32": "00dd01f8"
+        },
+        {
+          "index": 2,
+          "start": 66077,
+          "end": 66101,
+          "length": 12,
+          "type": "IDAT",
+          "crc32": "ab596227"
+        },
+        {
+          "index": 3,
+          "start": 66101,
+          "end": 66113,
+          "length": 0,
+          "type": "IEND",
+          "crc32": "ae426082"
+        }
+      ]
+    },
+    {
+      "file": "png_chunk_large_validation.png",
+      "width": 1,
+      "height": 1,
+      "chunks": [
+        {
+          "index": 0,
+          "start": 8,
+          "end": 33,
+          "length": 13,
+          "type": "IHDR",
+          "crc32": "907753de"
+        },
+        {
+          "index": 1,
+          "start": 33,
+          "end": 66579,
+          "length": 66534,
+          "type": "tEXt",
+          "crc32": "49f2403e"
+        },
+        {
+          "index": 2,
+          "start": 66579,
+          "end": 66603,
+          "length": 12,
+          "type": "IDAT",
+          "crc32": "add3a781"
+        },
+        {
+          "index": 3,
+          "start": 66603,
+          "end": 66615,
+          "length": 0,
+          "type": "IEND",
+          "crc32": "ae426082"
+        }
+      ]
+    }
   ]
 }

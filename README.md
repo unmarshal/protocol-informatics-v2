@@ -203,6 +203,16 @@ cargo run -- commit-framing /tmp/pi-png obs-000005-0000 8 0 4 big payload 1 png-
 cargo run -- report /tmp/pi-png /tmp/pi-png-report.html
 ```
 
+The first run reports two distinct boundary rules and recommends crossing a length value of 65,536. Add the supplied follow-up files to the same trials and infer again:
+
+```sh
+cargo run -- import /tmp/pi-png trial-000003 binary examples/png_chunk_large_discovery.png
+cargo run -- import /tmp/pi-png trial-000004 binary examples/png_chunk_large_validation.png
+cargo run -- infer-chunks /tmp/pi-png trial-000003 trial-000004
+```
+
+The two-byte field alias is then rejected. Two descriptions remain because `total + 12` and `payload + 8` compute the same boundaries for a four-byte field. `identifiability` reports the number of fully validated descriptions, distinct boundary rules, and an actionable length threshold when one is available. Chunk inference accepts observations up to 128 KiB so this experiment can cross the two-byte boundary; other fixed-width inference retains its 64 KiB limit.
+
 `probe-tlv` treats the bytes before the length field as a one- or two-byte raw type code and reports each element's type, value, logical, and padded spans with source provenance. `infer-tlv` searches those typed layouts on discovery files, checks the boundaries on held-out files, and counts recurring type codes and novel held-out codes. Type recurrence is descriptive evidence; it does not assign a meaning to a code or reject a valid new code. See [the TLV method](docs/tlv-method.md).
 
 `probe-varint` tests unsigned LEB128 length prefixes with a variable number of encoded bytes. `infer-varint` searches candidate record starts, prefix offsets, length modes, and alignments; it requires a multibyte prefix in discovery and reports every discovery fit with held-out counterexamples. `commit-varint` persists a complete interpretation with retry-safe keys and stable frame IDs. Paged `frames`, `frame-span`, `frame-value`, and `infer-frame-value` work on these derived records. See [the varint method](docs/varint-method.md) and the independent four-file fixture in `examples/varint_*.bin`.

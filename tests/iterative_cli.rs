@@ -105,6 +105,38 @@ fn png_chunks_need_uncounted_length_bytes_and_survive_holdout() {
     assert_ne!(without_adjustment["status"], "complete");
     let inferred = cli(&["infer-chunks", root_text, discovery_id, validation_id]);
     assert_eq!(inferred["method"], "length_prefix_with_adjustment_v1");
+    assert_eq!(
+        inferred["identifiability"]["fully_validated_candidate_count"],
+        4
+    );
+    assert_eq!(
+        inferred["identifiability"]["distinct_boundary_rule_count"],
+        2
+    );
+    assert_eq!(
+        inferred["identifiability"]["next_experiment"]["minimum_length_value"],
+        65536
+    );
+    assert_eq!(
+        inferred["identifiability"]["next_experiment"]["kind"],
+        "cross_length_width_boundary"
+    );
+    let candidates = inferred["candidates"].as_array().unwrap();
+    let wide_total = candidates
+        .iter()
+        .find(|candidate| {
+            candidate["config"]["prefix_width"] == 4
+                && candidate["config"]["length_mode"] == "total"
+        })
+        .unwrap();
+    let wide_payload = candidates
+        .iter()
+        .find(|candidate| {
+            candidate["config"]["prefix_width"] == 4
+                && candidate["config"]["length_mode"] == "payload"
+        })
+        .unwrap();
+    assert_eq!(wide_total["boundary_rule"], wide_payload["boundary_rule"]);
     assert!(
         inferred["candidates"]
             .as_array()
@@ -178,6 +210,55 @@ fn png_chunks_need_uncounted_length_bytes_and_survive_holdout() {
     assert!(html.contains("Candidate chunk framing"));
     assert!(html.contains("length_prefix_with_adjustment_v1"));
     assert!(html.contains("\"length_adjustment\":8"));
+    for (trial_id, file) in [
+        (discovery_id, &truth["followup_files"][0]),
+        (validation_id, &truth["followup_files"][1]),
+    ] {
+        let source = examples.join(file["file"].as_str().unwrap());
+        let imported = cli(&["import", root_text, trial_id, "binary", path(&source)]);
+        let observation_id = imported["event"]["observations"][0]["id"].as_str().unwrap();
+        let probe = cli(&[
+            "probe-framing",
+            root_text,
+            observation_id,
+            "8",
+            "0",
+            "4",
+            "big",
+            "payload",
+            "1",
+            "8",
+        ]);
+        assert_eq!(probe["status"], "complete");
+        for (actual, expected) in probe["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(file["chunks"].as_array().unwrap())
+        {
+            assert_eq!(actual["start"], expected["start"]);
+            assert_eq!(actual["end"], expected["end"]);
+            assert_eq!(actual["length_value"], expected["length"]);
+        }
+    }
+    let updated = cli(&["infer-chunks", root_text, discovery_id, validation_id]);
+    assert_eq!(
+        updated["identifiability"]["fully_validated_candidate_count"],
+        2
+    );
+    assert_eq!(
+        updated["identifiability"]["distinct_boundary_rule_count"],
+        1
+    );
+    assert!(updated["identifiability"]["next_experiment"].is_null());
+    assert!(
+        updated["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|candidate| candidate["config"]["prefix_width"] == 4)
+    );
+    assert_eq!(cli(&["verify", root_text])["observations"], 5);
     fs::remove_dir_all(root).unwrap();
 }
 

@@ -1,4 +1,4 @@
-"""Generate small valid PNGs with independently recorded chunk boundaries."""
+"""Generate valid PNGs with independently recorded chunk boundaries."""
 
 import json
 import struct
@@ -89,10 +89,28 @@ def main() -> None:
             b"two independent rows; " + b"v" * 320,
         ),
     ]
-    for file in files:
+    followup_files = [
+        make_png(
+            "png_chunk_large_discovery.png",
+            1,
+            [bytes.fromhex("804020")],
+            b"length width discovery; " + b"D" * 66_000,
+        ),
+        make_png(
+            "png_chunk_large_validation.png",
+            1,
+            [bytes.fromhex("208040")],
+            b"length width validation; " + b"V" * 66_501,
+        ),
+    ]
+    for file in files + followup_files:
         validate_png(ROOT / file["file"])
     (ROOT / "png_chunks.truth.json").write_text(
-        json.dumps({"signature_hex": SIGNATURE.hex(), "files": files}, indent=2) + "\n"
+        json.dumps(
+            {"signature_hex": SIGNATURE.hex(), "files": files, "followup_files": followup_files},
+            indent=2,
+        )
+        + "\n"
     )
 
 

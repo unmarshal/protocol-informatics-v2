@@ -516,6 +516,12 @@ if(!(state.framing_inferences||[]).length) byId('framingCandidates').append(node
 for(const item of state.chunk_inferences||[]) {
   const inference=item.inference, row=node('div','', 'row');
   row.append(node('strong',item.experiment_id+' · '+inference.candidate_count+' chunk model(s)'),node('div',inference.discovery_count+' discovery observation(s) · '+inference.validation_count+' held-out observation(s)','small muted'));
+  const identifiability=inference.identifiability;
+  if(identifiability) {
+    row.append(node('div',identifiability.fully_validated_candidate_count+' fully validated description(s) · '+identifiability.distinct_boundary_rule_count+' distinct boundary rule(s)','small muted'));
+    if(identifiability.next_experiment?.kind==='cross_length_width_boundary') row.append(node('div','Suggested next experiment: capture a record with a length value of at least '+identifiability.next_experiment.minimum_length_value+' to challenge the shorter length-field width.','small'));
+    else if(identifiability.fully_validated_candidate_count>1&&identifiability.distinct_boundary_rule_count===1) row.append(node('div','The surviving descriptions compute the same record boundaries for every length value; boundary evidence alone cannot separate them.','small muted'));
+  }
   for(const candidate of inference.candidates.slice(0,5)) {
     const config=candidate.config;
     row.append(node('div','start '+config.start_offset+' · field +'+config.prefix_offset+' / '+config.prefix_width+' byte(s) '+config.byte_order+' · '+config.length_mode+' + '+config.length_adjustment+' byte(s) · align '+config.alignment+' · held-out '+candidate.validation_matches+'/'+inference.validation_count,'small'));

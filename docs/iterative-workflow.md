@@ -35,6 +35,8 @@ Each proposed action has a typed kind (`inspect`, `analyze`, `capture`, `tag`, `
 
 The planner can rank actions by expected reduction in uncertainty, likely coverage of unseen message types, cost, and ability to produce a clear counterexample. This ranking is advisory; its inputs and rationale are inspectable. An agent may take a cheap inspection step before committing to a capture.
 
+Chunk framing now provides one concrete version of this loop. `infer-chunks` reports fully validated descriptions, distinct boundary rules, and, when a shorter field aliases a wider one, the minimum length value that would cross the shorter field's range. The PNG fixture first leaves two width hypotheses; a `capture-step` with a 66 KiB text chunk in each trial removes the two-byte alias. The remaining total and payload descriptions have the same boundary rule, so length variation cannot distinguish them. The agent can retain that equivalence instead of inventing a semantic winner.
+
 ## Human collaboration
 
 The viewer shows a chronological investigation history alongside the evidence graph. It should answer what each experiment changed, which hypothesis gained or lost support, and where a human correction affected downstream conclusions. Analysts can branch an investigation to test an alternative interpretation and later compare the branches. The agent sees corrections as new evidence events and can continue from the resulting revision.

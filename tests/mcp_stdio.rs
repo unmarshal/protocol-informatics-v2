@@ -767,6 +767,10 @@ fn agent_can_infer_and_commit_png_chunks_over_mcp() {
         "infer_chunk_framing",
         json!({"discovery_trial_id":discovery_id,"validation_trial_id":validation_id}),
     );
+    assert_eq!(
+        inferred["identifiability"]["next_experiment"]["minimum_length_value"],
+        65536
+    );
     assert!(
         inferred["candidates"]
             .as_array()
@@ -792,6 +796,35 @@ fn agent_can_infer_and_commit_png_chunks_over_mcp() {
     assert_eq!(committed["run"]["config"]["length_adjustment"], 8);
     let verified = client.tool("verify", json!({}));
     assert_eq!(verified["captures"], 3);
+    for (trial_id, filename, step_key) in [
+        (discovery_id, "png_chunk_large_discovery.png", "png-d3"),
+        (validation_id, "png_chunk_large_validation.png", "png-v2"),
+    ] {
+        let captured = client.tool(
+            "capture_step",
+            json!({"trial_id":trial_id,"kind":"fixture","detail":filename,"phase":"stimulus",
+                "label":"Cross the 65535-byte length boundary","step_key":step_key,"format":"binary","timeout_ms":5000,
+                "command":["/bin/cat",examples.join(filename).to_str().unwrap()]}),
+        );
+        assert_eq!(captured["observation_count"], 1);
+    }
+    let updated = client.tool(
+        "infer_chunk_framing",
+        json!({"discovery_trial_id":discovery_id,"validation_trial_id":validation_id}),
+    );
+    assert_eq!(
+        updated["identifiability"]["distinct_boundary_rule_count"],
+        1
+    );
+    assert!(updated["identifiability"]["next_experiment"].is_null());
+    assert!(
+        updated["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|candidate| candidate["config"]["prefix_width"] == 4)
+    );
+    assert_eq!(client.tool("verify", json!({}))["captures"], 5);
     client.stop();
     fs::remove_dir_all(root).unwrap();
 }

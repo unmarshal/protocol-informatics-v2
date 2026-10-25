@@ -11,6 +11,7 @@ const MAX_RECORDS: usize = 256;
 const MAX_SPANS_PER_RECORD: usize = 16;
 const MAX_INFERENCE_OBSERVATIONS: usize = 16;
 const MAX_INFERENCE_BYTES: usize = 64 * 1024;
+const MAX_CHUNK_INFERENCE_BYTES: usize = 128 * 1024;
 const MAX_REPORTED_CANDIDATES: usize = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -81,6 +82,32 @@ impl FramingConfig {
     fn header_length(self) -> usize {
         self.prefix_offset + self.prefix_width
     }
+
+    fn boundary_rule(self) -> FramingBoundaryRule {
+        FramingBoundaryRule {
+            start_offset: self.start_offset,
+            prefix_offset: self.prefix_offset,
+            prefix_width: self.prefix_width,
+            byte_order: self.byte_order,
+            additive_bytes: self.length_adjustment
+                + if self.length_mode == LengthMode::Payload {
+                    self.header_length()
+                } else {
+                    0
+                },
+            alignment: self.alignment,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct FramingBoundaryRule {
+    pub start_offset: usize,
+    pub prefix_offset: usize,
+    pub prefix_width: usize,
+    pub byte_order: ByteOrder,
+    pub additive_bytes: usize,
+    pub alignment: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -315,6 +342,7 @@ pub struct FramingCounterexample {
 #[derive(Debug, Serialize)]
 pub struct FramingCandidate {
     pub config: FramingConfig,
+    pub boundary_rule: FramingBoundaryRule,
     pub discovery_records: usize,
     pub distinct_discovery_lengths: usize,
     pub validation_matches: usize,
@@ -333,11 +361,34 @@ pub struct FramingInference {
     pub candidate_count: usize,
     pub reported_candidate_limit: usize,
     pub candidates: Vec<FramingCandidate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identifiability: Option<FramingIdentifiability>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FramingIdentifiability {
+    pub fully_validated_candidate_count: usize,
+    pub distinct_boundary_rule_count: usize,
+    pub next_experiment: Option<FramingNextExperiment>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FramingNextExperiment {
+    pub kind: &'static str,
+    pub minimum_length_value: u64,
 }
 
 pub(crate) fn trial_observations<'a>(
     state: &'a State,
     trial_id: &str,
+) -> Result<Vec<&'a Observation>, String> {
+    trial_observations_with_limit(state, trial_id, MAX_INFERENCE_BYTES)
+}
+
+fn trial_observations_with_limit<'a>(
+    state: &'a State,
+    trial_id: &str,
+    max_bytes: usize,
 ) -> Result<Vec<&'a Observation>, String> {
     let selected: Vec<_> = state
         .observations
@@ -356,10 +407,10 @@ pub(crate) fn trial_observations<'a>(
     }
     if selected
         .iter()
-        .any(|observation| observation.bytes_hex.len() / 2 > MAX_INFERENCE_BYTES)
+        .any(|observation| observation.bytes_hex.len() / 2 > max_bytes)
     {
         return Err(format!(
-            "structural inference supports at most {MAX_INFERENCE_BYTES} bytes per observation"
+            "structural inference supports at most {max_bytes} bytes per observation"
         ));
     }
     Ok(selected)
@@ -387,9 +438,13 @@ pub fn infer_chunk_framing(
         state,
         discovery_trial_id,
         validation_trial_id,
-        &[0, 1, 2, 3, 4],
-        &[0, 1, 2, 4, 8, 12, 16],
-        "length_prefix_with_adjustment_v1",
+        FramingSearch {
+            prefix_offsets: &[0, 1, 2, 3, 4],
+            length_adjustments: &[0, 1, 2, 4, 8, 12, 16],
+            method: "length_prefix_with_adjustment_v1",
+            max_bytes: MAX_CHUNK_INFERENCE_BYTES,
+            explain_identifiability: true,
+        },
     )
 }
 
@@ -403,19 +458,29 @@ pub(crate) fn infer_length_prefix_for_offsets(
         state,
         discovery_trial_id,
         validation_trial_id,
-        prefix_offsets,
-        &[0],
-        "length_prefix_exact_fit_v1",
+        FramingSearch {
+            prefix_offsets,
+            length_adjustments: &[0],
+            method: "length_prefix_exact_fit_v1",
+            max_bytes: MAX_INFERENCE_BYTES,
+            explain_identifiability: false,
+        },
     )
+}
+
+struct FramingSearch<'a> {
+    prefix_offsets: &'a [usize],
+    length_adjustments: &'a [usize],
+    method: &'static str,
+    max_bytes: usize,
+    explain_identifiability: bool,
 }
 
 fn infer_length_prefix_for_offsets_and_adjustments(
     state: &State,
     discovery_trial_id: &str,
     validation_trial_id: &str,
-    prefix_offsets: &[usize],
-    length_adjustments: &[usize],
-    method: &'static str,
+    search: FramingSearch<'_>,
 ) -> Result<FramingInference, String> {
     let discovery_trial = state
         .trials
@@ -432,8 +497,8 @@ fn infer_length_prefix_for_offsets_and_adjustments(
     {
         return Err("discovery and validation must be distinct trials of one experiment".into());
     }
-    let discovery = trial_observations(state, discovery_trial_id)?;
-    let validation = trial_observations(state, validation_trial_id)?;
+    let discovery = trial_observations_with_limit(state, discovery_trial_id, search.max_bytes)?;
+    let validation = trial_observations_with_limit(state, validation_trial_id, search.max_bytes)?;
     if discovery.len() < 2 {
         return Err("framing inference needs at least two discovery observations".into());
     }
@@ -448,7 +513,7 @@ fn infer_length_prefix_for_offsets_and_adjustments(
 
     let mut candidates = Vec::new();
     for start_offset in 0..=8 {
-        for &prefix_offset in prefix_offsets {
+        for &prefix_offset in search.prefix_offsets {
             for prefix_width in [1, 2, 4] {
                 for byte_order in [ByteOrder::BigEndian, ByteOrder::LittleEndian] {
                     if prefix_width == 1 && byte_order == ByteOrder::LittleEndian {
@@ -456,7 +521,7 @@ fn infer_length_prefix_for_offsets_and_adjustments(
                     }
                     for length_mode in [LengthMode::Total, LengthMode::Payload] {
                         for alignment in [1, 2, 4] {
-                            for &length_adjustment in length_adjustments {
+                            for &length_adjustment in search.length_adjustments {
                                 let config = FramingConfig {
                                     start_offset,
                                     prefix_offset,
@@ -520,6 +585,7 @@ fn infer_length_prefix_for_offsets_and_adjustments(
                                 }
                                 candidates.push(FramingCandidate {
                                     config,
+                                    boundary_rule: config.boundary_rule(),
                                     discovery_records,
                                     distinct_discovery_lengths: values.len(),
                                     validation_matches,
@@ -546,10 +612,13 @@ fn infer_length_prefix_for_offsets_and_adjustments(
             .then(left.config.cmp(&right.config))
     });
     let candidate_count = candidates.len();
+    let identifiability = search
+        .explain_identifiability
+        .then(|| explain_chunk_candidates(&candidates, validation.len()));
     candidates.truncate(MAX_REPORTED_CANDIDATES);
     Ok(FramingInference {
         revision: state.revision,
-        method,
+        method: search.method,
         discovery_trial_id: discovery_trial_id.into(),
         validation_trial_id: validation_trial_id.into(),
         discovery_count: discovery.len(),
@@ -557,7 +626,60 @@ fn infer_length_prefix_for_offsets_and_adjustments(
         candidate_count,
         reported_candidate_limit: MAX_REPORTED_CANDIDATES,
         candidates,
+        identifiability,
     })
+}
+
+fn explain_chunk_candidates(
+    candidates: &[FramingCandidate],
+    validation_count: usize,
+) -> FramingIdentifiability {
+    let validated: Vec<_> = candidates
+        .iter()
+        .filter(|candidate| candidate.validation_matches == validation_count)
+        .collect();
+    let rules: BTreeSet<_> = validated
+        .iter()
+        .map(|candidate| candidate.boundary_rule)
+        .collect();
+    let minimum_length_value = rules
+        .iter()
+        .flat_map(|left| {
+            rules
+                .iter()
+                .filter_map(move |right| width_alias_boundary(*left, *right))
+        })
+        .min();
+    FramingIdentifiability {
+        fully_validated_candidate_count: validated.len(),
+        distinct_boundary_rule_count: rules.len(),
+        next_experiment: minimum_length_value.map(|minimum_length_value| FramingNextExperiment {
+            kind: "cross_length_width_boundary",
+            minimum_length_value,
+        }),
+    }
+}
+
+fn width_alias_boundary(left: FramingBoundaryRule, right: FramingBoundaryRule) -> Option<u64> {
+    if left.prefix_width >= right.prefix_width
+        || left.start_offset != right.start_offset
+        || left.byte_order != right.byte_order
+        || left.additive_bytes != right.additive_bytes
+        || left.alignment != right.alignment
+    {
+        return None;
+    }
+    let overlaps_low_bytes = match left.byte_order {
+        ByteOrder::BigEndian => {
+            left.prefix_offset + left.prefix_width == right.prefix_offset + right.prefix_width
+        }
+        ByteOrder::LittleEndian => left.prefix_offset == right.prefix_offset,
+    };
+    if !overlaps_low_bytes {
+        return None;
+    }
+    let threshold = 1_u64 << (left.prefix_width * 8);
+    (threshold < MAX_CHUNK_INFERENCE_BYTES as u64).then_some(threshold)
 }
 
 #[cfg(test)]
