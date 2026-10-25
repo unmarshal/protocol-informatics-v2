@@ -222,9 +222,11 @@ pub fn render(root: &Path, state: &State) -> String {
         if let Ok(review) = crate::review::review_trials(state, &discovery.id, &validation.id) {
             trial_reviews.push(review);
         }
+        let mut ordinary_framing_candidate_count = 0;
         if let Ok(inference) =
             crate::framing::infer_length_prefix(state, &discovery.id, &validation.id)
         {
+            ordinary_framing_candidate_count = inference.candidate_count;
             if inference.candidate_count == 1
                 && let Some(candidate) = inference.candidates.first()
                 && candidate.validation_matches == inference.validation_count
@@ -248,18 +250,17 @@ pub fn render(root: &Path, state: &State) -> String {
         }
         if let Ok(inference) =
             crate::framing::infer_chunk_framing(state, &discovery.id, &validation.id)
-            && inference
-                .candidates
-                .iter()
-                .any(|candidate| candidate.config.length_adjustment > 0)
+            && inference.candidate_count > 0
+            && (ordinary_framing_candidate_count == 0
+                || inference
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.config.length_adjustment > 0))
         {
             if let Some(candidate) = inference
                 .candidates
                 .iter()
-                .filter(|candidate| {
-                    candidate.validation_matches == inference.validation_count
-                        && candidate.config.length_adjustment > 0
-                })
+                .filter(|candidate| candidate.validation_matches == inference.validation_count)
                 .min_by_key(|candidate| candidate.config.length_adjustment)
                 && let Some(observation) = state.observations.iter().find(|observation| {
                     state.captures.iter().any(|capture| {

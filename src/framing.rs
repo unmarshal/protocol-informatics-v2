@@ -443,6 +443,7 @@ pub fn infer_chunk_framing(
             length_adjustments: &[0, 1, 2, 4, 8, 12, 16],
             method: "length_prefix_with_adjustment_v1",
             max_bytes: MAX_CHUNK_INFERENCE_BYTES,
+            max_start_offset: 16,
             explain_identifiability: true,
         },
     )
@@ -463,6 +464,7 @@ pub(crate) fn infer_length_prefix_for_offsets(
             length_adjustments: &[0],
             method: "length_prefix_exact_fit_v1",
             max_bytes: MAX_INFERENCE_BYTES,
+            max_start_offset: 8,
             explain_identifiability: false,
         },
     )
@@ -473,6 +475,7 @@ struct FramingSearch<'a> {
     length_adjustments: &'a [usize],
     method: &'static str,
     max_bytes: usize,
+    max_start_offset: usize,
     explain_identifiability: bool,
 }
 
@@ -512,7 +515,7 @@ fn infer_length_prefix_for_offsets_and_adjustments(
         .collect::<Result<_, _>>()?;
 
     let mut candidates = Vec::new();
-    for start_offset in 0..=8 {
+    for start_offset in 0..=search.max_start_offset {
         for &prefix_offset in search.prefix_offsets {
             for prefix_width in [1, 2, 4] {
                 for byte_order in [ByteOrder::BigEndian, ByteOrder::LittleEndian] {
@@ -663,13 +666,13 @@ fn explain_chunk_candidates(
 fn width_alias_boundary(left: FramingBoundaryRule, right: FramingBoundaryRule) -> Option<u64> {
     if left.prefix_width >= right.prefix_width
         || left.start_offset != right.start_offset
-        || left.byte_order != right.byte_order
+        || (left.prefix_width > 1 && left.byte_order != right.byte_order)
         || left.additive_bytes != right.additive_bytes
         || left.alignment != right.alignment
     {
         return None;
     }
-    let overlaps_low_bytes = match left.byte_order {
+    let overlaps_low_bytes = match right.byte_order {
         ByteOrder::BigEndian => {
             left.prefix_offset + left.prefix_width == right.prefix_offset + right.prefix_width
         }

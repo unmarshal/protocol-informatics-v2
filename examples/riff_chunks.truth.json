@@ -1,0 +1,156 @@
+{
+  "files": [
+    {
+      "file": "riff_chunk_discovery_a.wav",
+      "frames": 2,
+      "chunks": [
+        {
+          "index": 0,
+          "start": 12,
+          "logical_end": 36,
+          "end": 36,
+          "length": 16,
+          "type": "fmt "
+        },
+        {
+          "index": 1,
+          "start": 36,
+          "logical_end": 45,
+          "end": 46,
+          "length": 1,
+          "type": "JUNK"
+        },
+        {
+          "index": 2,
+          "start": 46,
+          "logical_end": 58,
+          "end": 58,
+          "length": 4,
+          "type": "data"
+        }
+      ]
+    },
+    {
+      "file": "riff_chunk_discovery_b.wav",
+      "frames": 4,
+      "chunks": [
+        {
+          "index": 0,
+          "start": 12,
+          "logical_end": 36,
+          "end": 36,
+          "length": 16,
+          "type": "fmt "
+        },
+        {
+          "index": 1,
+          "start": 36,
+          "logical_end": 47,
+          "end": 48,
+          "length": 3,
+          "type": "JUNK"
+        },
+        {
+          "index": 2,
+          "start": 48,
+          "logical_end": 64,
+          "end": 64,
+          "length": 8,
+          "type": "data"
+        }
+      ]
+    },
+    {
+      "file": "riff_chunk_validation.wav",
+      "frames": 6,
+      "chunks": [
+        {
+          "index": 0,
+          "start": 12,
+          "logical_end": 36,
+          "end": 36,
+          "length": 16,
+          "type": "fmt "
+        },
+        {
+          "index": 1,
+          "start": 36,
+          "logical_end": 49,
+          "end": 50,
+          "length": 5,
+          "type": "JUNK"
+        },
+        {
+          "index": 2,
+          "start": 50,
+          "logical_end": 70,
+          "end": 70,
+          "length": 12,
+          "type": "data"
+        }
+      ]
+    }
+  ],
+  "followup_files": [
+    {
+      "file": "riff_chunk_large_discovery.wav",
+      "frames": 4,
+      "chunks": [
+        {
+          "index": 0,
+          "start": 12,
+          "logical_end": 36,
+          "end": 36,
+          "length": 16,
+          "type": "fmt "
+        },
+        {
+          "index": 1,
+          "start": 36,
+          "logical_end": 345,
+          "end": 346,
+          "length": 301,
+          "type": "JUNK"
+        },
+        {
+          "index": 2,
+          "start": 346,
+          "logical_end": 362,
+          "end": 362,
+          "length": 8,
+          "type": "data"
+        }
+      ]
+    },
+    {
+      "file": "riff_chunk_large_validation.wav",
+      "frames": 6,
+      "chunks": [
+        {
+          "index": 0,
+          "start": 12,
+          "logical_end": 36,
+          "end": 36,
+          "length": 16,
+          "type": "fmt "
+        },
+        {
+          "index": 1,
+          "start": 36,
+          "logical_end": 347,
+          "end": 348,
+          "length": 303,
+          "type": "JUNK"
+        },
+        {
+          "index": 2,
+          "start": 348,
+          "logical_end": 368,
+          "end": 368,
+          "length": 12,
+          "type": "data"
+        }
+      ]
+    }
+  ]
+}

@@ -263,6 +263,166 @@ fn png_chunks_need_uncounted_length_bytes_and_survive_holdout() {
 }
 
 #[test]
+fn riff_chunks_use_little_endian_lengths_and_even_byte_padding() {
+    let root = workspace();
+    let root_text = path(&root);
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let truth: Value =
+        serde_json::from_slice(&fs::read(examples.join("riff_chunks.truth.json")).unwrap())
+            .unwrap();
+    cli(&["init", root_text, "Where do RIFF chunks begin and end?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Vary JUNK and audio lengths",
+        "-",
+        "A little-endian chunk length predicts padded boundaries",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let discovery = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "discovery",
+        "two WAV files",
+    ]);
+    let discovery_id = discovery["event"]["trial"]["id"].as_str().unwrap();
+    let validation = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "validation",
+        "held-out WAV file",
+    ]);
+    let validation_id = validation["event"]["trial"]["id"].as_str().unwrap();
+    let mut observation_ids = Vec::new();
+    for (index, file) in truth["files"].as_array().unwrap().iter().enumerate() {
+        let trial_id = if index < 2 {
+            discovery_id
+        } else {
+            validation_id
+        };
+        let source = examples.join(file["file"].as_str().unwrap());
+        let imported = cli(&["import", root_text, trial_id, "binary", path(&source)]);
+        let observation_id = imported["event"]["observations"][0]["id"].as_str().unwrap();
+        observation_ids.push(observation_id.to_owned());
+        let probe = cli(&[
+            "probe-framing",
+            root_text,
+            observation_id,
+            "12",
+            "4",
+            "4",
+            "little",
+            "payload",
+            "2",
+        ]);
+        assert_eq!(probe["status"], "complete");
+        assert_eq!(probe["record_count"], 3);
+        for (actual, expected) in probe["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(file["chunks"].as_array().unwrap())
+        {
+            assert_eq!(actual["start"], expected["start"]);
+            assert_eq!(actual["logical_end"], expected["logical_end"]);
+            assert_eq!(actual["end"], expected["end"]);
+            assert_eq!(actual["length_value"], expected["length"]);
+        }
+    }
+    let inferred = cli(&["infer-chunks", root_text, discovery_id, validation_id]);
+    assert_eq!(
+        inferred["identifiability"]["next_experiment"]["minimum_length_value"],
+        256
+    );
+    assert!(
+        inferred["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| {
+                let config = &candidate["config"];
+                config["start_offset"] == 12
+                    && config["prefix_offset"] == 4
+                    && config["prefix_width"] == 4
+                    && config["byte_order"] == "little_endian"
+                    && config["length_mode"] == "payload"
+                    && config["alignment"] == 2
+                    && config["length_adjustment"] == 0
+                    && candidate["validation_matches"] == 1
+            })
+    );
+    let committed = cli(&[
+        "commit-framing",
+        root_text,
+        &observation_ids[0],
+        "12",
+        "4",
+        "4",
+        "little",
+        "payload",
+        "2",
+        "riff-chunks-discovery-a",
+    ]);
+    assert_eq!(committed["run"]["records"].as_array().unwrap().len(), 3);
+    let first_frame_id = committed["run"]["records"][0]["id"].as_str().unwrap();
+    let header = cli(&["frame-span", root_text, first_frame_id, "0", "8"]);
+    assert_eq!(header["bytes_hex"], "666d742010000000");
+    let report = root.join("riff-report.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("Candidate chunk framing"));
+    assert!(html.contains("\"start_offset\":12"));
+    assert_eq!(cli(&["verify", root_text])["observations"], 3);
+    for (trial_id, file) in [
+        (discovery_id, &truth["followup_files"][0]),
+        (validation_id, &truth["followup_files"][1]),
+    ] {
+        let source = examples.join(file["file"].as_str().unwrap());
+        let imported = cli(&["import", root_text, trial_id, "binary", path(&source)]);
+        let observation_id = imported["event"]["observations"][0]["id"].as_str().unwrap();
+        let probe = cli(&[
+            "probe-framing",
+            root_text,
+            observation_id,
+            "12",
+            "4",
+            "4",
+            "little",
+            "payload",
+            "2",
+        ]);
+        assert_eq!(probe["status"], "complete");
+        for (actual, expected) in probe["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(file["chunks"].as_array().unwrap())
+        {
+            assert_eq!(actual["start"], expected["start"]);
+            assert_eq!(actual["logical_end"], expected["logical_end"]);
+            assert_eq!(actual["end"], expected["end"]);
+            assert_eq!(actual["length_value"], expected["length"]);
+        }
+    }
+    let updated = cli(&["infer-chunks", root_text, discovery_id, validation_id]);
+    assert!(
+        updated["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|candidate| candidate["config"]["prefix_width"] != 1)
+    );
+    assert_eq!(
+        updated["identifiability"]["next_experiment"]["minimum_length_value"],
+        65536
+    );
+    assert_eq!(cli(&["verify", root_text])["observations"], 5);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn committed_frames_cluster_by_correlated_record_evidence() {
     let root = workspace();
     let root_text = path(&root);
