@@ -131,6 +131,7 @@ pub struct ClusterMatch {
 pub struct RejectedCluster {
     pub cluster_id: String,
     pub insufficient_discovery_members: bool,
+    pub no_stable_header_evidence: bool,
     pub direction_mismatch: bool,
     pub stable_byte_mismatch_offsets: Vec<usize>,
 }
@@ -178,6 +179,53 @@ pub struct ClusterValidation {
     pub observations: Vec<ValidationObservation>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ValidationFrame {
+    pub frame_id: String,
+    pub status: ValidationStatus,
+    pub assigned_cluster_id: Option<String>,
+    pub compatible_cluster_count: usize,
+    pub candidates_truncated: bool,
+    pub candidates: Vec<ClusterMatch>,
+    pub rejected_cluster_count: usize,
+    pub rejections_truncated: bool,
+    pub rejections: Vec<RejectedCluster>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FrameClusterValidation {
+    pub revision: u64,
+    pub method: &'static str,
+    pub provisional: bool,
+    pub coordinate_system: &'static str,
+    pub source_model: String,
+    pub discovery_trial_id: String,
+    pub validation_trial_id: String,
+    pub discovery_run_keys: Vec<String>,
+    pub validation_run_keys: Vec<String>,
+    pub direction_mode: &'static str,
+    pub discovery_count: usize,
+    pub discovery_total: usize,
+    pub discovery_sampling_method: &'static str,
+    pub validation_count: usize,
+    pub validation_total: usize,
+    pub validation_sampling_method: &'static str,
+    pub maximum_full_validation_frames: usize,
+    pub cluster_count: usize,
+    pub assigned_count: usize,
+    pub ambiguous_count: usize,
+    pub unassigned_count: usize,
+    pub ambiguity_distance_margin: f64,
+    pub maximum_reported_candidates_per_frame: usize,
+    pub maximum_reported_frames: usize,
+    pub reported_frame_count: usize,
+    pub omitted_frame_count: usize,
+    pub reported_counterexample_count: usize,
+    pub detail_selection_method: &'static str,
+    pub clusters: Vec<FrameCluster>,
+    pub frames: Vec<ValidationFrame>,
+}
+
 const AMBIGUITY_DISTANCE_MARGIN: f64 = 0.05;
 const MAX_REPORTED_MATCHES: usize = 5;
 const MAX_FULL_VALIDATION_OBSERVATIONS: usize = 10_000;
@@ -214,17 +262,6 @@ pub fn validate_clusters(
             })
         })
         .collect();
-    if validation.is_empty() {
-        return Err("validation trial has no observations".into());
-    }
-    let validation_total = validation.len();
-    let (validation, validation_sampling_method) =
-        if validation_total <= MAX_FULL_VALIDATION_OBSERVATIONS {
-            (validation, "all")
-        } else {
-            let (sample, method, _) = sample_observations(&validation);
-            (sample, method)
-        };
     let mut representatives = BTreeMap::new();
     for cluster in &report.clusters {
         let representative = state
@@ -237,8 +274,37 @@ pub fn validate_clusters(
                     cluster.representative_observation_id
                 )
             })?;
-        representatives.insert(cluster.id.as_str(), from_hex(&representative.bytes_hex)?);
+        representatives.insert(cluster.id.clone(), from_hex(&representative.bytes_hex)?);
     }
+    validate_selected(
+        state.revision,
+        report,
+        discovery_trial_id,
+        validation_trial_id,
+        validation,
+        representatives,
+    )
+}
+
+fn validate_selected(
+    revision: u64,
+    report: ClusterReport,
+    discovery_trial_id: &str,
+    validation_trial_id: &str,
+    validation: Vec<&Observation>,
+    representatives: BTreeMap<String, Vec<u8>>,
+) -> Result<ClusterValidation, String> {
+    if validation.is_empty() {
+        return Err("validation trial has no observations".into());
+    }
+    let validation_total = validation.len();
+    let (validation, validation_sampling_method) =
+        if validation_total <= MAX_FULL_VALIDATION_OBSERVATIONS {
+            (validation, "all")
+        } else {
+            let (sample, method, _) = sample_observations(&validation);
+            (sample, method)
+        };
     let mut observations = Vec::new();
     let mut assigned_count = 0;
     let mut ambiguous_count = 0;
@@ -249,6 +315,7 @@ pub fn validate_clusters(
         let mut rejections = Vec::new();
         for cluster in &report.clusters {
             let enough_members = cluster.member_count >= MIN_CHILD_SIZE;
+            let has_stable_header_evidence = !cluster.stable_header_bytes.is_empty();
             let direction_fits = cluster.split_rules.iter().all(|rule| match rule {
                 SplitRule::Direction { value } => value == &observation.direction,
                 SplitRule::Byte { .. } => true,
@@ -259,7 +326,11 @@ pub fn validate_clusters(
                 .filter(|stable| bytes.get(stable.offset) != Some(&stable.value))
                 .map(|stable| stable.offset)
                 .collect();
-            if enough_members && direction_fits && stable_byte_mismatch_offsets.is_empty() {
+            if enough_members
+                && has_stable_header_evidence
+                && direction_fits
+                && stable_byte_mismatch_offsets.is_empty()
+            {
                 let representative = representatives
                     .get(cluster.id.as_str())
                     .expect("every cluster has a representative");
@@ -271,6 +342,7 @@ pub fn validate_clusters(
                 rejections.push(RejectedCluster {
                     cluster_id: cluster.id.clone(),
                     insufficient_discovery_members: !enough_members,
+                    no_stable_header_evidence: !has_stable_header_evidence,
                     direction_mismatch: !direction_fits,
                     stable_byte_mismatch_offsets,
                 });
@@ -300,10 +372,12 @@ pub fn validate_clusters(
         candidates.truncate(MAX_REPORTED_MATCHES);
         rejections.sort_by(|a, b| {
             (usize::from(a.insufficient_discovery_members)
+                + usize::from(a.no_stable_header_evidence)
                 + usize::from(a.direction_mismatch)
                 + a.stable_byte_mismatch_offsets.len())
             .cmp(
                 &(usize::from(b.insufficient_discovery_members)
+                    + usize::from(b.no_stable_header_evidence)
                     + usize::from(b.direction_mismatch)
                     + b.stable_byte_mismatch_offsets.len()),
             )
@@ -332,8 +406,8 @@ pub fn validate_clusters(
         .filter(|observation| observation.status != ValidationStatus::Assigned)
         .count();
     Ok(ClusterValidation {
-        revision: state.revision,
-        method: "stable_header_and_medoid_held_out_v3",
+        revision,
+        method: "stable_header_and_medoid_held_out_v4",
         provisional: true,
         discovery_trial_id: discovery_trial_id.into(),
         validation_trial_id: validation_trial_id.into(),
@@ -543,6 +617,173 @@ pub fn cluster_frames(
     respect_direction: bool,
     run_keys: Option<&[String]>,
 ) -> Result<FrameClusterReport, String> {
+    let (derived, used_keys) = frame_observations(state, model, trial_id, run_keys)?;
+    let selected: Vec<_> = derived.iter().collect();
+    let report = cluster_selected(state, trial_id, respect_direction, &selected)?;
+    Ok(FrameClusterReport {
+        revision: report.revision,
+        method: report.method,
+        provisional: report.provisional,
+        coordinate_system: "logical_frame_bytes",
+        source_model: model.into(),
+        run_keys: used_keys.into_iter().collect(),
+        direction_mode: report.direction_mode,
+        trial_id: report.trial_id,
+        selected_frame_count: report.selected_observation_count,
+        frame_count: report.observation_count,
+        sampling_method: report.sampling_method,
+        sampling_strata_count: report.sampling_strata_count,
+        maximum_frames: report.maximum_observations,
+        maximum_header_bytes: report.maximum_header_bytes,
+        maximum_distance_bytes: report.maximum_distance_bytes,
+        minimum_evidence_separation: report.minimum_evidence_separation,
+        clusters: report
+            .clusters
+            .into_iter()
+            .map(frame_cluster_from_raw)
+            .collect(),
+    })
+}
+
+fn frame_cluster_from_raw(cluster: Cluster) -> FrameCluster {
+    FrameCluster {
+        id: cluster.id,
+        member_frame_ids: cluster.member_observation_ids,
+        representative_frame_id: cluster.representative_observation_id,
+        member_count: cluster.member_count,
+        minimum_length: cluster.minimum_length,
+        maximum_length: cluster.maximum_length,
+        split_rules: cluster.split_rules,
+        stable_header_bytes: cluster.stable_header_bytes,
+        farthest_members: cluster
+            .farthest_members
+            .into_iter()
+            .map(|member| FrameOutlierCandidate {
+                frame_id: member.observation_id,
+                distance_to_representative: member.distance_to_representative,
+            })
+            .collect(),
+    }
+}
+
+pub fn validate_frame_clusters(
+    state: &State,
+    model: &str,
+    discovery_trial_id: &str,
+    validation_trial_id: &str,
+    respect_direction: bool,
+    discovery_run_keys: Option<&[String]>,
+    validation_run_keys: Option<&[String]>,
+) -> Result<FrameClusterValidation, String> {
+    let discovery_trial = state
+        .trials
+        .iter()
+        .find(|trial| trial.id == discovery_trial_id)
+        .ok_or_else(|| format!("unknown trial {discovery_trial_id}"))?;
+    let validation_trial = state
+        .trials
+        .iter()
+        .find(|trial| trial.id == validation_trial_id)
+        .ok_or_else(|| format!("unknown trial {validation_trial_id}"))?;
+    if discovery_trial_id == validation_trial_id
+        || discovery_trial.experiment_id != validation_trial.experiment_id
+    {
+        return Err("discovery and validation must be distinct trials of one experiment".into());
+    }
+    let (discovery, discovery_keys) =
+        frame_observations(state, model, Some(discovery_trial_id), discovery_run_keys)?;
+    let (validation, validation_keys) =
+        frame_observations(state, model, Some(validation_trial_id), validation_run_keys)?;
+    let discovery_refs: Vec<_> = discovery.iter().collect();
+    let report = cluster_selected(
+        state,
+        Some(discovery_trial_id),
+        respect_direction,
+        &discovery_refs,
+    )?;
+    let discovery_by_id: BTreeMap<_, _> = discovery
+        .iter()
+        .map(|frame| (frame.id.as_str(), frame))
+        .collect();
+    let mut representatives = BTreeMap::new();
+    for cluster in &report.clusters {
+        let representative = discovery_by_id
+            .get(cluster.representative_observation_id.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "unknown representative frame {}",
+                    cluster.representative_observation_id
+                )
+            })?;
+        representatives.insert(cluster.id.clone(), from_hex(&representative.bytes_hex)?);
+    }
+    let validation_refs: Vec<_> = validation.iter().collect();
+    let raw = validate_selected(
+        state.revision,
+        report,
+        discovery_trial_id,
+        validation_trial_id,
+        validation_refs,
+        representatives,
+    )?;
+    Ok(FrameClusterValidation {
+        revision: raw.revision,
+        method: raw.method,
+        provisional: raw.provisional,
+        coordinate_system: "logical_frame_bytes",
+        source_model: model.into(),
+        discovery_trial_id: raw.discovery_trial_id,
+        validation_trial_id: raw.validation_trial_id,
+        discovery_run_keys: discovery_keys.into_iter().collect(),
+        validation_run_keys: validation_keys.into_iter().collect(),
+        direction_mode: raw.direction_mode,
+        discovery_count: raw.discovery_count,
+        discovery_total: raw.discovery_total,
+        discovery_sampling_method: raw.discovery_sampling_method,
+        validation_count: raw.validation_count,
+        validation_total: raw.validation_total,
+        validation_sampling_method: raw.validation_sampling_method,
+        maximum_full_validation_frames: raw.maximum_full_validation_observations,
+        cluster_count: raw.cluster_count,
+        assigned_count: raw.assigned_count,
+        ambiguous_count: raw.ambiguous_count,
+        unassigned_count: raw.unassigned_count,
+        ambiguity_distance_margin: raw.ambiguity_distance_margin,
+        maximum_reported_candidates_per_frame: raw.maximum_reported_candidates_per_observation,
+        maximum_reported_frames: raw.maximum_reported_observations,
+        reported_frame_count: raw.reported_observation_count,
+        omitted_frame_count: raw.omitted_observation_count,
+        reported_counterexample_count: raw.reported_counterexample_count,
+        detail_selection_method: raw.detail_selection_method,
+        clusters: raw
+            .clusters
+            .into_iter()
+            .map(frame_cluster_from_raw)
+            .collect(),
+        frames: raw
+            .observations
+            .into_iter()
+            .map(|frame| ValidationFrame {
+                frame_id: frame.observation_id,
+                status: frame.status,
+                assigned_cluster_id: frame.assigned_cluster_id,
+                compatible_cluster_count: frame.compatible_cluster_count,
+                candidates_truncated: frame.candidates_truncated,
+                candidates: frame.candidates,
+                rejected_cluster_count: frame.rejected_cluster_count,
+                rejections_truncated: frame.rejections_truncated,
+                rejections: frame.rejections,
+            })
+            .collect(),
+    })
+}
+
+fn frame_observations(
+    state: &State,
+    model: &str,
+    trial_id: Option<&str>,
+    run_keys: Option<&[String]>,
+) -> Result<(Vec<Observation>, BTreeSet<String>), String> {
     if !["fixed_width", "unsigned_leb128", "delimiter"].contains(&model) {
         return Err(format!("unknown frame model {model}"));
     }
@@ -686,48 +927,7 @@ pub fn cluster_frames(
     if derived.is_empty() {
         return Err("no committed frames selected".into());
     }
-    let selected: Vec<_> = derived.iter().collect();
-    let report = cluster_selected(state, trial_id, respect_direction, &selected)?;
-    Ok(FrameClusterReport {
-        revision: report.revision,
-        method: report.method,
-        provisional: report.provisional,
-        coordinate_system: "logical_frame_bytes",
-        source_model: model.into(),
-        run_keys: used_keys.into_iter().collect(),
-        direction_mode: report.direction_mode,
-        trial_id: report.trial_id,
-        selected_frame_count: report.selected_observation_count,
-        frame_count: report.observation_count,
-        sampling_method: report.sampling_method,
-        sampling_strata_count: report.sampling_strata_count,
-        maximum_frames: report.maximum_observations,
-        maximum_header_bytes: report.maximum_header_bytes,
-        maximum_distance_bytes: report.maximum_distance_bytes,
-        minimum_evidence_separation: report.minimum_evidence_separation,
-        clusters: report
-            .clusters
-            .into_iter()
-            .map(|cluster| FrameCluster {
-                id: cluster.id,
-                member_frame_ids: cluster.member_observation_ids,
-                representative_frame_id: cluster.representative_observation_id,
-                member_count: cluster.member_count,
-                minimum_length: cluster.minimum_length,
-                maximum_length: cluster.maximum_length,
-                split_rules: cluster.split_rules,
-                stable_header_bytes: cluster.stable_header_bytes,
-                farthest_members: cluster
-                    .farthest_members
-                    .into_iter()
-                    .map(|member| FrameOutlierCandidate {
-                        frame_id: member.observation_id,
-                        distance_to_representative: member.distance_to_representative,
-                    })
-                    .collect(),
-            })
-            .collect(),
-    })
+    Ok((derived, used_keys))
 }
 
 fn cluster_selected(

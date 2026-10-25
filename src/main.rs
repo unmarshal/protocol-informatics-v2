@@ -118,6 +118,9 @@ fn print_help() {
     println!(
         "  cluster-frames <dir> <fixed_width|unsigned_leb128|delimiter> [trial-id|-] [respect|ignore] [run-keys|-]"
     );
+    println!(
+        "  validate-frame-clusters <dir> <model> <discovery-trial> <validation-trial> [respect|ignore] [discovery-run-keys|-] [validation-run-keys|-]"
+    );
     println!("  validate-clusters <dir> <discovery-trial> <validation-trial> [respect|ignore]");
     println!(
         "  review-trials <dir> <discovery-trial> <validation-trial>  bounded evidence and next actions"
@@ -1684,6 +1687,31 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 direction_mode(args.get(4))?,
                 keys.as_deref(),
             )?)
+        }
+        "validate-frame-clusters" => {
+            if args.len() < 5 || args.len() > 8 {
+                return Err("expected model, discovery and validation trials, optional direction mode and run keys".into());
+            }
+            let state = workflow::load(root)?;
+            let discovery_keys = args
+                .get(6)
+                .filter(|keys| *keys != "-")
+                .map(|keys| keys.split(',').map(str::to_owned).collect::<Vec<_>>());
+            let validation_keys = args
+                .get(7)
+                .filter(|keys| *keys != "-")
+                .map(|keys| keys.split(',').map(str::to_owned).collect::<Vec<_>>());
+            print_json(
+                &protocol_informatics_v2::clustering::validate_frame_clusters(
+                    &state,
+                    &args[2],
+                    &args[3],
+                    &args[4],
+                    direction_mode(args.get(5))?,
+                    discovery_keys.as_deref(),
+                    validation_keys.as_deref(),
+                )?,
+            )
         }
         "validate-clusters" => {
             if args.len() < 4 || args.len() > 5 {

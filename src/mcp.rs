@@ -79,6 +79,17 @@ struct FrameClusterInput {
     respect_direction: bool,
 }
 
+#[derive(Deserialize, JsonSchema)]
+struct ValidateFrameClusterInput {
+    model: String,
+    discovery_trial_id: String,
+    validation_trial_id: String,
+    discovery_run_keys: Option<Vec<String>>,
+    validation_run_keys: Option<Vec<String>>,
+    #[serde(default = "default_true")]
+    respect_direction: bool,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -525,6 +536,25 @@ impl InvestigationServer {
             input.trial_id.as_deref(),
             input.respect_direction,
             input.run_keys.as_deref(),
+        )?)
+    }
+
+    #[tool(
+        description = "Check provisional frame groups learned from one trial against committed frames of a distinct validation trial; return frame IDs and counterexamples.",
+        annotations(read_only_hint = true)
+    )]
+    fn validate_frame_clusters(
+        &self,
+        Parameters(input): Parameters<ValidateFrameClusterInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(clustering::validate_frame_clusters(
+            &self.load()?,
+            &input.model,
+            &input.discovery_trial_id,
+            &input.validation_trial_id,
+            input.respect_direction,
+            input.discovery_run_keys.as_deref(),
+            input.validation_run_keys.as_deref(),
         )?)
     }
 

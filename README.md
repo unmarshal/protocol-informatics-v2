@@ -198,6 +198,8 @@ The candidate `[6, 8)` big-endian matches both held-out values. IPv6 parsing fol
 
 `cluster-frames` groups the logical bytes of committed frames within one framing model. It accepts an optional trial filter, direction mode, and run-key selection, and returns provisional groups with frame IDs, representative frames, stable header bytes, and outlier candidates. Use the frame IDs with `frame-span` to inspect evidence. The grouping cap and deterministic stratified sampling match raw observation clustering; mixed framing models are kept separate. Competing runs over the same observation require an explicit selection of one key per observation.
 
+`validate-frame-clusters` learns those groups from committed frames in a discovery trial, then checks committed frames in a distinct validation trial of the same experiment. It reports assigned, ambiguous, and unassigned frame IDs with rejected stable-byte offsets. Its counts cover selected committed frames, so check `frame-runs` for trial coverage. The HTML report shows held-out record grouping for supported discovery/validation pairs and links each shown frame to its parent byte inspector. See [the clustering method](docs/clustering-method.md).
+
 ```sh
 python3 examples/generate_records_fixture.py
 cargo run -- init /tmp/pi-records 'Where are record boundaries?'
@@ -255,8 +257,12 @@ cargo run -- infer-delimiter /tmp/pi-delimiter trial-000003 trial-000004
 cargo run -- review-trials /tmp/pi-delimiter trial-000003 trial-000004
 cargo run -- probe-delimiter /tmp/pi-delimiter obs-000005-0000 0 0d0a
 cargo run -- commit-delimiter /tmp/pi-delimiter obs-000005-0000 0 0d0a discovery-crlf-v1
+cargo run -- commit-delimiter /tmp/pi-delimiter obs-000007-0000 0 0d0a validation-crlf-v1
 cargo run -- delimiter-status /tmp/pi-delimiter discovery-crlf-v1
+cargo run -- frame-runs /tmp/pi-delimiter - delimiter
 cargo run -- frames /tmp/pi-delimiter discovery-crlf-v1 0 50
+cargo run -- cluster-frames /tmp/pi-delimiter delimiter trial-000003 ignore
+cargo run -- validate-frame-clusters /tmp/pi-delimiter delimiter trial-000003 trial-000004 ignore
 cargo run -- report /tmp/pi-delimiter /tmp/pi-delimiter-report.html
 ```
 

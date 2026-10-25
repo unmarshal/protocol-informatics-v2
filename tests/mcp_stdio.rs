@@ -127,9 +127,10 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 45);
+    assert_eq!(names.len(), 46);
     assert!(names.contains(&"frame_runs"));
     assert!(names.contains(&"cluster_frames"));
+    assert!(names.contains(&"validate_frame_clusters"));
     assert!(names.contains(&"summary"));
     assert!(names.contains(&"capture_step"));
     assert!(names.contains(&"validate_exchanges"));
@@ -413,6 +414,13 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
     let validation_commit = client.tool(
         "commit_framing",
         framing_config(&record_observations[3], "mcp-frames-validation"),
+    );
+    let frame_validation = client.tool("validate_frame_clusters", json!({"model":"fixed_width","discovery_trial_id":discovery_id,"validation_trial_id":validation_id,"respect_direction":false}));
+    assert_eq!(frame_validation["validation_count"], 3);
+    assert_eq!(frame_validation["frames"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        frame_validation["discovery_run_keys"][0],
+        "mcp-frames-discovery"
     );
     let run_page = client.tool(
         "frame_runs",

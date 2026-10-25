@@ -100,6 +100,61 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
                 .any(|offset| offset == 4)
         );
     }
+    let mut validation_bytes = Vec::new();
+    for record in ["01a0b0c01001", "02d0e0f02004", "03e0f0a03007"] {
+        validation_bytes.extend(workflow::from_hex(record).unwrap());
+        validation_bytes.push(b'\n');
+    }
+    let validation_sample = root.join("validation-records.bin");
+    fs::write(&validation_sample, validation_bytes).unwrap();
+    let validation_trial = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "validation",
+        "two known types and one unseen type",
+    ]);
+    let validation_trial_id = validation_trial["event"]["trial"]["id"].as_str().unwrap();
+    let validation_import = cli(&[
+        "import",
+        root_text,
+        validation_trial_id,
+        "binary",
+        path(&validation_sample),
+    ]);
+    let validation_observation_id = validation_import["event"]["observations"][0]["id"]
+        .as_str()
+        .unwrap();
+    cli(&[
+        "commit-delimiter",
+        root_text,
+        validation_observation_id,
+        "0",
+        "0a",
+        "validation-records",
+    ]);
+    let validation = cli(&[
+        "validate-frame-clusters",
+        root_text,
+        "delimiter",
+        trial_id,
+        validation_trial_id,
+        "ignore",
+    ]);
+    assert_eq!(validation["discovery_count"], 6);
+    assert_eq!(validation["validation_count"], 3);
+    assert_eq!(validation["assigned_count"], 2);
+    assert_eq!(validation["unassigned_count"], 1);
+    assert_eq!(validation["frames"][2]["status"], "unassigned");
+    assert_eq!(
+        validation["frames"][2]["rejections"][0]["stable_byte_mismatch_offsets"][0],
+        0
+    );
+    let report = root.join("record-groups.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("Held-out record grouping"));
+    assert!(html.contains("\"frame_cluster_validations\":[{"));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -3574,7 +3629,7 @@ fn large_icmp_trials_disclose_sampling_and_validate_new_sequence_values() {
         validation_id,
         "respect",
     ]);
-    assert_eq!(checked["method"], "stable_header_and_medoid_held_out_v3");
+    assert_eq!(checked["method"], "stable_header_and_medoid_held_out_v4");
     assert_eq!(checked["discovery_total"], 1024);
     assert_eq!(checked["discovery_count"], 512);
     assert_eq!(checked["validation_total"], 1024);
@@ -4213,6 +4268,35 @@ fn held_out_delimiter_inference_rejects_strict_crlf_on_lf_records() {
     ]);
     assert_eq!(selected_group["selected_frame_count"], 6);
     assert_eq!(selected_group["run_keys"].as_array().unwrap().len(), 2);
+    let ambiguous_validation = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "validate-frame-clusters",
+            root_text,
+            "delimiter",
+            discovery_id,
+            validation_id,
+            "ignore",
+        ])
+        .output()
+        .unwrap();
+    assert!(!ambiguous_validation.status.success());
+    let selected_validation = cli(&[
+        "validate-frame-clusters",
+        root_text,
+        "delimiter",
+        discovery_id,
+        validation_id,
+        "ignore",
+        "delimiter-discovery",
+        "delimiter-validation",
+    ]);
+    assert_eq!(selected_validation["discovery_count"], 3);
+    assert_eq!(selected_validation["validation_count"], 3);
+    assert_eq!(selected_validation["unassigned_count"], 3);
+    assert_eq!(
+        selected_validation["frames"][0]["rejections"][0]["no_stable_header_evidence"],
+        true
+    );
     let event_path = root.join(".pi/events.jsonl");
     let mut events: Vec<Value> = fs::read_to_string(&event_path)
         .unwrap()

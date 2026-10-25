@@ -67,6 +67,43 @@ pub fn render(state: &State) -> String {
         }
     }
     view["cluster_validations"] = serde_json::Value::Array(cluster_validations);
+    let mut frame_cluster_validations = Vec::new();
+    for experiment in state.experiments.iter().take(8) {
+        let discovery = state
+            .trials
+            .iter()
+            .find(|trial| trial.experiment_id == experiment.id && trial.role == "discovery");
+        let validation = state
+            .trials
+            .iter()
+            .find(|trial| trial.experiment_id == experiment.id && trial.role == "validation");
+        let (Some(discovery), Some(validation)) = (discovery, validation) else {
+            continue;
+        };
+        for model in ["fixed_width", "unsigned_leb128", "delimiter"] {
+            if let Ok(result) = crate::clustering::validate_frame_clusters(
+                state,
+                model,
+                &discovery.id,
+                &validation.id,
+                true,
+                None,
+                None,
+            ) {
+                frame_cluster_validations.push(serde_json::json!({
+                    "experiment_id": experiment.id,
+                    "result": result,
+                }));
+                if frame_cluster_validations.len() >= 8 {
+                    break;
+                }
+            }
+        }
+        if frame_cluster_validations.len() >= 8 {
+            break;
+        }
+    }
+    view["frame_cluster_validations"] = serde_json::Value::Array(frame_cluster_validations);
     let mut exchange_reports = Vec::new();
     for capture in state.captures.iter().take(8) {
         match crate::exchanges::pair_exchanges(state, &capture.id, None, 0, 12) {
@@ -308,6 +345,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
     <section class="panel"><h2>Held-out exchange bytes</h2><div id="exchangeValidation"></div></section>
     <section class="panel"><h2>Candidate format groups</h2><div id="clusters"></div></section>
     <section class="panel"><h2>Held-out grouping</h2><div id="clusterValidation"></div></section>
+    <section class="panel"><h2>Held-out record grouping</h2><div id="frameClusterValidation"></div></section>
     <section class="panel"><h2>Candidate fields</h2><div id="fieldCandidates"></div></section>
     <section class="panel"><h2>Candidate record framing</h2><div id="framingCandidates"></div></section>
     <section class="panel"><h2>Candidate typed records</h2><div id="tlvCandidates"></div></section>
@@ -557,12 +595,28 @@ for(const item of state.cluster_validations||[]) {
   for(const observation of visible) {
     const label=observation.assigned_cluster_id||observation.candidates.map(candidate=>candidate.cluster_id).join(', ')||'no compatible group';
     row.append(node('div',observation.observation_id+' · '+observation.status+' · '+label,'small'));
-    if(observation.status==='unassigned') for(const rejected of observation.rejections.slice(0,3)) row.append(node('div','↳ '+rejected.cluster_id+' rejected: '+(rejected.insufficient_discovery_members?'fewer than 3 discovery members · ':'')+(rejected.direction_mismatch?'direction · ':'')+'header offsets '+(rejected.stable_byte_mismatch_offsets.join(', ')||'none'),'small muted'));
+    if(observation.status==='unassigned') for(const rejected of observation.rejections.slice(0,3)) row.append(node('div','↳ '+rejected.cluster_id+' rejected: '+(rejected.insufficient_discovery_members?'fewer than 3 discovery members · ':'')+(rejected.no_stable_header_evidence?'no stable header evidence · ':'')+(rejected.direction_mismatch?'direction · ':'')+'header offsets '+(rejected.stable_byte_mismatch_offsets.join(', ')||'none'),'small muted'));
   }
   if(result.observations.length>visible.length) row.append(node('div','More of the returned details are available through validate-clusters.','small muted'));
   byId('clusterValidation').append(row);
 }
 if(!(state.cluster_validations||[]).length) byId('clusterValidation').append(node('div','Use discovery and validation trials to test proposed groups on held-out messages.','small muted'));
+for(const item of state.frame_cluster_validations||[]) {
+  const result=item.result, row=node('div','', 'row');
+  row.append(node('strong',item.experiment_id+' · '+result.source_model+' · '+result.cluster_count+' discovery record group(s)'),node('div',result.assigned_count+' assigned · '+result.ambiguous_count+' ambiguous · '+result.unassigned_count+' unassigned of '+result.validation_count+' committed held-out frames','small muted'),node('div','Discovery '+result.discovery_count+'/'+result.discovery_total+' ('+result.discovery_sampling_method+') · validation '+result.validation_count+'/'+result.validation_total+' ('+result.validation_sampling_method+')','small muted'));
+  const priority={unassigned:0,ambiguous:1,assigned:2};
+  const visible=result.frames.slice().sort((a,b)=>(priority[a.status]-priority[b.status])||a.frame_id.localeCompare(b.frame_id)).slice(0,12);
+  for(const frame of visible) {
+    const label=frame.assigned_cluster_id||frame.candidates.map(candidate=>candidate.cluster_id).join(', ')||'no compatible group';
+    const button=node('button',frame.frame_id+' · '+frame.status+' · '+label,'small');
+    button.onclick=()=>{const parent=frameById.get(frame.frame_id)?.run.observation_id; const observation=state.observations.find(value=>value.id===parent); if(observation) showDetail(observation);};
+    row.append(button);
+    if(frame.status==='unassigned') for(const rejected of frame.rejections.slice(0,3)) row.append(node('div','↳ '+rejected.cluster_id+' rejected: '+(rejected.insufficient_discovery_members?'fewer than 3 discovery members · ':'')+(rejected.no_stable_header_evidence?'no stable header evidence · ':'')+(rejected.direction_mismatch?'direction · ':'')+'header offsets '+(rejected.stable_byte_mismatch_offsets.join(', ')||'none'),'small muted'));
+  }
+  if(result.frames.length>visible.length) row.append(node('div','More of the returned details are available through validate-frame-clusters.','small muted'));
+  byId('frameClusterValidation').append(row);
+}
+if(!(state.frame_cluster_validations||[]).length) byId('frameClusterValidation').append(node('div','Commit records in discovery and validation trials to check recurring record groups.','small muted'));
 for(const analysis of state.analyses) {
   const row=node('div','', 'row');
   const scope=analysis.scope?.kind==='cluster'?'group '+analysis.scope.cluster_id:analysis.scope?.kind==='trial'?'trial '+analysis.scope.trial_id:analysis.scope?.kind||'legacy selection';
