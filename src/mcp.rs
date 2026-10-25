@@ -420,6 +420,49 @@ impl InvestigationServer {
             self.invoke_value(command, arguments).await?,
         ))
     }
+
+    async fn run_capture_step(
+        &self,
+        input: CaptureStepInput,
+        command: &str,
+    ) -> Result<CallToolResult, String> {
+        if input.command.is_empty() {
+            return Err("command must contain a program".into());
+        }
+        let mut args = vec![
+            input.trial_id,
+            input.kind,
+            input.detail,
+            input.phase,
+            input.label,
+            input.step_key,
+            input.format,
+            input.timeout_ms.to_string(),
+            "--".into(),
+        ];
+        args.extend(input.command);
+        let result = self.invoke_value(command, args).await?;
+        if result["status"] != "completed" {
+            return Ok(CallToolResult::structured(result));
+        }
+        let ids = result["observation_ids"].as_array();
+        let batches = result["tag_batches"]
+            .as_array()
+            .map(|items| items.iter().map(compact_batch).collect::<Vec<_>>())
+            .unwrap_or_default();
+        Ok(CallToolResult::structured(json!({
+            "revision":result["revision"],
+            "step_key":result["step_key"],
+            "status":result["status"],
+            "replayed":result["replayed"],
+            "action":result["action"],
+            "capture":result["capture"],
+            "observation_count":ids.map_or(0, Vec::len),
+            "first_observation_ids":ids.map(|items| items.iter().take(20).cloned().collect::<Vec<_>>()).unwrap_or_default(),
+            "observation_ids_omitted":ids.map_or(0, |items| items.len().saturating_sub(20)),
+            "tag_batches":batches,
+        })))
+    }
 }
 
 fn compact_batch(batch: &Value) -> Value {
@@ -1243,42 +1286,18 @@ impl InvestigationServer {
         &self,
         Parameters(input): Parameters<CaptureStepInput>,
     ) -> Result<CallToolResult, String> {
-        if input.command.is_empty() {
-            return Err("command must contain a program".into());
-        }
-        let mut args = vec![
-            input.trial_id,
-            input.kind,
-            input.detail,
-            input.phase,
-            input.label,
-            input.step_key,
-            input.format,
-            input.timeout_ms.to_string(),
-            "--".into(),
-        ];
-        args.extend(input.command);
-        let result = self.invoke_value("capture-step", args).await?;
-        if result["status"] != "completed" {
-            return Ok(CallToolResult::structured(result));
-        }
-        let ids = result["observation_ids"].as_array();
-        let batches = result["tag_batches"]
-            .as_array()
-            .map(|items| items.iter().map(compact_batch).collect::<Vec<_>>())
-            .unwrap_or_default();
-        Ok(CallToolResult::structured(json!({
-            "revision":result["revision"],
-            "step_key":result["step_key"],
-            "status":result["status"],
-            "replayed":result["replayed"],
-            "action":result["action"],
-            "capture":result["capture"],
-            "observation_count":ids.map_or(0, Vec::len),
-            "first_observation_ids":ids.map(|items| items.iter().take(20).cloned().collect::<Vec<_>>()).unwrap_or_default(),
-            "observation_ids_omitted":ids.map_or(0, |items| items.len().saturating_sub(20)),
-            "tag_batches":batches,
-        })))
+        self.run_capture_step(input, "capture-step").await
+    }
+
+    #[tool(
+        description = "Start a replayable action, bounded capture, and capture-scope tagging step in the background. Call again with the same arguments and step key to finish tagging after the run completes. The command executes as the server user.",
+        annotations(idempotent_hint = true)
+    )]
+    async fn capture_step_start(
+        &self,
+        Parameters(input): Parameters<CaptureStepInput>,
+    ) -> Result<CallToolResult, String> {
+        self.run_capture_step(input, "capture-step-start").await
     }
 
     #[tool(

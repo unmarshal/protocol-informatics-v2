@@ -127,7 +127,7 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 54);
+    assert_eq!(names.len(), 55);
     assert!(names.contains(&"infer_chunk_framing"));
     assert!(names.contains(&"infer_frame_crc32"));
     assert!(names.contains(&"activity"));
@@ -141,6 +141,7 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
     assert!(names.contains(&"validate_frame_clusters"));
     assert!(names.contains(&"summary"));
     assert!(names.contains(&"capture_step"));
+    assert!(names.contains(&"capture_step_start"));
     assert!(names.contains(&"validate_exchanges"));
     assert!(names.contains(&"annotate_value"));
     assert!(names.contains(&"infer_value"));
@@ -167,6 +168,14 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .find(|tool| tool["name"] == "capture_step")
         .unwrap();
     assert_eq!(capture_tool["annotations"]["idempotentHint"], true);
+    let background_capture_tool = definitions
+        .iter()
+        .find(|tool| tool["name"] == "capture_step_start")
+        .unwrap();
+    assert_eq!(
+        background_capture_tool["annotations"]["idempotentHint"],
+        true
+    );
 
     let experiment = client.tool(
         "create_experiment",
@@ -192,18 +201,26 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
             "command":["/bin/cat",fixtures.join(filename).to_str().unwrap()]
         })
     };
-    let first = client.tool(
-        "capture_step",
-        capture(discovery_trial_id, "mcp-discovery", "icmp_holdout.pcap"),
-    );
+    let mut first_input = capture(discovery_trial_id, "mcp-discovery", "icmp_holdout.pcap");
+    first_input["command"] = json!([
+        "/bin/sh",
+        "-c",
+        "sleep 0.4; cat \"$1\"",
+        "_",
+        fixtures.join("icmp_holdout.pcap").to_str().unwrap()
+    ]);
+    let mut first = client.tool("capture_step_start", first_input.clone());
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while first["status"] != "completed" && std::time::Instant::now() < deadline {
+        assert!(first["status"] == "running" || first["status"] == "starting");
+        thread::sleep(Duration::from_millis(30));
+        first = client.tool("capture_step_start", first_input.clone());
+    }
     assert_eq!(first["status"], "completed");
     assert_eq!(first["observation_count"], 6);
     assert_eq!(first["first_observation_ids"].as_array().unwrap().len(), 6);
     assert_eq!(first["tag_batches"][0]["observation_count"], 6);
-    let first_replay = client.tool(
-        "capture_step",
-        capture(discovery_trial_id, "mcp-discovery", "icmp_holdout.pcap"),
-    );
+    let first_replay = client.tool("capture_step_start", first_input);
     assert_eq!(first_replay["replayed"], true);
     let second = client.tool(
         "capture_step",

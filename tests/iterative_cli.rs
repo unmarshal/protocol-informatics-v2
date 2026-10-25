@@ -4233,6 +4233,86 @@ fn capture_step_retries_after_capture_and_does_not_repeat_completed_work() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn capture_step_start_finishes_background_capture_and_tags_on_retry() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&[
+        "init",
+        root_text,
+        "Can an agent resume a background capture step?",
+    ]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Vary payload",
+        "-",
+        "Retain capture provenance",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "discovery",
+        "delayed output",
+    ]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let source = root.join("delayed.hex");
+    fs::write(&source, "aabb01\naabb02\n").unwrap();
+    let arguments = [
+        "capture-step-start",
+        root_text,
+        trial_id,
+        "stimulus",
+        "delayed payload",
+        "capture_scope",
+        "delayed output",
+        "background-step",
+        "hex",
+        "5000",
+        "--",
+        "/bin/sh",
+        "-c",
+        "sleep 0.6; cat \"$1\"",
+        "_",
+        path(&source),
+    ];
+    let started = cli(&arguments);
+    assert_eq!(started["status"], "running");
+    assert_eq!(started["capture_key"], "background-step:capture");
+    assert_eq!(started["capture_run"]["status"], "running");
+    let action_id = started["action"]["id"].clone();
+    let mut completed = Value::Null;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let current = cli(&arguments);
+        if current["status"] == "completed" {
+            completed = current;
+            break;
+        }
+        assert_eq!(current["action"]["id"], action_id);
+        thread::sleep(Duration::from_millis(30));
+    }
+    assert_eq!(completed["status"], "completed");
+    assert_eq!(completed["action"]["id"], action_id);
+    assert_eq!(completed["observation_ids"].as_array().unwrap().len(), 2);
+    assert_eq!(completed["tag_batches"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        completed["tag_batch"]["observation_ids"],
+        completed["observation_ids"]
+    );
+    assert_eq!(completed["replayed"], false);
+    let revision = completed["revision"].as_u64().unwrap();
+    let replay = cli(&arguments);
+    assert_eq!(replay["status"], "completed");
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(replay["revision"], revision);
+    assert_eq!(cli(&["verify", root_text])["observations"], 2);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn capture_step_pages_large_capture_tags_and_resumes_after_partial_tagging() {
     let root = workspace();

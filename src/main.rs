@@ -64,6 +64,9 @@ fn print_help() {
     println!(
         "  capture-step <dir> <trial-id> <kind> <detail> <phase> <label> <step-key> <format> <timeout-ms> -- <program> [args...]"
     );
+    println!(
+        "  capture-step-start <dir> <trial-id> <kind> <detail> <phase> <label> <step-key> <format> <timeout-ms> -- <program> [args...]"
+    );
     println!("  capture-start <dir> <trial-id> <format> <key> <timeout-ms> -- <program> [args...]");
     println!("  capture-stop <dir> <key>             request a running capture to stop");
     println!("  capture-status <dir> <key>           inspect a reserved capture command");
@@ -494,7 +497,7 @@ fn invoke_local_json(args: &[String]) -> Result<serde_json::Value, String> {
         .map_err(|error| format!("{} returned invalid JSON: {error}", args[0]))
 }
 
-fn capture_step(root: &Path, args: &[String]) -> Result<(), String> {
+fn capture_step(root: &Path, args: &[String], background: bool) -> Result<(), String> {
     if args.len() < 12 || args[10] != "--" {
         return Err("expected trial, action kind/detail, phase/label, step key, format, timeout, --, and a program".into());
     }
@@ -536,7 +539,12 @@ fn capture_step(root: &Path, args: &[String]) -> Result<(), String> {
         .as_str()
         .ok_or("mark-keyed returned no action ID")?;
     let mut capture_args = vec![
-        "capture-command".into(),
+        if background {
+            "capture-start"
+        } else {
+            "capture-command"
+        }
+        .into(),
         directory.clone(),
         trial_id,
         args[8].clone(),
@@ -550,7 +558,7 @@ fn capture_step(root: &Path, args: &[String]) -> Result<(), String> {
         return print_json(&json!({
             "revision": workflow::load(root)?.revision, "step_key": step_key,
             "status": captured["status"], "action": marked["action"],
-            "capture_run": captured,
+            "capture_run": captured, "capture_key": format!("{step_key}:capture"),
         }));
     }
     let capture_id = captured["capture"]["id"]
@@ -1281,7 +1289,8 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             )?)
         }
         "capture-command" => capture_command(root, args),
-        "capture-step" => capture_step(root, args),
+        "capture-step" => capture_step(root, args, false),
+        "capture-step-start" => capture_step(root, args, true),
         "capture-start" => capture_start(root, args),
         "capture-stop" => {
             require_len(args, 3)?;
