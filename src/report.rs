@@ -490,6 +490,7 @@ const committedRuns = [...(state.framing_runs||[]), ...(state.varint_runs||[]), 
 for(const run of committedRuns) framingPreviewById.set(run.observation_id,{records:run.records,committed:true,key:run.key});
 const frameById = new Map(committedRuns.flatMap(run=>run.records.map(frame=>[frame.id,{frame,run}])));
 const tagsFor = id => state.tags.filter(x=>x.observation_id===id);
+const activeTagsFor = id => tagsFor(id).filter(x=>!x.retraction);
 const valuesFor = id => state.known_values.filter(x=>x.observation_id===id);
 const fieldOverlays = state.field_inferences.flatMap(inference => {
   const preferred=inference.candidates.filter(candidate=>candidate.preferred);
@@ -509,6 +510,7 @@ for(const [label,count] of [['Observations',state.observations.length],['Capture
 }
 const corpus=state.corpus_summary, lengths=corpus.observation_lengths_bytes;
 byId('corpusSummary').append(node('div',corpus.counts.observation_bytes+' observed bytes · '+corpus.counts.tagged_observations+'/'+corpus.counts.observations+' tagged observations · '+(corpus.counts.observations-corpus.missing_timestamp_observations)+' timestamped','small'));
+if(corpus.counts.retracted_tags) byId('corpusSummary').append(node('div',corpus.counts.retracted_tags+' historical tag retraction(s)','small muted'));
 byId('corpusSummary').append(node('div','Message length (bytes): '+(lengths.min===null?'no observations':lengths.min+' min · '+lengths.median+' median · '+lengths.p90+' p90 · '+lengths.max+' max'),'small muted'));
 if(corpus.stream_gap_observations) byId('corpusSummary').append(node('div',corpus.stream_gap_observations+' TCP run(s) follow a sequence gap','small muted'));
 for(const format of corpus.formats) byId('corpusSummary').append(node('div',format.format+': '+format.observations+' observations from '+format.captures+' capture(s)','small'));
@@ -899,7 +901,7 @@ function showDetail(observation) {
     for(const span of observation.source_spans) sources.append(node('div','Message ['+span.message_start+', '+span.message_end+') ← packet '+span.packet_index+' at file offset '+span.file_offset,'small muted'));
     detail.append(sources);
   }
-  for(const tag of tagsFor(observation.id)) detail.append(node('span',tag.phase+': '+tag.label+(tag.action_id?' · '+tag.action_id:'')+(tag.key?' · key '+tag.key:''),'pill'));
+  for(const tag of tagsFor(observation.id)) detail.append(node('span',tag.phase+': '+tag.label+(tag.action_id?' · '+tag.action_id:'')+(tag.key?' · key '+tag.key:'')+(tag.retraction?' · retracted at revision '+tag.retraction.revision+': '+tag.retraction.reason:''),'pill'+(tag.retraction?' muted':'')));
   for(const value of valuesFor(observation.id)) detail.append(node('span',value.variable+'='+value.value+' ('+value.set+')','pill'));
   if(framing) detail.append(node('div',(framing.committed?'Committed':'Candidate')+' record spans: '+framing.records.map(record=>'['+record.start+', '+record.end+')').join(' '),'small muted'));
   const total=observation.bytes_hex.length/2, pageSize=256;
@@ -929,9 +931,9 @@ function showDetail(observation) {
 function renderObservations() {
   const selected=byId('trialFilter').value, cluster=clusterById.get(byId('clusterFilter').value), search=byId('search').value.toLowerCase();
   const list=byId('observations'); list.replaceChildren();
-  const matches=state.observations.filter(o=>{ const c=captureById.get(o.capture_id); const labels=tagsFor(o.id).map(t=>t.label+' '+t.phase).join(' ')+valuesFor(o.id).map(v=>v.variable+'='+v.value).join(' '); return (!selected||c.trial_id===selected) && (!cluster||cluster.member_observation_ids.includes(o.id)) && (o.id+' '+o.bytes_hex+' '+(o.direction||'')+' '+(o.source_port??'')+' '+(o.destination_port??'')+' '+(o.tcp_sequence??'')+' '+labels).toLowerCase().includes(search); });
+  const matches=state.observations.filter(o=>{ const c=captureById.get(o.capture_id); const labels=activeTagsFor(o.id).map(t=>t.label+' '+t.phase).join(' ')+valuesFor(o.id).map(v=>v.variable+'='+v.value).join(' '); return (!selected||c.trial_id===selected) && (!cluster||cluster.member_observation_ids.includes(o.id)) && (o.id+' '+o.bytes_hex+' '+(o.direction||'')+' '+(o.source_port??'')+' '+(o.destination_port??'')+' '+(o.tcp_sequence??'')+' '+labels).toLowerCase().includes(search); });
   list.append(node('div',matches.length+' of '+state.observations.length+' observations','small muted'));
-  for(const o of matches) { const row=node('div','', 'row'); const button=node('button',o.id+' · '+(o.bytes_hex.slice(0,80).match(/../g)||[]).join(' ')); button.onclick=()=>showDetail(o); row.append(button,node('div',(o.direction||'')+(o.source_port===null?'':' · '+o.source_port+' → '+o.destination_port)+' '+tagsFor(o.id).map(t=>'['+t.phase+': '+t.label+']').join(' '),'small muted')); list.append(row); }
+  for(const o of matches) { const row=node('div','', 'row'); const button=node('button',o.id+' · '+(o.bytes_hex.slice(0,80).match(/../g)||[]).join(' ')); button.onclick=()=>showDetail(o); row.append(button,node('div',(o.direction||'')+(o.source_port===null?'':' · '+o.source_port+' → '+o.destination_port)+' '+activeTagsFor(o.id).map(t=>'['+t.phase+': '+t.label+']').join(' '),'small muted')); list.append(row); }
 }
 byId('trialFilter').onchange=renderObservations; byId('clusterFilter').onchange=renderObservations; byId('search').oninput=renderObservations; renderObservations();
 if(state.observations.length) showDetail(state.observations[0]);

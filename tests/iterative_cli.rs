@@ -726,7 +726,7 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
     );
     let event_log = root.join(".pi/events.jsonl");
     let prior_log = fs::read_to_string(&event_log).unwrap();
-    let legacy_log = prior_log.replace("\"schema_version\":17", "\"schema_version\":13");
+    let legacy_log = prior_log.replace("\"schema_version\":18", "\"schema_version\":13");
     assert_ne!(legacy_log, prior_log);
     fs::write(&event_log, legacy_log).unwrap();
     let recorded = cli(&[
@@ -739,7 +739,7 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
     ]);
     let saved = &recorded["event"]["analysis"];
     let analysis_id = saved["id"].as_str().unwrap();
-    assert_eq!(recorded["schema_version"], 17);
+    assert_eq!(recorded["schema_version"], 18);
     assert_eq!(saved["scope"]["kind"], "frame_cluster");
     assert_eq!(saved["frame_ids"], alignment["frame_ids"]);
     assert_eq!(saved["scope"]["source_revision"], alignment["revision"]);
@@ -1119,7 +1119,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     assert_eq!(summary["observation_count"], 48);
     assert_eq!(summary["hypotheses"][0]["score"], 0.9);
     let corpus = cli(&["summary", root_text]);
-    assert_eq!(corpus["schema_version"], 17);
+    assert_eq!(corpus["schema_version"], 18);
     assert_eq!(corpus["revision"], 13);
     assert_eq!(corpus["counts"]["captures"], 2);
     assert_eq!(corpus["counts"]["observations"], 48);
@@ -1155,7 +1155,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
         serde_json::json!({"trial_id":"trial-000004","direction":direction,"offset":2,"limit":3})
             .to_string();
     let matches = cli(&["search-observations", root_text, &direction_query]);
-    assert_eq!(matches["schema_version"], 17);
+    assert_eq!(matches["schema_version"], 18);
     assert_eq!(matches["total"], 24);
     assert_eq!(matches["observations"].as_array().unwrap().len(), 3);
     assert_eq!(matches["next_offset"], 5);
@@ -3579,7 +3579,7 @@ fn replays_v1_log_and_appends_current_events() {
         "Old investigation"
     );
     let appended = cli(&["hypothesis", path(&root), "A new claim"]);
-    assert_eq!(appended["schema_version"], 17);
+    assert_eq!(appended["schema_version"], 18);
     assert_eq!(appended["revision"], 2);
     assert_eq!(
         cli(&["changes", path(&root), "0"])
@@ -4235,6 +4235,31 @@ fn capture_step_retries_after_capture_and_does_not_repeat_completed_work() {
     assert_eq!(corpus["counts"]["captures"], 2);
     assert_eq!(corpus["counts"]["actions"], 2);
     assert_eq!(corpus["counts"]["capture_tag_batches"], 2);
+    let background_tag_id = completed["tag_batch"]["tag_ids"][0].as_str().unwrap();
+    cli(&[
+        "tag-retract",
+        root_text,
+        background_tag_id,
+        "this captured message was unrelated background traffic",
+        "remove-background-1",
+    ]);
+    let scoped_filter =
+        json!({"capture_id":completed["capture"]["id"],"tag_label":"payload one","limit":10})
+            .to_string();
+    assert_eq!(
+        cli(&["search-observations", root_text, &scoped_filter])["total"],
+        1
+    );
+    assert_eq!(
+        cli(&["summary", root_text])["counts"]["tagged_observations"],
+        3
+    );
+    let replay_after_retraction = cli(&arguments);
+    assert_eq!(replay_after_retraction["replayed"], true);
+    assert_eq!(
+        cli(&["search-observations", root_text, &scoped_filter])["total"],
+        1
+    );
     assert_eq!(cli(&["verify", root_text])["observations"], 4);
     fs::remove_dir_all(root).unwrap();
 }
@@ -4443,6 +4468,63 @@ fn keyed_observation_tag_replays_and_rejects_cross_trial_action() {
         .unwrap();
     assert!(!cross_trial.status.success());
     assert!(String::from_utf8_lossy(&cross_trial.stderr).contains("same trial"));
+    let retraction_args = [
+        "tag-retract",
+        root_text,
+        tagged["tag"]["id"].as_str().unwrap(),
+        "initial response assignment lacked evidence",
+        "candidate-echo-retraction",
+    ];
+    let retracted = cli(&retraction_args);
+    assert_eq!(
+        retracted["tag"]["retraction"]["key"],
+        "candidate-echo-retraction"
+    );
+    assert_eq!(retracted["replayed"], false);
+    let retraction_revision = retracted["revision"].as_u64().unwrap();
+    let retraction_replay = cli(&retraction_args);
+    assert_eq!(retraction_replay["replayed"], true);
+    assert_eq!(retraction_replay["revision"], retraction_revision);
+    let before_retraction = (retraction_revision - 1).to_string();
+    let changes = cli(&["activity", root_text, &before_retraction, "5"]);
+    assert_eq!(changes["events"][0]["kind"], "observation_tag_retracted");
+    assert_eq!(changes["events"][0]["subject_id"], tagged["tag"]["id"]);
+    assert_eq!(
+        cli(&[
+            "tag-retraction-status",
+            root_text,
+            "candidate-echo-retraction"
+        ])["tag"],
+        retracted["tag"]
+    );
+    assert_eq!(
+        cli(&["tag-status", root_text, "candidate-echo-1"])["tag"],
+        retracted["tag"]
+    );
+    let old_filter = json!({"tag_label":"candidate echo","limit":10}).to_string();
+    assert_eq!(
+        cli(&["search-observations", root_text, &old_filter])["total"],
+        0
+    );
+    assert_eq!(
+        cli(&["summary", root_text])["counts"]["tagged_observations"],
+        0
+    );
+    let corrected = cli(&[
+        "tag-keyed",
+        root_text,
+        first_observation,
+        "unclassified",
+        "requires inspection",
+        "candidate-echo-correction",
+    ]);
+    assert!(corrected["tag"]["action_id"].is_null());
+    let corrected_filter = json!({"tag_label":"requires inspection","limit":10}).to_string();
+    assert_eq!(
+        cli(&["search-observations", root_text, &corrected_filter])["total"],
+        1
+    );
+    assert_eq!(cli(&["summary", root_text])["counts"]["retracted_tags"], 1);
     assert_eq!(
         cli(&["summary", root_text])["counts"]["tagged_observations"],
         1

@@ -396,6 +396,13 @@ struct TagObservationInput {
     action_id: Option<String>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+struct TagRetractInput {
+    tag_id: String,
+    reason: String,
+    key: String,
+}
+
 impl InvestigationServer {
     fn load(&self) -> Result<workflow::State, String> {
         workflow::load(&self.root)
@@ -1432,6 +1439,29 @@ impl InvestigationServer {
         Parameters(input): Parameters<KeyInput>,
     ) -> Result<CallToolResult, String> {
         self.invoke("tag-status", vec![input.key]).await
+    }
+
+    #[tool(
+        description = "Retry-safely withdraw a tag assignment while preserving its history. Current observation searches exclude retracted tags; use a new tag key for a corrected assignment.",
+        annotations(idempotent_hint = true)
+    )]
+    async fn retract_observation_tag(
+        &self,
+        Parameters(input): Parameters<TagRetractInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke("tag-retract", vec![input.tag_id, input.reason, input.key])
+            .await
+    }
+
+    #[tool(
+        description = "Inspect a completed tag retraction by its retry key.",
+        annotations(read_only_hint = true)
+    )]
+    async fn tag_retraction_status(
+        &self,
+        Parameters(input): Parameters<KeyInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke("tag-retraction-status", vec![input.key]).await
     }
 }
 

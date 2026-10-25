@@ -18,7 +18,7 @@ use crate::pcap::{
 use crate::reassembly::{SourceSpan, reassemble_tcp_segments};
 use crate::varint::{VarintConfig, probe_varint};
 
-const SCHEMA_VERSION: u32 = 17;
+const SCHEMA_VERSION: u32 = 18;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 const MAX_RECOVERY_TAIL_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -255,6 +255,13 @@ pub fn framing_run_from_probe(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagRetraction {
+    pub key: String,
+    pub reason: String,
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tag {
     pub id: String,
     pub observation_id: String,
@@ -264,6 +271,8 @@ pub struct Tag {
     pub action_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retraction: Option<TagRetraction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -430,6 +439,11 @@ pub enum Event {
     ObservationTagged {
         tag: Tag,
     },
+    ObservationTagRetracted {
+        tag_id: String,
+        key: String,
+        reason: String,
+    },
     ObservationWindowTagged {
         window: WindowTag,
         tags: Vec<Tag>,
@@ -460,7 +474,8 @@ impl Event {
             Self::Created { .. }
             | Self::HypothesisEvaluated { .. }
             | Self::CaptureRunFailed { .. }
-            | Self::CaptureRunStopRequested { .. } => {}
+            | Self::CaptureRunStopRequested { .. }
+            | Self::ObservationTagRetracted { .. } => {}
             Self::HypothesisAdded { hypothesis } => {
                 hypothesis.id = format!("hyp-{revision:06}");
             }
@@ -1018,6 +1033,7 @@ impl State {
                     .ok_or_else(|| format!("unknown observation {}", tag.observation_id))?;
                 if tag.label.trim().is_empty()
                     || tag.phase.trim().is_empty()
+                    || tag.retraction.is_some()
                     || self.tags.iter().any(|t| t.id == tag.id)
                 {
                     return Err("empty or duplicate tag".into());
@@ -1052,6 +1068,39 @@ impl State {
                     }
                 }
                 self.tags.push(tag.clone());
+            }
+            Event::ObservationTagRetracted {
+                tag_id,
+                key,
+                reason,
+            } => {
+                if record.schema_version < 18
+                    || key.is_empty()
+                    || key.len() > 128
+                    || key.chars().any(char::is_control)
+                    || reason.trim().is_empty()
+                    || reason.len() > 1024
+                    || self.tags.iter().any(|tag| {
+                        tag.retraction
+                            .as_ref()
+                            .is_some_and(|retraction| retraction.key == *key)
+                    })
+                {
+                    return Err("invalid or duplicate tag retraction".into());
+                }
+                let tag = self
+                    .tags
+                    .iter_mut()
+                    .find(|tag| tag.id == *tag_id)
+                    .ok_or_else(|| format!("unknown tag {tag_id}"))?;
+                if tag.retraction.is_some() {
+                    return Err(format!("tag {tag_id} is already retracted"));
+                }
+                tag.retraction = Some(TagRetraction {
+                    key: key.clone(),
+                    reason: reason.clone(),
+                    revision: record.revision,
+                });
             }
             Event::ObservationWindowTagged { window, tags } => {
                 let action = self
@@ -1100,6 +1149,7 @@ impl State {
                         || tag.label != window.label
                         || tag.action_id.as_deref() != Some(window.action_id.as_str())
                         || tag.key.is_some()
+                        || tag.retraction.is_some()
                         || self.tags.iter().any(|old| old.id == tag.id)
                         || tags[..index].iter().any(|old| old.id == tag.id)
                     {
@@ -1175,6 +1225,7 @@ impl State {
                         || tag.label != batch.label
                         || tag.action_id.as_deref() != Some(batch.action_id.as_str())
                         || tag.key.is_some()
+                        || tag.retraction.is_some()
                         || self.tags.iter().any(|old| old.id == tag.id)
                     {
                         return Err("invalid capture tag".into());
@@ -1380,6 +1431,7 @@ pub fn eligible_window_observations<'a>(
         .filter(|observation| {
             !state.tags.iter().any(|tag| {
                 tag.observation_id == observation.id
+                    && tag.retraction.is_none()
                     && tag.action_id.as_deref() == Some(action.id.as_str())
                     && tag.phase == phase
                     && tag.label == label
@@ -1813,6 +1865,16 @@ fn activity_preview(record: &EventRecord) -> ActivityPreview {
             "observation_tagged",
             Some(tag.id.clone()),
             json!({"observation_id":tag.observation_id,"action_id":tag.action_id}),
+        ),
+        Event::ObservationTagRetracted {
+            tag_id,
+            key,
+            reason,
+        } => (
+            "observation_tag_retracted",
+            Some(tag_id.clone()),
+            json!({"key":key,"reason_preview":activity_text_preview(reason).0,
+                "reason_truncated":activity_text_preview(reason).1}),
         ),
         Event::ObservationWindowTagged { window, .. } => (
             "observation_window_tagged",

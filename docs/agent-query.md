@@ -25,7 +25,7 @@ The filter is one JSON object. All supplied fields are combined with AND. Unknow
 | `source_port`, `destination_port` | Exact unsigned 16-bit transport ports |
 | `timestamp_start_ns`, `timestamp_end_ns` | Decimal UTC nanosecond strings; half-open `[start, end)` interval. Observations without timestamps do not match a timestamp bound |
 | `min_bytes`, `max_bytes` | Inclusive raw observation length bounds |
-| `tag_phase`, `tag_label` | Exact values; when both are supplied, one tag must match both |
+| `tag_phase`, `tag_label` | Exact values on active tags; when both are supplied, one tag must match both. Retracted tags remain in `tag_status` history but do not match searches. |
 | `stream_gap_before` | Boolean TCP reassembly gap marker |
 | `offset`, `limit` | Result page; defaults 0 and 50, maximum limit 100 |
 

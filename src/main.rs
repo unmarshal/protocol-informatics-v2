@@ -79,6 +79,8 @@ fn print_help() {
     println!("  tag <dir> <obs-id> <phase> <label>");
     println!("  tag-keyed <dir> <obs-id> <phase> <label> <key> [action-id]");
     println!("  tag-status <dir> <key>             inspect a keyed observation tag");
+    println!("  tag-retract <dir> <tag-id> <reason> <key>  withdraw an assignment by key");
+    println!("  tag-retraction-status <dir> <key>  inspect a tag retraction");
     println!("  tag-window <dir> <action-id> <end-ns> <phase> <label> <key>");
     println!(
         "  tag-capture <dir> <action-id> <capture-id> <phase> <label> <key> [offset count<=1000]"
@@ -893,6 +895,7 @@ fn tag_window(root: &Path, args: &[String]) -> Result<(), String> {
             label: label.clone(),
             action_id: Some(action_id.clone()),
             key: None,
+            retraction: None,
         })
         .collect();
     let window = WindowTag {
@@ -1030,6 +1033,7 @@ fn tag_keyed(root: &Path, args: &[String]) -> Result<(), String> {
         label: label.clone(),
         action_id: action_id.cloned(),
         key: Some(key.clone()),
+        retraction: None,
     };
     let appended = workflow::append(root, Event::ObservationTagged { tag });
     let updated = workflow::load(root)?;
@@ -1051,6 +1055,72 @@ fn tag_keyed(root: &Path, args: &[String]) -> Result<(), String> {
     Err(appended
         .err()
         .unwrap_or_else(|| "keyed observation tag was not recorded".into()))
+}
+
+fn tag_retract(root: &Path, args: &[String]) -> Result<(), String> {
+    require_len(args, 5)?;
+    let tag_id = &args[2];
+    let reason = &args[3];
+    let key = &args[4];
+    if key.is_empty()
+        || key.len() > 128
+        || key.chars().any(char::is_control)
+        || reason.trim().is_empty()
+        || reason.len() > 1024
+    {
+        return Err(
+            "retraction key must be nonempty and at most 128 bytes; reason must be 1 to 1024 bytes"
+                .into(),
+        );
+    }
+    let matches_request = |tag: &Tag| {
+        &tag.id == tag_id
+            && tag
+                .retraction
+                .as_ref()
+                .is_some_and(|retraction| retraction.key == *key && retraction.reason == *reason)
+    };
+    let state = workflow::load(root)?;
+    if let Some(tag) = state.tags.iter().find(|tag| {
+        tag.retraction
+            .as_ref()
+            .is_some_and(|retraction| retraction.key == *key)
+    }) {
+        return if matches_request(tag) {
+            print_json(&json!({"revision": state.revision, "tag": tag, "replayed": true}))
+        } else {
+            Err(format!(
+                "tag retraction key {key} was used with different arguments"
+            ))
+        };
+    }
+    let appended = workflow::append(
+        root,
+        Event::ObservationTagRetracted {
+            tag_id: tag_id.clone(),
+            key: key.clone(),
+            reason: reason.clone(),
+        },
+    );
+    let updated = workflow::load(root)?;
+    if let Some(tag) = updated.tags.iter().find(|tag| {
+        tag.retraction
+            .as_ref()
+            .is_some_and(|retraction| retraction.key == *key)
+    }) {
+        return if matches_request(tag) {
+            print_json(
+                &json!({"revision": updated.revision, "tag": tag, "replayed": appended.is_err()}),
+            )
+        } else {
+            Err(format!(
+                "tag retraction key {key} was used with different arguments"
+            ))
+        };
+    }
+    Err(appended
+        .err()
+        .unwrap_or_else(|| "tag retraction was not recorded".into()))
 }
 
 fn tag_capture(root: &Path, args: &[String]) -> Result<(), String> {
@@ -1153,6 +1223,7 @@ fn tag_capture(root: &Path, args: &[String]) -> Result<(), String> {
             label: label.clone(),
             action_id: Some(action_id.clone()),
             key: None,
+            retraction: None,
         })
         .collect();
     let batch = CaptureTagBatch {
@@ -1535,6 +1606,7 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 label: args[4].clone(),
                 action_id: None,
                 key: None,
+                retraction: None,
             };
             print_json(&workflow::append(root, Event::ObservationTagged { tag })?)
         }
@@ -1547,6 +1619,21 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 .iter()
                 .find(|tag| tag.key.as_deref() == Some(args[2].as_str()))
                 .ok_or_else(|| format!("unknown observation tag key {}", args[2]))?;
+            print_json(&json!({"revision": state.revision, "tag": tag}))
+        }
+        "tag-retract" => tag_retract(root, args),
+        "tag-retraction-status" => {
+            require_len(args, 3)?;
+            let state = workflow::load(root)?;
+            let tag = state
+                .tags
+                .iter()
+                .find(|tag| {
+                    tag.retraction
+                        .as_ref()
+                        .is_some_and(|retraction| retraction.key == args[2])
+                })
+                .ok_or_else(|| format!("unknown tag retraction key {}", args[2]))?;
             print_json(&json!({"revision": state.revision, "tag": tag}))
         }
         "tag-window" => tag_window(root, args),

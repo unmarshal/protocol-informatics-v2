@@ -127,7 +127,7 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 58);
+    assert_eq!(names.len(), 60);
     assert!(names.contains(&"infer_chunk_framing"));
     assert!(names.contains(&"infer_frame_crc32"));
     assert!(names.contains(&"activity"));
@@ -145,6 +145,8 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
     assert!(names.contains(&"capture_step_finish"));
     assert!(names.contains(&"tag_observation"));
     assert!(names.contains(&"tag_status"));
+    assert!(names.contains(&"retract_observation_tag"));
+    assert!(names.contains(&"tag_retraction_status"));
     assert!(names.contains(&"validate_exchanges"));
     assert!(names.contains(&"annotate_value"));
     assert!(names.contains(&"infer_value"));
@@ -272,6 +274,44 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
     assert_eq!(
         specific_search["observations"][0]["id"],
         first["first_observation_ids"][1]
+    );
+    let retraction = client.tool(
+        "retract_observation_tag",
+        json!({"tag_id":specific_tag["tag"]["id"],"reason":"replace with protocol-level label","key":"mcp-reply-retraction-1"}),
+    );
+    assert_eq!(
+        retraction["tag"]["retraction"]["key"],
+        "mcp-reply-retraction-1"
+    );
+    assert_eq!(retraction["replayed"], false);
+    let retraction_replay = client.tool(
+        "retract_observation_tag",
+        json!({"tag_id":specific_tag["tag"]["id"],"reason":"replace with protocol-level label","key":"mcp-reply-retraction-1"}),
+    );
+    assert_eq!(retraction_replay["replayed"], true);
+    let retraction_status = client.tool(
+        "tag_retraction_status",
+        json!({"key":"mcp-reply-retraction-1"}),
+    );
+    assert_eq!(retraction_status["tag"]["id"], specific_tag["tag"]["id"]);
+    assert_eq!(
+        client.tool(
+            "search_observations",
+            json!({"tag_label":"candidate echo reply","limit":10})
+        )["total"],
+        0
+    );
+    let corrected_tag = client.tool(
+        "tag_observation",
+        json!({"observation_id":first["first_observation_ids"][1],"phase":"response","label":"ICMP echo reply","key":"mcp-reply-corrected-1","action_id":first["action"]["id"]}),
+    );
+    assert_eq!(corrected_tag["replayed"], false);
+    assert_eq!(
+        client.tool(
+            "search_observations",
+            json!({"tag_label":"ICMP echo reply","limit":10})
+        )["total"],
+        1
     );
     let span = client.tool(
         "span",

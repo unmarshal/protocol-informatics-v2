@@ -29,6 +29,7 @@ pub struct CorpusCounts {
     pub hypotheses: usize,
     pub actions: usize,
     pub tags: usize,
+    pub retracted_tags: usize,
     pub tagged_observations: usize,
     pub window_tags: usize,
     pub capture_tag_batches: usize,
@@ -1081,6 +1082,7 @@ pub fn corpus_summary(state: &State) -> CorpusSummary {
     let tagged_observations: BTreeSet<_> = state
         .tags
         .iter()
+        .filter(|tag| tag.retraction.is_none())
         .map(|tag| tag.observation_id.as_str())
         .collect();
     for observation_id in &tagged_observations {
@@ -1148,6 +1150,11 @@ pub fn corpus_summary(state: &State) -> CorpusSummary {
             hypotheses: state.hypotheses.len(),
             actions: state.actions.len(),
             tags: state.tags.len(),
+            retracted_tags: state
+                .tags
+                .iter()
+                .filter(|tag| tag.retraction.is_some())
+                .count(),
             tagged_observations: tagged_observations.len(),
             window_tags: state.window_tags.len(),
             capture_tag_batches: state.capture_tag_batches.len(),
@@ -1340,7 +1347,7 @@ fn tags_for<'a>(state: &'a State, observation: &Observation) -> Vec<&'a Tag> {
     state
         .tags
         .iter()
-        .filter(|tag| tag.observation_id == observation.id)
+        .filter(|tag| tag.observation_id == observation.id && tag.retraction.is_none())
         .collect()
 }
 
@@ -1454,7 +1461,7 @@ pub fn search_observations<'a>(
         .map(|trial| (trial.id.as_str(), trial))
         .collect();
     let mut tags_by_observation: BTreeMap<&str, Vec<&Tag>> = BTreeMap::new();
-    for tag in &state.tags {
+    for tag in state.tags.iter().filter(|tag| tag.retraction.is_none()) {
         tags_by_observation
             .entry(&tag.observation_id)
             .or_default()
@@ -1859,6 +1866,7 @@ mod tests {
                 phase: if index == 0 { "stimulus" } else { "response" }.into(),
                 action_id: None,
                 key: None,
+                retraction: None,
             });
         }
         let summary = corpus_summary(&state);
