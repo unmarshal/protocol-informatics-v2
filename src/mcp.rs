@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use protocol_informatics_v2::{
-    checksum, clustering, delimiter, exchanges, framing, inference, query, review, tlv, varint,
-    workflow,
+    checksum, clustering, delimiter, exchanges, frame_alignment, framing, inference, query, review,
+    tlv, varint, workflow,
 };
 use rmcp::{
     ServerHandler, ServiceExt,
@@ -73,6 +73,16 @@ struct ClusterInput {
 #[derive(Deserialize, JsonSchema)]
 struct FrameClusterInput {
     model: String,
+    trial_id: Option<String>,
+    run_keys: Option<Vec<String>>,
+    #[serde(default = "default_true")]
+    respect_direction: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct FrameAlignmentInput {
+    model: String,
+    cluster_id: String,
     trial_id: Option<String>,
     run_keys: Option<Vec<String>>,
     #[serde(default = "default_true")]
@@ -533,6 +543,24 @@ impl InvestigationServer {
         Self::json(clustering::cluster_frames(
             &self.load()?,
             &input.model,
+            input.trial_id.as_deref(),
+            input.respect_direction,
+            input.run_keys.as_deref(),
+        )?)
+    }
+
+    #[tool(
+        description = "Align logical bytes within one provisional committed-frame group, returning frame IDs, gap-aware columns, and disclosed sampling bounds.",
+        annotations(read_only_hint = true)
+    )]
+    fn align_frame_cluster(
+        &self,
+        Parameters(input): Parameters<FrameAlignmentInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(frame_alignment::align_frame_cluster(
+            &self.load()?,
+            &input.model,
+            &input.cluster_id,
             input.trial_id.as_deref(),
             input.respect_direction,
             input.run_keys.as_deref(),

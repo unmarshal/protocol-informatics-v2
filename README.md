@@ -200,6 +200,8 @@ The candidate `[6, 8)` big-endian matches both held-out values. IPv6 parsing fol
 
 `validate-frame-clusters` learns those groups from committed frames in a discovery trial, then checks committed frames in a distinct validation trial of the same experiment. It reports assigned, ambiguous, and unassigned frame IDs with rejected stable-byte offsets. Its counts cover selected committed frames, so check `frame-runs` for trial coverage. The HTML report shows held-out record grouping for supported discovery/validation pairs and links each shown frame to its parent byte inspector. See [the clustering method](docs/clustering-method.md).
 
+`align-frame-cluster` is a read-only, gap-aware alignment of one provisional record group. It returns column statistics and aligned rows mapped to stable frame IDs. It analyzes at most 32 frames, retaining the representative and outliers before deterministic sampling, and rejects frames above 4096 logical bytes or alignments above a 25-million-cell work estimate. The HTML report previews up to four short groups, showing variable columns and links to parent bytes. Recompute the cluster ID after a corpus revision; see [agent evidence navigation](docs/agent-query.md).
+
 ```sh
 python3 examples/generate_records_fixture.py
 cargo run -- init /tmp/pi-records 'Where are record boundaries?'

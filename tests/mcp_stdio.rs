@@ -127,9 +127,10 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 46);
+    assert_eq!(names.len(), 47);
     assert!(names.contains(&"frame_runs"));
     assert!(names.contains(&"cluster_frames"));
+    assert!(names.contains(&"align_frame_cluster"));
     assert!(names.contains(&"validate_frame_clusters"));
     assert!(names.contains(&"summary"));
     assert!(names.contains(&"capture_step"));
@@ -435,6 +436,12 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
     );
     assert_eq!(frame_groups["selected_frame_count"], 3);
     assert_eq!(frame_groups["clusters"][0]["member_count"], 3);
+    let aligned_frames = client.tool(
+        "align_frame_cluster",
+        json!({"model":"fixed_width","cluster_id":frame_groups["clusters"][0]["id"],"trial_id":discovery_id,"respect_direction":false}),
+    );
+    assert_eq!(aligned_frames["aligned_frame_count"], 3);
+    assert_eq!(aligned_frames["analysis"]["sample_count"], 3);
     let status = client.tool("frame_run_status", json!({"key":"mcp-frames-discovery"}));
     assert_eq!(status["model"], "fixed_width");
     let page = client.tool("frames", json!({"key":"mcp-frames-discovery","limit":1}));

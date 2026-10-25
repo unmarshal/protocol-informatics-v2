@@ -119,6 +119,9 @@ fn print_help() {
         "  cluster-frames <dir> <fixed_width|unsigned_leb128|delimiter> [trial-id|-] [respect|ignore] [run-keys|-]"
     );
     println!(
+        "  align-frame-cluster <dir> <model> <cluster-id> [trial-id|-] [respect|ignore] [run-keys|-]"
+    );
+    println!(
         "  validate-frame-clusters <dir> <model> <discovery-trial> <validation-trial> [respect|ignore] [discovery-run-keys|-] [validation-run-keys|-]"
     );
     println!("  validate-clusters <dir> <discovery-trial> <validation-trial> [respect|ignore]");
@@ -1687,6 +1690,30 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 direction_mode(args.get(4))?,
                 keys.as_deref(),
             )?)
+        }
+        "align-frame-cluster" => {
+            if args.len() < 4 || args.len() > 7 {
+                return Err(
+                    "expected model, cluster ID, optional trial ID, direction mode and run keys"
+                        .into(),
+                );
+            }
+            let state = workflow::load(root)?;
+            let trial = args.get(4).filter(|id| *id != "-").map(String::as_str);
+            let keys = args
+                .get(6)
+                .filter(|keys| *keys != "-")
+                .map(|keys| keys.split(',').map(str::to_owned).collect::<Vec<_>>());
+            print_json(
+                &protocol_informatics_v2::frame_alignment::align_frame_cluster(
+                    &state,
+                    &args[2],
+                    &args[3],
+                    trial,
+                    direction_mode(args.get(5))?,
+                    keys.as_deref(),
+                )?,
+            )
         }
         "validate-frame-clusters" => {
             if args.len() < 5 || args.len() > 8 {

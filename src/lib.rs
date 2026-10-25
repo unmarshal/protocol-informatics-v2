@@ -10,6 +10,7 @@ pub mod checksum;
 pub mod clustering;
 pub mod delimiter;
 pub mod exchanges;
+pub mod frame_alignment;
 pub mod framing;
 pub mod inference;
 mod input;

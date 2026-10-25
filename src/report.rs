@@ -68,6 +68,7 @@ pub fn render(state: &State) -> String {
     }
     view["cluster_validations"] = serde_json::Value::Array(cluster_validations);
     let mut frame_cluster_validations = Vec::new();
+    let mut frame_alignment_previews = Vec::new();
     for experiment in state.experiments.iter().take(8) {
         let discovery = state
             .trials
@@ -90,6 +91,27 @@ pub fn render(state: &State) -> String {
                 None,
                 None,
             ) {
+                for cluster in &result.clusters {
+                    if frame_alignment_previews.len() >= 4 {
+                        break;
+                    }
+                    if cluster.member_count > 8 || cluster.maximum_length > 256 {
+                        continue;
+                    }
+                    if let Ok(alignment) = crate::frame_alignment::align_frame_cluster(
+                        state,
+                        model,
+                        &cluster.id,
+                        Some(&discovery.id),
+                        true,
+                        Some(&result.discovery_run_keys),
+                    ) {
+                        frame_alignment_previews.push(serde_json::json!({
+                            "experiment_id": experiment.id,
+                            "result": alignment,
+                        }));
+                    }
+                }
                 frame_cluster_validations.push(serde_json::json!({
                     "experiment_id": experiment.id,
                     "result": result,
@@ -104,6 +126,7 @@ pub fn render(state: &State) -> String {
         }
     }
     view["frame_cluster_validations"] = serde_json::Value::Array(frame_cluster_validations);
+    view["frame_alignment_previews"] = serde_json::Value::Array(frame_alignment_previews);
     let mut exchange_reports = Vec::new();
     for capture in state.captures.iter().take(8) {
         match crate::exchanges::pair_exchanges(state, &capture.id, None, 0, 12) {
@@ -346,6 +369,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
     <section class="panel"><h2>Candidate format groups</h2><div id="clusters"></div></section>
     <section class="panel"><h2>Held-out grouping</h2><div id="clusterValidation"></div></section>
     <section class="panel"><h2>Held-out record grouping</h2><div id="frameClusterValidation"></div></section>
+    <section class="panel"><h2>Frame alignment</h2><div id="frameAlignments"></div></section>
     <section class="panel"><h2>Candidate fields</h2><div id="fieldCandidates"></div></section>
     <section class="panel"><h2>Candidate record framing</h2><div id="framingCandidates"></div></section>
     <section class="panel"><h2>Candidate typed records</h2><div id="tlvCandidates"></div></section>
@@ -617,6 +641,27 @@ for(const item of state.frame_cluster_validations||[]) {
   byId('frameClusterValidation').append(row);
 }
 if(!(state.frame_cluster_validations||[]).length) byId('frameClusterValidation').append(node('div','Commit records in discovery and validation trials to check recurring record groups.','small muted'));
+for(const item of state.frame_alignment_previews||[]) {
+  const result=item.result, analysis=result.analysis, row=node('div','', 'row');
+  row.append(node('strong',item.experiment_id+' · '+result.source_model+' · '+result.cluster_id),node('div',result.aligned_frame_count+' aligned frame(s) · '+analysis.aligned_width+' columns · '+analysis.strategy,'small muted'));
+  const width=Math.min(analysis.aligned_width,64);
+  for(let index=0;index<Math.min(result.frame_ids.length,8);index++) {
+    const frameId=result.frame_ids[index], button=node('button',frameId,'small');
+    button.onclick=()=>{const parent=frameById.get(frameId)?.run.observation_id; const observation=state.observations.find(value=>value.id===parent); if(observation) showDetail(observation);};
+    row.append(button);
+    const cells=node('div','', 'bytes');
+    for(let column=0;column<width;column++) {
+      const value=analysis.aligned_samples[index][column];
+      const cell=node('span',value===null?'··':value.toString(16).padStart(2,'0'),'byte'+(analysis.columns[column].distinct>1?' changed':''));
+      cell.title='aligned column '+column+(analysis.columns[column].distinct>1?' · variable':' · stable');
+      cells.append(cell);
+    }
+    row.append(cells);
+  }
+  if(analysis.aligned_width>width) row.append(node('div','Showing first '+width+' columns; use align-frame-cluster for the complete matrix.','small muted'));
+  byId('frameAlignments').append(row);
+}
+if(!(state.frame_alignment_previews||[]).length) byId('frameAlignments').append(node('div','Short committed record groups appear here after discovery and validation trials.','small muted'));
 for(const analysis of state.analyses) {
   const row=node('div','', 'row');
   const scope=analysis.scope?.kind==='cluster'?'group '+analysis.scope.cluster_id:analysis.scope?.kind==='trial'?'trial '+analysis.scope.trial_id:analysis.scope?.kind||'legacy selection';

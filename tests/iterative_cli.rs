@@ -100,6 +100,27 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
                 .any(|offset| offset == 4)
         );
     }
+    let first_cluster_id = groups["clusters"][0]["id"].as_str().unwrap();
+    let alignment = cli(&[
+        "align-frame-cluster",
+        root_text,
+        "delimiter",
+        first_cluster_id,
+        trial_id,
+        "ignore",
+    ]);
+    assert_eq!(alignment["cluster_id"], first_cluster_id);
+    assert_eq!(alignment["selected_frame_count"], 3);
+    assert_eq!(alignment["aligned_frame_count"], 3);
+    assert_eq!(alignment["analysis"]["sample_count"], 3);
+    assert_eq!(alignment["analysis"]["aligned_width"], 6);
+    assert_eq!(alignment["frame_ids"].as_array().unwrap().len(), 3);
+    assert!(
+        alignment["frame_ids"]
+            .as_array()
+            .unwrap()
+            .contains(&alignment["reference_frame_id"])
+    );
     let mut validation_bytes = Vec::new();
     for record in ["01a0b0c01001", "02d0e0f02004", "03e0f0a03007"] {
         validation_bytes.extend(workflow::from_hex(record).unwrap());
@@ -155,6 +176,64 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
     let html = fs::read_to_string(report).unwrap();
     assert!(html.contains("Held-out record grouping"));
     assert!(html.contains("\"frame_cluster_validations\":[{"));
+    assert!(html.contains("Frame alignment"));
+    assert!(html.contains("\"frame_alignment_previews\":[{"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn frame_alignment_discloses_sampling_and_retains_extremes() {
+    let root = workspace();
+    let root_text = path(&root);
+    let mut bytes = Vec::new();
+    for value in 0..40u8 {
+        bytes.extend([1, value, 0, 0, 16, value, 0xff]);
+    }
+    let sample = root.join("many-records.bin");
+    fs::write(&sample, bytes).unwrap();
+    cli(&["init", root_text, "Which columns vary in these records?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Align records",
+        "-",
+        "Find variable columns",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&["trial", root_text, experiment_id, "discovery", "40 records"]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let imported = cli(&["import", root_text, trial_id, "binary", path(&sample)]);
+    let observation_id = imported["event"]["observations"][0]["id"].as_str().unwrap();
+    cli(&[
+        "commit-delimiter",
+        root_text,
+        observation_id,
+        "0",
+        "ff",
+        "many-records",
+    ]);
+    let groups = cli(&["cluster-frames", root_text, "delimiter", trial_id, "ignore"]);
+    assert_eq!(groups["clusters"].as_array().unwrap().len(), 1);
+    let cluster = &groups["clusters"][0];
+    let aligned = cli(&[
+        "align-frame-cluster",
+        root_text,
+        "delimiter",
+        cluster["id"].as_str().unwrap(),
+        trial_id,
+        "ignore",
+    ]);
+    assert_eq!(aligned["selected_frame_count"], 40);
+    assert_eq!(aligned["aligned_frame_count"], 32);
+    assert_eq!(aligned["omitted_frame_count"], 8);
+    assert_eq!(
+        aligned["sampling_method"],
+        "representative_outliers_then_hash_v1"
+    );
+    let ids = aligned["frame_ids"].as_array().unwrap();
+    assert!(ids.contains(&cluster["representative_frame_id"]));
+    assert!(ids.contains(&cluster["farthest_members"][0]["frame_id"]));
+    assert_eq!(aligned["analysis"]["sample_count"], 32);
     fs::remove_dir_all(root).unwrap();
 }
 

@@ -6,6 +6,8 @@ Committed record interpretations have their own index: `frame-runs <dir> [trial-
 
 Use `validate-frame-clusters <dir> <model> <discovery-trial> <validation-trial> [respect|ignore] [discovery-run-keys|-] [validation-run-keys|-]` to check the proposed record groups on committed frames from a distinct trial of the same experiment. The MCP `validate_frame_clusters` tool takes the same trial IDs and optional run-key arrays. Its `frames` rows carry frame IDs and explain rejected groups. Only committed frames enter this check; use `frame-runs` to confirm coverage before interpreting the counts.
 
+Use `align-frame-cluster <dir> <model> <cluster-id> [trial-id|-] [respect|ignore] [run-keys|-]` to align the logical bytes in one group returned by `cluster-frames`. The read-only MCP equivalent is `align_frame_cluster`. `frame_ids` maps alignment row order to exact committed records, and `reference_frame_id` identifies the reference row. The response discloses any sampling and the current revision; recompute the group ID if the corpus changes.
+
 The filter is one JSON object. All supplied fields are combined with AND. Unknown field names and unknown experiment, trial, capture, or framing IDs are errors. An empty object returns the first 50 observations.
 
 | Field | Meaning |
