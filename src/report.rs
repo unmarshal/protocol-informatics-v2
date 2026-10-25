@@ -664,8 +664,9 @@ for(const item of state.frame_alignment_previews||[]) {
 if(!(state.frame_alignment_previews||[]).length) byId('frameAlignments').append(node('div','Short committed record groups appear here after discovery and validation trials.','small muted'));
 for(const analysis of state.analyses) {
   const row=node('div','', 'row');
-  const scope=analysis.scope?.kind==='cluster'?'group '+analysis.scope.cluster_id:analysis.scope?.kind==='trial'?'trial '+analysis.scope.trial_id:analysis.scope?.kind||'legacy selection';
-  row.append(node('strong',analysis.id),node('div',scope+' · '+analysis.observation_ids.length+' observations · '+analysis.aligned_width+' columns','small'));
+  const scope=analysis.scope?.kind==='frame_cluster'?'frame group '+analysis.scope.cluster_id+' at revision '+analysis.scope.source_revision:analysis.scope?.kind==='cluster'?'group '+analysis.scope.cluster_id:analysis.scope?.kind==='trial'?'trial '+analysis.scope.trial_id:analysis.scope?.kind||'legacy selection';
+  const isFrame=(analysis.frame_ids||[]).length>0;
+  row.append(node('strong',analysis.id),node('div',scope+' · '+(isFrame?analysis.frame_ids.length+' frames':analysis.observation_ids.length+' observations')+' · '+analysis.aligned_width+' columns','small'));
   row.append(node('div',analysis.method_version||'method version not recorded','small muted'));
   byId('analyses').append(row);
 }

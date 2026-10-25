@@ -2,11 +2,15 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
 
 use crate::reassembly::SourceSpan;
 use crate::workflow::{
-    Capture, CaptureRunStatus, KnownValue, Observation, State, Tag, from_hex, to_hex,
+    AnalysisScope, Capture, CaptureRunStatus, KnownValue, Observation, State, Tag, from_hex, to_hex,
 };
 
 const MAX_SUMMARY_GROUPS: usize = 20;
@@ -31,6 +35,7 @@ pub struct CorpusCounts {
     pub known_values: usize,
     pub frame_known_values: usize,
     pub analyses: usize,
+    pub frame_analyses: usize,
     pub decisions: usize,
     pub reserved_capture_runs: usize,
     pub completed_capture_runs: usize,
@@ -212,6 +217,242 @@ pub struct DecisionPage {
     pub next_offset: Option<usize>,
     pub order: &'static str,
     pub decisions: Vec<DecisionPreview>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AnalysisPreview {
+    pub id: String,
+    pub kind: &'static str,
+    pub scope: Option<AnalysisScope>,
+    pub entity_count: usize,
+    pub first_entity_ids: Vec<String>,
+    pub entity_ids_omitted: usize,
+    pub aligned_width: usize,
+    pub method_version: Option<String>,
+    pub artifact: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AnalysisPage {
+    pub schema_version: u32,
+    pub revision: u64,
+    pub total: usize,
+    pub offset: usize,
+    pub next_offset: Option<usize>,
+    pub order: &'static str,
+    pub analyses: Vec<AnalysisPreview>,
+}
+
+pub fn list_analyses(state: &State, offset: usize, limit: usize) -> Result<AnalysisPage, String> {
+    valid_page_limit(limit)?;
+    let total = state.analyses.len();
+    let analyses = state
+        .analyses
+        .iter()
+        .rev()
+        .skip(offset)
+        .take(limit)
+        .map(|analysis| {
+            let frames = !analysis.frame_ids.is_empty();
+            let ids = if frames {
+                &analysis.frame_ids
+            } else {
+                &analysis.observation_ids
+            };
+            AnalysisPreview {
+                id: analysis.id.clone(),
+                kind: if frames { "frame" } else { "observation" },
+                scope: analysis.scope.clone(),
+                entity_count: ids.len(),
+                first_entity_ids: ids.iter().take(5).cloned().collect(),
+                entity_ids_omitted: ids.len().saturating_sub(5),
+                aligned_width: analysis.aligned_width,
+                method_version: analysis.method_version.clone(),
+                artifact: analysis.artifact.clone(),
+            }
+        })
+        .collect();
+    Ok(AnalysisPage {
+        schema_version: state.schema_version,
+        revision: state.revision,
+        total,
+        offset,
+        next_offset: (offset.saturating_add(limit) < total).then_some(offset + limit),
+        order: "newest_first",
+        analyses,
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct AnalysisRowPreview {
+    pub entity_id: String,
+    pub aligned_bytes: Vec<Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AnalysisResultPage {
+    pub revision: u64,
+    pub analysis_id: String,
+    pub kind: &'static str,
+    pub scope: Option<AnalysisScope>,
+    pub method_version: Option<String>,
+    pub coordinate_system: &'static str,
+    pub strategy: String,
+    pub reference_entity_id: String,
+    pub total_columns: usize,
+    pub column_offset: usize,
+    pub next_column_offset: Option<usize>,
+    pub columns: Vec<Value>,
+    pub total_rows: usize,
+    pub row_offset: usize,
+    pub next_row_offset: Option<usize>,
+    pub rows: Vec<AnalysisRowPreview>,
+}
+
+pub fn read_analysis_result(
+    root: &Path,
+    state: &State,
+    analysis_id: &str,
+    column_offset: usize,
+    column_limit: usize,
+    row_offset: usize,
+    row_limit: usize,
+) -> Result<AnalysisResultPage, String> {
+    if column_limit == 0 || column_limit > 256 || row_limit == 0 || row_limit > 10 {
+        return Err("column limit must be 1 to 256 and row limit must be 1 to 10".into());
+    }
+    let record = state
+        .analyses
+        .iter()
+        .find(|analysis| analysis.id == analysis_id)
+        .ok_or_else(|| format!("unknown analysis {analysis_id}"))?;
+    let artifact_root = root
+        .join(".pi/artifacts")
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let path = root
+        .join(&record.artifact)
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if !path.starts_with(&artifact_root) || !path.is_file() {
+        return Err(format!("analysis {analysis_id} has invalid artifact path"));
+    }
+    if fs::metadata(&path)
+        .map_err(|error| error.to_string())?
+        .len()
+        > 64 * 1024 * 1024
+    {
+        return Err(format!("analysis {analysis_id} artifact exceeds 64 MiB"));
+    }
+    let bytes = fs::read(&path).map_err(|error| error.to_string())?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let (digest, extension) = name.split_once('.').unwrap_or_default();
+    if extension != "json" || format!("{:x}", Sha256::digest(&bytes)) != digest {
+        return Err(format!("analysis {analysis_id} artifact hash mismatch"));
+    }
+    let stored: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    let frames = !record.frame_ids.is_empty();
+    let ids = if frames {
+        &record.frame_ids
+    } else {
+        &record.observation_ids
+    };
+    if let Some(AnalysisScope::FrameCluster {
+        cluster_id,
+        model,
+        trial_id,
+        direction_mode,
+        run_keys,
+        source_revision,
+    }) = &record.scope
+        && (stored["cluster_id"] != *cluster_id
+            || stored["source_model"] != *model
+            || stored["trial_id"] != serde_json::json!(trial_id)
+            || stored["direction_mode"] != *direction_mode
+            || stored["revision"] != *source_revision
+            || stored["frame_ids"] != serde_json::json!(ids)
+            || stored["run_keys"] != serde_json::json!(run_keys)
+            || stored["analysis"]["aligned_width"] != record.aligned_width)
+    {
+        return Err(format!(
+            "analysis {analysis_id} metadata does not match its artifact"
+        ));
+    }
+    let matrix = if frames { &stored["analysis"] } else { &stored };
+    let columns = matrix["columns"]
+        .as_array()
+        .ok_or("analysis artifact has no columns")?;
+    let rows = matrix["aligned_samples"]
+        .as_array()
+        .ok_or("analysis artifact has no rows")?;
+    if columns.len() != record.aligned_width || rows.len() != ids.len() {
+        return Err(format!(
+            "analysis {analysis_id} artifact dimensions do not match its event"
+        ));
+    }
+    let reference_index = matrix["reference_index"]
+        .as_u64()
+        .ok_or("analysis artifact has no reference index")? as usize;
+    let reference_entity_id = ids
+        .get(reference_index)
+        .ok_or("analysis artifact reference index exceeds rows")?
+        .clone();
+    let selected_rows = rows
+        .iter()
+        .enumerate()
+        .skip(row_offset)
+        .take(row_limit)
+        .map(|(index, row)| {
+            let values = row.as_array().ok_or("analysis row is not an array")?;
+            if values.len() != columns.len() {
+                return Err("analysis row width does not match columns".into());
+            }
+            Ok(AnalysisRowPreview {
+                entity_id: ids[index].clone(),
+                aligned_bytes: values
+                    .iter()
+                    .skip(column_offset)
+                    .take(column_limit)
+                    .cloned()
+                    .collect(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(AnalysisResultPage {
+        revision: state.revision,
+        analysis_id: analysis_id.into(),
+        kind: if frames { "frame" } else { "observation" },
+        scope: record.scope.clone(),
+        method_version: record.method_version.clone(),
+        coordinate_system: if frames {
+            "logical_frame_bytes"
+        } else {
+            "observation_bytes"
+        },
+        strategy: matrix["strategy"]
+            .as_str()
+            .ok_or("analysis artifact has no strategy")?
+            .into(),
+        reference_entity_id,
+        total_columns: columns.len(),
+        column_offset,
+        next_column_offset: (column_offset.saturating_add(column_limit) < columns.len())
+            .then_some(column_offset + column_limit),
+        columns: columns
+            .iter()
+            .skip(column_offset)
+            .take(column_limit)
+            .cloned()
+            .collect(),
+        total_rows: rows.len(),
+        row_offset,
+        next_row_offset: (row_offset.saturating_add(row_limit) < rows.len())
+            .then_some(row_offset + row_limit),
+        rows: selected_rows,
+    })
 }
 
 fn valid_page_limit(limit: usize) -> Result<(), String> {
@@ -714,6 +955,11 @@ pub fn corpus_summary(state: &State) -> CorpusSummary {
             known_values: state.known_values.len(),
             frame_known_values: state.frame_known_values.len(),
             analyses: state.analyses.len(),
+            frame_analyses: state
+                .analyses
+                .iter()
+                .filter(|analysis| !analysis.frame_ids.is_empty())
+                .count(),
             decisions: state.decisions.len(),
             reserved_capture_runs: state
                 .capture_runs

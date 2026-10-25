@@ -27,7 +27,7 @@ This gives an agent four essential questions after resuming:
 3. What experiment would best distinguish the leading explanations?
 4. What action is already running or waiting for a result?
 
-Analysis results are keyed by input observation IDs, algorithm version, and parameters. The agent can reuse a prior result when those inputs match, or rerun an affected analysis when new data or a corrected tag changes the inputs. A derived claim always retains its source revision and exact supporting byte spans.
+Saved analysis results name their input observation or committed-frame IDs, algorithm version, and scope. A frame alignment also retains the group, model, selected run keys, and source revision. The agent can inspect a prior result with `analyses` and `analysis-result`, or rerun an affected analysis when new data or a corrected tag changes the inputs. A derived claim should retain its source revision and exact supporting byte spans.
 
 ## Agent action contract
 

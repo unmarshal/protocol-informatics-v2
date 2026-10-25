@@ -18,7 +18,7 @@ use crate::pcap::{
 use crate::reassembly::{SourceSpan, reassemble_tcp_segments};
 use crate::varint::{VarintConfig, probe_varint};
 
-const SCHEMA_VERSION: u32 = 13;
+const SCHEMA_VERSION: u32 = 14;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 const MAX_RECOVERY_TAIL_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -339,12 +339,22 @@ pub enum AnalysisScope {
         trial_id: Option<String>,
         direction_mode: String,
     },
+    FrameCluster {
+        cluster_id: String,
+        model: String,
+        trial_id: Option<String>,
+        direction_mode: String,
+        run_keys: Vec<String>,
+        source_revision: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisRecord {
     pub id: String,
     pub observation_ids: Vec<String>,
+    #[serde(default)]
+    pub frame_ids: Vec<String>,
     pub artifact: String,
     pub aligned_width: usize,
     #[serde(default)]
@@ -1169,14 +1179,90 @@ impl State {
                 }
             }
             Event::AnalysisRecorded { analysis } => {
-                if analysis.observation_ids.is_empty()
-                    || self.analyses.iter().any(|a| a.id == analysis.id)
+                let frame_scope =
+                    matches!(analysis.scope, Some(AnalysisScope::FrameCluster { .. }));
+                let frame_analysis = !analysis.frame_ids.is_empty();
+                if self.analyses.iter().any(|a| a.id == analysis.id)
+                    || analysis.aligned_width == 0
+                    || frame_analysis != analysis.observation_ids.is_empty()
+                    || frame_analysis != frame_scope
+                    || (frame_analysis && record.schema_version < 14)
                 {
                     return Err("empty or duplicate analysis".into());
                 }
                 for id in &analysis.observation_ids {
                     if !self.observations.iter().any(|o| &o.id == id) {
                         return Err(format!("unknown observation {id}"));
+                    }
+                }
+                if let Some(AnalysisScope::FrameCluster {
+                    cluster_id,
+                    model,
+                    trial_id,
+                    direction_mode,
+                    run_keys,
+                    source_revision,
+                }) = &analysis.scope
+                {
+                    if cluster_id.is_empty()
+                        || !["fixed_width", "unsigned_leb128", "delimiter"]
+                            .contains(&model.as_str())
+                        || !["respect", "ignore"].contains(&direction_mode.as_str())
+                        || run_keys.is_empty()
+                        || analysis.frame_ids.len() > 32
+                        || *source_revision >= record.revision
+                        || trial_id
+                            .as_ref()
+                            .is_some_and(|id| !self.trials.iter().any(|trial| &trial.id == id))
+                    {
+                        return Err("invalid frame analysis scope".into());
+                    }
+                    let mut seen = std::collections::BTreeSet::new();
+                    let mut seen_run_keys = std::collections::BTreeSet::new();
+                    for id in &analysis.frame_ids {
+                        let (run_id, observation_id, _) = self
+                            .frame_by_id(id)
+                            .ok_or_else(|| format!("unknown frame {id}"))?;
+                        let run_key = match model.as_str() {
+                            "fixed_width" => self
+                                .framing_runs
+                                .iter()
+                                .find(|run| run.id == run_id)
+                                .map(|run| run.key.as_str()),
+                            "unsigned_leb128" => self
+                                .varint_runs
+                                .iter()
+                                .find(|run| run.id == run_id)
+                                .map(|run| run.key.as_str()),
+                            "delimiter" => self
+                                .delimiter_runs
+                                .iter()
+                                .find(|run| run.id == run_id)
+                                .map(|run| run.key.as_str()),
+                            _ => None,
+                        };
+                        if !seen.insert(id)
+                            || run_key
+                                .is_none_or(|key| !run_keys.iter().any(|wanted| wanted == key))
+                        {
+                            return Err(format!("invalid frame analysis member {id}"));
+                        }
+                        seen_run_keys.insert(run_key.expect("validated above"));
+                        if let Some(trial) = trial_id {
+                            let observation = self
+                                .observations
+                                .iter()
+                                .find(|observation| observation.id == observation_id)
+                                .ok_or_else(|| format!("unknown observation {observation_id}"))?;
+                            if !self.captures.iter().any(|capture| {
+                                capture.id == observation.capture_id && capture.trial_id == *trial
+                            }) {
+                                return Err(format!("frame {id} is outside trial {trial}"));
+                            }
+                        }
+                    }
+                    if seen_run_keys.len() != run_keys.len() {
+                        return Err("frame analysis run keys do not match members".into());
                     }
                 }
                 self.analyses.push(analysis.clone());
@@ -1861,6 +1947,7 @@ pub struct Verification {
     pub captures: usize,
     pub observations: usize,
     pub analyses: usize,
+    pub frame_analyses: usize,
     pub artifacts_verified: usize,
 }
 
@@ -1987,8 +2074,34 @@ pub fn verify(root: &Path) -> Result<Verification, String> {
             .ok_or_else(|| format!("invalid analysis artifact path: {}", analysis.artifact))?;
         let bytes = fs::read(root.join(&analysis.artifact))
             .map_err(|error| format!("analysis {}: {error}", analysis.id))?;
-        if format!("{:x}", Sha256::digest(bytes)) != expected_digest {
+        if format!("{:x}", Sha256::digest(&bytes)) != expected_digest {
             return Err(format!("analysis {} has a SHA-256 mismatch", analysis.id));
+        }
+        if let Some(AnalysisScope::FrameCluster {
+            cluster_id,
+            model,
+            trial_id,
+            direction_mode,
+            run_keys,
+            source_revision,
+        }) = &analysis.scope
+        {
+            let stored: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("analysis {}: {error}", analysis.id))?;
+            if stored["cluster_id"] != *cluster_id
+                || stored["source_model"] != *model
+                || stored["trial_id"] != serde_json::json!(trial_id)
+                || stored["direction_mode"] != *direction_mode
+                || stored["revision"] != *source_revision
+                || stored["frame_ids"] != serde_json::json!(analysis.frame_ids)
+                || stored["run_keys"] != serde_json::json!(run_keys)
+                || stored["analysis"]["aligned_width"] != analysis.aligned_width
+            {
+                return Err(format!(
+                    "analysis {} metadata does not match its artifact",
+                    analysis.id
+                ));
+            }
         }
         artifacts_verified += 1;
     }
@@ -1997,6 +2110,11 @@ pub fn verify(root: &Path) -> Result<Verification, String> {
         captures: state.captures.len(),
         observations: state.observations.len(),
         analyses: state.analyses.len(),
+        frame_analyses: state
+            .analyses
+            .iter()
+            .filter(|analysis| !analysis.frame_ids.is_empty())
+            .count(),
         artifacts_verified,
     })
 }

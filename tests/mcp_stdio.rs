@@ -127,10 +127,13 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 47);
+    assert_eq!(names.len(), 50);
     assert!(names.contains(&"frame_runs"));
     assert!(names.contains(&"cluster_frames"));
     assert!(names.contains(&"align_frame_cluster"));
+    assert!(names.contains(&"record_frame_alignment"));
+    assert!(names.contains(&"analyses"));
+    assert!(names.contains(&"analysis_result"));
     assert!(names.contains(&"validate_frame_clusters"));
     assert!(names.contains(&"summary"));
     assert!(names.contains(&"capture_step"));
@@ -442,6 +445,24 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
     );
     assert_eq!(aligned_frames["aligned_frame_count"], 3);
     assert_eq!(aligned_frames["analysis"]["sample_count"], 3);
+    let recorded_frames = client.tool(
+        "record_frame_alignment",
+        json!({"model":"fixed_width","cluster_id":frame_groups["clusters"][0]["id"],"trial_id":discovery_id,"respect_direction":false}),
+    );
+    assert_eq!(
+        recorded_frames["event"]["analysis"]["scope"]["kind"],
+        "frame_cluster"
+    );
+    let saved_analysis_id = recorded_frames["event"]["analysis"]["id"].as_str().unwrap();
+    let saved_analyses = client.tool("analyses", json!({"limit":1}));
+    assert_eq!(saved_analyses["analyses"][0]["id"], saved_analysis_id);
+    let saved_rows = client.tool(
+        "analysis_result",
+        json!({"analysis_id":saved_analysis_id,"column_limit":2,"row_limit":1}),
+    );
+    assert_eq!(saved_rows["kind"], "frame");
+    assert_eq!(saved_rows["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(saved_rows["columns"].as_array().unwrap().len(), 2);
     let status = client.tool("frame_run_status", json!({"key":"mcp-frames-discovery"}));
     assert_eq!(status["model"], "fixed_width");
     let page = client.tool("frames", json!({"key":"mcp-frames-discovery","limit":1}));

@@ -31,6 +31,27 @@ struct PageInput {
     limit: usize,
 }
 
+#[derive(Deserialize, JsonSchema)]
+struct AnalysisResultInput {
+    analysis_id: String,
+    #[serde(default)]
+    column_offset: usize,
+    #[serde(default = "default_analysis_column_limit")]
+    column_limit: usize,
+    #[serde(default)]
+    row_offset: usize,
+    #[serde(default = "default_analysis_row_limit")]
+    row_limit: usize,
+}
+
+fn default_analysis_column_limit() -> usize {
+    64
+}
+
+fn default_analysis_row_limit() -> usize {
+    5
+}
+
 fn default_page_limit() -> usize {
     50
 }
@@ -404,6 +425,37 @@ impl InvestigationServer {
     }
 
     #[tool(
+        description = "Page saved observation and frame alignment records, newest first.",
+        annotations(read_only_hint = true)
+    )]
+    fn analyses(&self, Parameters(input): Parameters<PageInput>) -> Result<CallToolResult, String> {
+        Self::json(query::list_analyses(
+            &self.load()?,
+            input.offset,
+            input.limit,
+        )?)
+    }
+
+    #[tool(
+        description = "Read bounded column and row slices of a saved alignment artifact with exact observation or frame IDs.",
+        annotations(read_only_hint = true)
+    )]
+    fn analysis_result(
+        &self,
+        Parameters(input): Parameters<AnalysisResultInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(query::read_analysis_result(
+            &self.root,
+            &self.load()?,
+            &input.analysis_id,
+            input.column_offset,
+            input.column_limit,
+            input.row_offset,
+            input.row_limit,
+        )?)
+    }
+
+    #[tool(
         description = "Page trial IDs and controlled-factor metadata, newest first.",
         annotations(read_only_hint = true)
     )]
@@ -565,6 +617,33 @@ impl InvestigationServer {
             input.respect_direction,
             input.run_keys.as_deref(),
         )?)
+    }
+
+    #[tool(
+        description = "Persist one bounded frame-group alignment as a content-addressed analysis artifact and event; inspect existing analyses before retrying an uncertain call."
+    )]
+    async fn record_frame_alignment(
+        &self,
+        Parameters(input): Parameters<FrameAlignmentInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke(
+            "record-frame-alignment",
+            vec![
+                input.model,
+                input.cluster_id,
+                input.trial_id.unwrap_or_else(|| "-".into()),
+                if input.respect_direction {
+                    "respect"
+                } else {
+                    "ignore"
+                }
+                .into(),
+                input
+                    .run_keys
+                    .map_or_else(|| "-".into(), |keys| keys.join(",")),
+            ],
+        )
+        .await
     }
 
     #[tool(

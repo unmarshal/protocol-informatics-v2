@@ -122,6 +122,9 @@ fn print_help() {
         "  align-frame-cluster <dir> <model> <cluster-id> [trial-id|-] [respect|ignore] [run-keys|-]"
     );
     println!(
+        "  record-frame-alignment <dir> <model> <cluster-id> [trial-id|-] [respect|ignore] [run-keys|-]"
+    );
+    println!(
         "  validate-frame-clusters <dir> <model> <discovery-trial> <validation-trial> [respect|ignore] [discovery-run-keys|-] [validation-run-keys|-]"
     );
     println!("  validate-clusters <dir> <discovery-trial> <validation-trial> [respect|ignore]");
@@ -137,6 +140,10 @@ fn print_help() {
     println!("  experiments <dir> [offset] [limit<=100]  page experiment plans");
     println!("  hypotheses <dir> [offset] [limit<=100]  page claims and evidence counts");
     println!("  decisions <dir> [offset] [limit<=100]  page recorded decisions");
+    println!("  analyses <dir> [offset] [limit<=100]  page saved alignments");
+    println!(
+        "  analysis-result <dir> <analysis-id> [column-offset] [column-limit<=256] [row-offset] [row-limit<=10]"
+    );
     println!("  resume <dir> | changes <dir> <revision> | report <dir> <html-file>");
     println!("  recover-tail <dir> [--apply]       inspect or repair an unterminated final event");
     println!("  observations <dir> [trial-id|-] [offset] [limit<=100]");
@@ -262,6 +269,7 @@ fn record_analysis(
             .iter()
             .map(|observation| observation.id.clone())
             .collect(),
+        frame_ids: Vec::new(),
         artifact,
         aligned_width: analysis.columns.len(),
         scope: Some(scope),
@@ -1715,6 +1723,52 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 )?,
             )
         }
+        "record-frame-alignment" => {
+            if args.len() < 4 || args.len() > 7 {
+                return Err(
+                    "expected model, cluster ID, optional trial ID, direction mode and run keys"
+                        .into(),
+                );
+            }
+            let state = workflow::load(root)?;
+            let trial = args.get(4).filter(|id| *id != "-").map(String::as_str);
+            let keys = args
+                .get(6)
+                .filter(|keys| *keys != "-")
+                .map(|keys| keys.split(',').map(str::to_owned).collect::<Vec<_>>());
+            let report = protocol_informatics_v2::frame_alignment::align_frame_cluster(
+                &state,
+                &args[2],
+                &args[3],
+                trial,
+                direction_mode(args.get(5))?,
+                keys.as_deref(),
+            )?;
+            let bytes = serde_json::to_vec(&report).map_err(|error| error.to_string())?;
+            let (_, artifact) = workflow::store_artifact(root, &bytes, "json")?;
+            let record = AnalysisRecord {
+                id: workflow::next_id(root, "analysis")?,
+                observation_ids: Vec::new(),
+                frame_ids: report.frame_ids,
+                artifact,
+                aligned_width: report.analysis["aligned_width"]
+                    .as_u64()
+                    .ok_or("alignment has no width")? as usize,
+                scope: Some(AnalysisScope::FrameCluster {
+                    cluster_id: report.cluster_id,
+                    model: report.source_model,
+                    trial_id: report.trial_id,
+                    direction_mode: report.direction_mode.into(),
+                    run_keys: report.run_keys,
+                    source_revision: report.revision,
+                }),
+                method_version: Some("best_of_positional_and_star_v1".into()),
+            };
+            print_json(&workflow::append(
+                root,
+                Event::AnalysisRecorded { analysis: record },
+            )?)
+        }
         "validate-frame-clusters" => {
             if args.len() < 5 || args.len() > 8 {
                 return Err("expected model, discovery and validation trials, optional direction mode and run keys".into());
@@ -1921,6 +1975,42 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             let state = workflow::load(root)?;
             print_json(&protocol_informatics_v2::query::list_decisions(
                 &state, offset, limit,
+            )?)
+        }
+        "analyses" => {
+            let (offset, limit) = page_arguments(args)?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::query::list_analyses(
+                &state, offset, limit,
+            )?)
+        }
+        "analysis-result" => {
+            if args.len() < 3 || args.len() > 7 {
+                return Err("expected analysis ID and optional column and row pages".into());
+            }
+            let column_offset = args.get(3).map_or(Ok(0), |value| {
+                value
+                    .parse()
+                    .map_err(|_| "column offset must be an integer")
+            })?;
+            let column_limit = args.get(4).map_or(Ok(64), |value| {
+                value.parse().map_err(|_| "column limit must be an integer")
+            })?;
+            let row_offset = args.get(5).map_or(Ok(0), |value| {
+                value.parse().map_err(|_| "row offset must be an integer")
+            })?;
+            let row_limit = args.get(6).map_or(Ok(5), |value| {
+                value.parse().map_err(|_| "row limit must be an integer")
+            })?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::query::read_analysis_result(
+                root,
+                &state,
+                &args[2],
+                column_offset,
+                column_limit,
+                row_offset,
+                row_limit,
             )?)
         }
         "observations" => {

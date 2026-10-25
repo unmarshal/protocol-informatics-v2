@@ -8,6 +8,8 @@ Use `validate-frame-clusters <dir> <model> <discovery-trial> <validation-trial> 
 
 Use `align-frame-cluster <dir> <model> <cluster-id> [trial-id|-] [respect|ignore] [run-keys|-]` to align the logical bytes in one group returned by `cluster-frames`. The read-only MCP equivalent is `align_frame_cluster`. `frame_ids` maps alignment row order to exact committed records, and `reference_frame_id` identifies the reference row. The response discloses any sampling and the current revision; recompute the group ID if the corpus changes.
 
+To retain an alignment, call `record-frame-alignment` with the same arguments or MCP `record_frame_alignment`. This writes one analysis event and content-addressed JSON artifact; it has no retry key, so page `analyses <dir> [offset] [limit]` before repeating an uncertain write. `analysis-result <dir> <analysis-id> [column-offset] [column-limit] [row-offset] [row-limit]` reads hash-checked slices of either frame or observation alignments. The MCP equivalents are `analyses` and `analysis_result`; their maximum page sizes are 100 analysis previews, 256 columns, and 10 rows. Frame analysis rows retain frame IDs and the source revision even after more captures arrive.
+
 The filter is one JSON object. All supplied fields are combined with AND. Unknown field names and unknown experiment, trial, capture, or framing IDs are errors. An empty object returns the first 50 observations.
 
 | Field | Meaning |
