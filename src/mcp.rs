@@ -372,6 +372,11 @@ struct KeyInput {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct StepKeyInput {
+    step_key: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct TagCaptureInput {
     action_id: String,
     capture_id: String,
@@ -441,27 +446,9 @@ impl InvestigationServer {
             "--".into(),
         ];
         args.extend(input.command);
-        let result = self.invoke_value(command, args).await?;
-        if result["status"] != "completed" {
-            return Ok(CallToolResult::structured(result));
-        }
-        let ids = result["observation_ids"].as_array();
-        let batches = result["tag_batches"]
-            .as_array()
-            .map(|items| items.iter().map(compact_batch).collect::<Vec<_>>())
-            .unwrap_or_default();
-        Ok(CallToolResult::structured(json!({
-            "revision":result["revision"],
-            "step_key":result["step_key"],
-            "status":result["status"],
-            "replayed":result["replayed"],
-            "action":result["action"],
-            "capture":result["capture"],
-            "observation_count":ids.map_or(0, Vec::len),
-            "first_observation_ids":ids.map(|items| items.iter().take(20).cloned().collect::<Vec<_>>()).unwrap_or_default(),
-            "observation_ids_omitted":ids.map_or(0, |items| items.len().saturating_sub(20)),
-            "tag_batches":batches,
-        })))
+        Ok(compact_capture_step_result(
+            self.invoke_value(command, args).await?,
+        ))
     }
 }
 
@@ -475,6 +462,29 @@ fn compact_batch(batch: &Value) -> Value {
         "first_observation_ids":ids.map(|items| items.iter().take(20).cloned().collect::<Vec<_>>()).unwrap_or_default(),
         "observation_ids_omitted":ids.map_or(0, |items| items.len().saturating_sub(20)),
     })
+}
+
+fn compact_capture_step_result(result: Value) -> CallToolResult {
+    if result["status"] != "completed" {
+        return CallToolResult::structured(result);
+    }
+    let ids = result["observation_ids"].as_array();
+    let batches = result["tag_batches"]
+        .as_array()
+        .map(|items| items.iter().map(compact_batch).collect::<Vec<_>>())
+        .unwrap_or_default();
+    CallToolResult::structured(json!({
+        "revision":result["revision"],
+        "step_key":result["step_key"],
+        "status":result["status"],
+        "replayed":result["replayed"],
+        "action":result["action"],
+        "capture":result["capture"],
+        "observation_count":ids.map_or(0, Vec::len),
+        "first_observation_ids":ids.map(|items| items.iter().take(20).cloned().collect::<Vec<_>>()).unwrap_or_default(),
+        "observation_ids_omitted":ids.map_or(0, |items| items.len().saturating_sub(20)),
+        "tag_batches":batches,
+    }))
 }
 
 fn comma_ids(ids: &[String]) -> String {
@@ -1290,7 +1300,7 @@ impl InvestigationServer {
     }
 
     #[tool(
-        description = "Start a replayable action, bounded capture, and capture-scope tagging step in the background. Call again with the same arguments and step key to finish tagging after the run completes. The command executes as the server user.",
+        description = "Start a replayable action, bounded capture, and capture-scope tagging step in the background. Later call capture_step_finish with only the step key to finish tagging. The command executes as the server user.",
         annotations(idempotent_hint = true)
     )]
     async fn capture_step_start(
@@ -1298,6 +1308,20 @@ impl InvestigationServer {
         Parameters(input): Parameters<CaptureStepInput>,
     ) -> Result<CallToolResult, String> {
         self.run_capture_step(input, "capture-step-start").await
+    }
+
+    #[tool(
+        description = "Finish capture-scope tags for a completed background step using only its durable step key. Also reports running, failed, or interrupted capture status without replaying the command.",
+        annotations(idempotent_hint = true)
+    )]
+    async fn capture_step_finish(
+        &self,
+        Parameters(input): Parameters<StepKeyInput>,
+    ) -> Result<CallToolResult, String> {
+        Ok(compact_capture_step_result(
+            self.invoke_value("capture-step-finish", vec![input.step_key])
+                .await?,
+        ))
     }
 
     #[tool(
@@ -1385,7 +1409,7 @@ impl ServerHandler for InvestigationServer {
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions(
-                "Start with summary, then page trials and search observations. Read exact byte spans before making claims. Pairing, clustering, and record models are provisional. Check held-out captures before committing frames; use stable keys for mark, capture, and frame operations.",
+                "Start with summary, then page trials and search observations. Read exact byte spans before making claims. Pairing, clustering, and record models are provisional. Check held-out captures before committing frames; use stable keys for mark, capture, and frame operations. Finish a background capture step by its saved step key with capture_step_finish.",
             )
     }
 }

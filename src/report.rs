@@ -649,7 +649,10 @@ for(const experiment of state.experiments) {
   for(const trial of state.trials.filter(x=>x.experiment_id===experiment.id)) {
     const captures=state.captures.filter(x=>x.trial_id===trial.id);
     row.append(node('div',trial.id+' · '+trial.role+' · '+trial.changed_factor+' · '+captures.length+' capture(s)','small'));
-    for(const action of state.actions.filter(x=>x.trial_id===trial.id)) row.append(node('div','↳ '+action.id+' · '+action.kind+': '+action.detail+(action.timestamp_ns===null?'':' · UTC ns '+action.timestamp_ns),'small muted'));
+    for(const action of state.actions.filter(x=>x.trial_id===trial.id)) {
+      row.append(node('div','↳ '+action.id+' · '+action.kind+': '+action.detail+(action.timestamp_ns===null?'':' · UTC ns '+action.timestamp_ns),'small muted'));
+      if(action.capture_scope) row.append(node('div','↳ capture scope '+action.capture_scope.phase+': '+action.capture_scope.label+' · step key '+action.key.slice(0,-7),'small muted'));
+    }
   }
   byId('experiments').append(row);
 }

@@ -18,7 +18,7 @@ use crate::pcap::{
 use crate::reassembly::{SourceSpan, reassemble_tcp_segments};
 use crate::varint::{VarintConfig, probe_varint};
 
-const SCHEMA_VERSION: u32 = 15;
+const SCHEMA_VERSION: u32 = 16;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 const MAX_RECOVERY_TAIL_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -316,6 +316,12 @@ pub struct FrameKnownValue {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureStepScope {
+    pub phase: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Action {
     pub id: String,
     pub trial_id: String,
@@ -325,6 +331,8 @@ pub struct Action {
     pub timestamp_ns: Option<u64>,
     #[serde(default)]
     pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_scope: Option<CaptureStepScope>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -987,6 +995,16 @@ impl State {
                         || self.actions.iter().any(|old| old.key.as_ref() == Some(key)))
                 {
                     return Err("invalid or duplicate keyed action".into());
+                }
+                if let Some(scope) = &action.capture_scope
+                    && (record.schema_version < 16
+                        || scope.phase.trim().is_empty()
+                        || scope.label.trim().is_empty()
+                        || action.key.as_deref().is_none_or(|key| {
+                            !key.ends_with(":action") || key.len() <= ":action".len()
+                        }))
+                {
+                    return Err("invalid capture step scope".into());
                 }
                 self.actions.push(action.clone());
             }

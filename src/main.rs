@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 use std::os::unix::process::CommandExt;
 
 use protocol_informatics_v2::workflow::{
-    self, Action, AnalysisRecord, AnalysisScope, CaptureRun, CaptureRunStatus, CaptureTagBatch,
-    Decision, Event, Experiment, FrameKnownValue, Hypothesis, KnownValue, Observation, Tag, Trial,
-    ValueSet, WindowTag,
+    self, Action, AnalysisRecord, AnalysisScope, CaptureRun, CaptureRunStatus, CaptureStepScope,
+    CaptureTagBatch, Decision, Event, Experiment, FrameKnownValue, Hypothesis, KnownValue,
+    Observation, Tag, Trial, ValueSet, WindowTag,
 };
 use protocol_informatics_v2::{CpuAligner, analyze_best, parse_hex_samples};
 use serde::Serialize;
@@ -66,6 +66,9 @@ fn print_help() {
     );
     println!(
         "  capture-step-start <dir> <trial-id> <kind> <detail> <phase> <label> <step-key> <format> <timeout-ms> -- <program> [args...]"
+    );
+    println!(
+        "  capture-step-finish <dir> <step-key>  finish completed step tags without command args"
     );
     println!("  capture-start <dir> <trial-id> <format> <key> <timeout-ms> -- <program> [args...]");
     println!("  capture-stop <dir> <key>             request a running capture to stop");
@@ -497,6 +500,72 @@ fn invoke_local_json(args: &[String]) -> Result<serde_json::Value, String> {
         .map_err(|error| format!("{} returned invalid JSON: {error}", args[0]))
 }
 
+fn mark_step_action(
+    root: &Path,
+    trial_id: &str,
+    kind: &str,
+    detail: &str,
+    phase: &str,
+    label: &str,
+    step_key: &str,
+) -> Result<Action, String> {
+    let key = format!("{step_key}:action");
+    let matches_request = |action: &Action| {
+        action.key.as_deref() == Some(key.as_str())
+            && action.trial_id == trial_id
+            && action.kind == kind
+            && action.detail == detail
+            && action
+                .capture_scope
+                .as_ref()
+                .is_none_or(|scope| scope.phase == phase && scope.label == label)
+    };
+    let state = workflow::load(root)?;
+    if let Some(action) = state
+        .actions
+        .iter()
+        .find(|action| action.key.as_deref() == Some(key.as_str()))
+    {
+        return if matches_request(action) {
+            Ok(action.clone())
+        } else {
+            Err(format!(
+                "capture step key {step_key} was used with different arguments"
+            ))
+        };
+    }
+    let action = Action {
+        id: String::new(),
+        trial_id: trial_id.into(),
+        kind: kind.into(),
+        detail: detail.into(),
+        timestamp_ns: Some(workflow::now_ns()?),
+        key: Some(key.clone()),
+        capture_scope: Some(CaptureStepScope {
+            phase: phase.into(),
+            label: label.into(),
+        }),
+    };
+    let appended = workflow::append(root, Event::ActionMarked { action });
+    let updated = workflow::load(root)?;
+    if let Some(action) = updated
+        .actions
+        .iter()
+        .find(|action| action.key.as_deref() == Some(key.as_str()))
+    {
+        return if matches_request(action) {
+            Ok(action.clone())
+        } else {
+            Err(format!(
+                "capture step key {step_key} was used with different arguments"
+            ))
+        };
+    }
+    Err(appended
+        .err()
+        .unwrap_or_else(|| "capture step action was not recorded".into()))
+}
+
 fn capture_step(root: &Path, args: &[String], background: bool) -> Result<(), String> {
     if args.len() < 12 || args[10] != "--" {
         return Err("expected trial, action kind/detail, phase/label, step key, format, timeout, --, and a program".into());
@@ -526,18 +595,9 @@ fn capture_step(root: &Path, args: &[String], background: bool) -> Result<(), St
     }
     let directory = args[1].clone();
     let trial_id = args[2].clone();
-    let action_args = vec![
-        "mark-keyed".into(),
-        directory.clone(),
-        trial_id.clone(),
-        args[3].clone(),
-        args[4].clone(),
-        format!("{step_key}:action"),
-    ];
-    let marked = invoke_local_json(&action_args)?;
-    let action_id = marked["action"]["id"]
-        .as_str()
-        .ok_or("mark-keyed returned no action ID")?;
+    let action = mark_step_action(
+        root, &trial_id, &args[3], &args[4], &args[5], &args[6], step_key,
+    )?;
     let mut capture_args = vec![
         if background {
             "capture-start"
@@ -557,16 +617,73 @@ fn capture_step(root: &Path, args: &[String], background: bool) -> Result<(), St
     if captured["status"] != "completed" {
         return print_json(&json!({
             "revision": workflow::load(root)?.revision, "step_key": step_key,
-            "status": captured["status"], "action": marked["action"],
+            "status": captured["status"], "action": action,
             "capture_run": captured, "capture_key": format!("{step_key}:capture"),
+        }));
+    }
+    print_json(&finish_capture_step(
+        root,
+        step_key,
+        Some((&args[5], &args[6])),
+    )?)
+}
+
+fn finish_capture_step(
+    root: &Path,
+    step_key: &str,
+    scope_override: Option<(&str, &str)>,
+) -> Result<serde_json::Value, String> {
+    if step_key.is_empty() || step_key.len() > 120 || step_key.chars().any(char::is_control) {
+        return Err("invalid capture step key".into());
+    }
+    let state = workflow::load(root)?;
+    let action_key = format!("{step_key}:action");
+    let action = state
+        .actions
+        .iter()
+        .find(|action| action.key.as_deref() == Some(action_key.as_str()))
+        .ok_or_else(|| format!("unknown capture step key {step_key}"))?;
+    let (phase, label) = match (scope_override, action.capture_scope.as_ref()) {
+        (Some((phase, label)), Some(saved)) if phase == saved.phase && label == saved.label => {
+            (phase.to_owned(), label.to_owned())
+        }
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "capture step key {step_key} was used with different tag scope"
+            ));
+        }
+        (Some((phase, label)), None) => (phase.to_owned(), label.to_owned()),
+        (None, Some(saved)) => (saved.phase.clone(), saved.label.clone()),
+        (None, None) => {
+            return Err("this older step has no saved tag scope; retry with its original capture-step arguments".into());
+        }
+    };
+    let capture_key = format!("{step_key}:capture");
+    let Some(run) = state.capture_runs.iter().find(|run| run.key == capture_key) else {
+        return Ok(json!({
+            "revision": state.revision, "step_key": step_key,
+            "status": "pending_capture", "action": action,
+            "capture_run": null, "capture_key": capture_key,
+        }));
+    };
+    if run.trial_id != action.trial_id {
+        return Err("capture step action and run belong to different trials".into());
+    }
+    let status = capture_status_name(root, run)?;
+    let captured = capture_run_view(&state, run, Some(status));
+    if status != "completed" {
+        return Ok(json!({
+            "revision": state.revision, "step_key": step_key,
+            "status": status, "action": action,
+            "capture_run": captured, "capture_key": capture_key,
         }));
     }
     let capture_id = captured["capture"]["id"]
         .as_str()
-        .ok_or("capture-command returned no capture ID")?;
+        .ok_or("completed capture run has no capture ID")?;
     let observation_count = captured["observation_ids"]
         .as_array()
-        .ok_or("capture-command returned no observation IDs")?
+        .ok_or("completed capture run has no observation IDs")?
         .len();
     let mut tag_batches = Vec::new();
     let mut all_replayed = true;
@@ -583,11 +700,11 @@ fn capture_step(root: &Path, args: &[String], background: bool) -> Result<(), St
         };
         let mut tag_args = vec![
             "tag-capture".into(),
-            directory.clone(),
-            action_id.into(),
+            root.to_string_lossy().into_owned(),
+            action.id.clone(),
             capture_id.into(),
-            args[5].clone(),
-            args[6].clone(),
+            phase.clone(),
+            label.clone(),
             key,
         ];
         if observation_count > 1000 {
@@ -604,9 +721,9 @@ fn capture_step(root: &Path, args: &[String], background: bool) -> Result<(), St
     } else {
         serde_json::Value::Null
     };
-    print_json(&json!({
+    Ok(json!({
         "revision": revision, "step_key": step_key, "status": "completed",
-        "action": marked["action"], "capture": captured["capture"],
+        "action": action, "capture": captured["capture"],
         "observation_ids": captured["observation_ids"], "tag_batch": tag_batch,
         "tag_batches": tag_batches, "replayed": all_replayed,
     }))
@@ -846,6 +963,7 @@ fn mark_keyed(root: &Path, args: &[String]) -> Result<(), String> {
         detail: args[4].clone(),
         timestamp_ns: Some(supplied_timestamp.unwrap_or(workflow::now_ns()?)),
         key: Some(key.clone()),
+        capture_scope: None,
     };
     let appended = workflow::append(root, Event::ActionMarked { action });
     let updated = workflow::load(root)?;
@@ -1291,6 +1409,10 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
         "capture-command" => capture_command(root, args),
         "capture-step" => capture_step(root, args, false),
         "capture-step-start" => capture_step(root, args, true),
+        "capture-step-finish" => {
+            require_len(args, 3)?;
+            print_json(&finish_capture_step(root, &args[2], None)?)
+        }
         "capture-start" => capture_start(root, args),
         "capture-stop" => {
             require_len(args, 3)?;
@@ -1316,6 +1438,7 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 detail: args[4].clone(),
                 timestamp_ns: Some(workflow::now_ns()?),
                 key: None,
+                capture_scope: None,
             };
             print_json(&workflow::append(root, Event::ActionMarked { action })?)
         }
@@ -1332,6 +1455,7 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 detail: args[5].clone(),
                 timestamp_ns: Some(timestamp_ns),
                 key: None,
+                capture_scope: None,
             };
             print_json(&workflow::append(root, Event::ActionMarked { action })?)
         }

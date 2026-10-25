@@ -726,7 +726,7 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
     );
     let event_log = root.join(".pi/events.jsonl");
     let prior_log = fs::read_to_string(&event_log).unwrap();
-    let legacy_log = prior_log.replace("\"schema_version\":15", "\"schema_version\":13");
+    let legacy_log = prior_log.replace("\"schema_version\":16", "\"schema_version\":13");
     assert_ne!(legacy_log, prior_log);
     fs::write(&event_log, legacy_log).unwrap();
     let recorded = cli(&[
@@ -739,7 +739,7 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
     ]);
     let saved = &recorded["event"]["analysis"];
     let analysis_id = saved["id"].as_str().unwrap();
-    assert_eq!(recorded["schema_version"], 15);
+    assert_eq!(recorded["schema_version"], 16);
     assert_eq!(saved["scope"]["kind"], "frame_cluster");
     assert_eq!(saved["frame_ids"], alignment["frame_ids"]);
     assert_eq!(saved["scope"]["source_revision"], alignment["revision"]);
@@ -1119,7 +1119,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     assert_eq!(summary["observation_count"], 48);
     assert_eq!(summary["hypotheses"][0]["score"], 0.9);
     let corpus = cli(&["summary", root_text]);
-    assert_eq!(corpus["schema_version"], 15);
+    assert_eq!(corpus["schema_version"], 16);
     assert_eq!(corpus["revision"], 13);
     assert_eq!(corpus["counts"]["captures"], 2);
     assert_eq!(corpus["counts"]["observations"], 48);
@@ -1155,7 +1155,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
         serde_json::json!({"trial_id":"trial-000004","direction":direction,"offset":2,"limit":3})
             .to_string();
     let matches = cli(&["search-observations", root_text, &direction_query]);
-    assert_eq!(matches["schema_version"], 15);
+    assert_eq!(matches["schema_version"], 16);
     assert_eq!(matches["total"], 24);
     assert_eq!(matches["observations"].as_array().unwrap().len(), 3);
     assert_eq!(matches["next_offset"], 5);
@@ -3579,7 +3579,7 @@ fn replays_v1_log_and_appends_current_events() {
         "Old investigation"
     );
     let appended = cli(&["hypothesis", path(&root), "A new claim"]);
-    assert_eq!(appended["schema_version"], 15);
+    assert_eq!(appended["schema_version"], 16);
     assert_eq!(appended["revision"], 2);
     assert_eq!(
         cli(&["changes", path(&root), "0"])
@@ -4289,11 +4289,17 @@ fn capture_step_start_finishes_background_capture_and_tags_on_retry() {
     assert_eq!(started["status"], "running");
     assert_eq!(started["capture_key"], "background-step:capture");
     assert_eq!(started["capture_run"]["status"], "running");
+    assert_eq!(started["action"]["capture_scope"]["phase"], "capture_scope");
+    assert_eq!(
+        started["action"]["capture_scope"]["label"],
+        "delayed output"
+    );
     let action_id = started["action"]["id"].clone();
+    let finish_args = ["capture-step-finish", root_text, "background-step"];
     let mut completed = Value::Null;
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        let current = cli(&arguments);
+        let current = cli(&finish_args);
         if current["status"] == "completed" {
             completed = current;
             break;
@@ -4311,10 +4317,42 @@ fn capture_step_start_finishes_background_capture_and_tags_on_retry() {
     );
     assert_eq!(completed["replayed"], false);
     let revision = completed["revision"].as_u64().unwrap();
-    let replay = cli(&arguments);
+    let replay = cli(&finish_args);
     assert_eq!(replay["status"], "completed");
     assert_eq!(replay["replayed"], true);
     assert_eq!(replay["revision"], revision);
+    let mut changed = arguments;
+    changed[6] = "different label";
+    let conflict = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(changed)
+        .output()
+        .unwrap();
+    assert!(!conflict.status.success());
+    assert!(String::from_utf8_lossy(&conflict.stderr).contains("different arguments"));
+    assert_eq!(cli(&["verify", root_text])["observations"], 2);
+    let events_path = root.join(".pi/events.jsonl");
+    let original_events = fs::read_to_string(&events_path).unwrap();
+    let mut events: Vec<Value> = original_events
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let marked = events
+        .iter_mut()
+        .find(|event| event["event"]["type"] == "action_marked")
+        .unwrap();
+    marked["event"]["action"]["capture_scope"]["label"] = json!("");
+    let tampered = events
+        .iter()
+        .map(|event| format!("{event}\n"))
+        .collect::<String>();
+    fs::write(&events_path, tampered).unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["verify", root_text])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("invalid capture step scope"));
+    fs::write(&events_path, original_events).unwrap();
     assert_eq!(cli(&["verify", root_text])["observations"], 2);
     fs::remove_dir_all(root).unwrap();
 }
