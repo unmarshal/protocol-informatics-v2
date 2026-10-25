@@ -1,0 +1,122 @@
+{
+  "signature_hex": "89504e470d0a1a0a",
+  "files": [
+    {
+      "file": "png_chunk_discovery_a.png",
+      "width": 1,
+      "height": 1,
+      "chunks": [
+        {
+          "index": 0,
+          "start": 8,
+          "end": 33,
+          "length": 13,
+          "type": "IHDR",
+          "crc32": "907753de"
+        },
+        {
+          "index": 1,
+          "start": 33,
+          "end": 62,
+          "length": 17,
+          "type": "tEXt",
+          "crc32": "d7d6521c"
+        },
+        {
+          "index": 2,
+          "start": 62,
+          "end": 86,
+          "length": 12,
+          "type": "IDAT",
+          "crc32": "c9fe92ef"
+        },
+        {
+          "index": 3,
+          "start": 86,
+          "end": 98,
+          "length": 0,
+          "type": "IEND",
+          "crc32": "ae426082"
+        }
+      ]
+    },
+    {
+      "file": "png_chunk_discovery_b.png",
+      "width": 2,
+      "height": 1,
+      "chunks": [
+        {
+          "index": 0,
+          "start": 8,
+          "end": 33,
+          "length": 13,
+          "type": "IHDR",
+          "crc32": "7b40e8dd"
+        },
+        {
+          "index": 1,
+          "start": 33,
+          "end": 356,
+          "length": 311,
+          "type": "tEXt",
+          "crc32": "d36a0eac"
+        },
+        {
+          "index": 2,
+          "start": 356,
+          "end": 383,
+          "length": 15,
+          "type": "IDAT",
+          "crc32": "5dff4d72"
+        },
+        {
+          "index": 3,
+          "start": 383,
+          "end": 395,
+          "length": 0,
+          "type": "IEND",
+          "crc32": "ae426082"
+        }
+      ]
+    },
+    {
+      "file": "png_chunk_validation.png",
+      "width": 1,
+      "height": 2,
+      "chunks": [
+        {
+          "index": 0,
+          "start": 8,
+          "end": 33,
+          "length": 13,
+          "type": "IHDR",
+          "crc32": "16e32170"
+        },
+        {
+          "index": 1,
+          "start": 33,
+          "end": 395,
+          "length": 350,
+          "type": "tEXt",
+          "crc32": "8e4ed870"
+        },
+        {
+          "index": 2,
+          "start": 395,
+          "end": 420,
+          "length": 13,
+          "type": "IDAT",
+          "crc32": "c743e816"
+        },
+        {
+          "index": 3,
+          "start": 420,
+          "end": 432,
+          "length": 0,
+          "type": "IEND",
+          "crc32": "ae426082"
+        }
+      ]
+    }
+  ]
+}

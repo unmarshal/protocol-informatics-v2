@@ -84,9 +84,10 @@ fn print_help() {
         "  infer-frame-value <dir> <variable>   search logical frame bytes with held-out checks"
     );
     println!(
-        "  probe-framing <dir> <obs-id> <start> <field-offset> <width> <big|little> <total|payload> <alignment>"
+        "  probe-framing <dir> <obs-id> <start> <field-offset> <width> <big|little> <total|payload> <alignment> [length-adjustment]"
     );
     println!("  infer-framing <dir> <discovery-trial> <validation-trial>");
+    println!("  infer-chunks <dir> <discovery-trial> <validation-trial>");
     println!("  probe-delimiter <dir> <obs-id> <start> <delimiter-hex>");
     println!("  infer-delimiter <dir> <discovery-trial> <validation-trial>");
     println!("  commit-delimiter <dir> <obs-id> <start> <delimiter-hex> <key>");
@@ -102,7 +103,7 @@ fn print_help() {
     );
     println!("  varint-status <dir> <key>          inspect a committed varint run");
     println!(
-        "  commit-framing <dir> <obs-id> <start> <field-offset> <width> <big|little> <total|payload> <alignment> <key>"
+        "  commit-framing <dir> <obs-id> <start> <field-offset> <width> <big|little> <total|payload> <alignment> <key> [length-adjustment]"
     );
     println!("  framing-status <dir> <key>         inspect a committed framing run");
     println!(
@@ -995,6 +996,7 @@ fn tag_capture(root: &Path, args: &[String]) -> Result<(), String> {
 
 fn parse_framing_config(
     args: &[String],
+    adjustment_index: Option<usize>,
 ) -> Result<protocol_informatics_v2::framing::FramingConfig, String> {
     let parse = |value: &str, name: &str| {
         value
@@ -1008,11 +1010,14 @@ fn parse_framing_config(
         byte_order: protocol_informatics_v2::framing::ByteOrder::parse(&args[6])?,
         length_mode: protocol_informatics_v2::framing::LengthMode::parse(&args[7])?,
         alignment: parse(&args[8], "record alignment")?,
+        length_adjustment: adjustment_index
+            .and_then(|index| args.get(index))
+            .map_or(Ok(0), |value| parse(value, "length adjustment"))?,
     })
 }
 
 fn parse_tlv_config(args: &[String]) -> Result<protocol_informatics_v2::tlv::TlvConfig, String> {
-    let framing = parse_framing_config(args)?;
+    let framing = parse_framing_config(args, None)?;
     protocol_informatics_v2::tlv::TlvConfig {
         start_offset: framing.start_offset,
         type_width: framing.prefix_offset,
@@ -1042,9 +1047,11 @@ fn parse_varint_config(
 }
 
 fn commit_framing(root: &Path, args: &[String]) -> Result<(), String> {
-    require_len(args, 10)?;
+    if args.len() < 10 || args.len() > 11 {
+        return Err("expected framing configuration, key and optional length adjustment".into());
+    }
     let observation_id = &args[2];
-    let config = parse_framing_config(args)?;
+    let config = parse_framing_config(args, Some(10))?;
     let key = &args[9];
     if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
         return Err(
@@ -1435,8 +1442,10 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             )
         }
         "probe-framing" => {
-            require_len(args, 9)?;
-            let config = parse_framing_config(args)?;
+            if args.len() < 9 || args.len() > 10 {
+                return Err("expected framing configuration and optional length adjustment".into());
+            }
+            let config = parse_framing_config(args, Some(9))?;
             let state = workflow::load(root)?;
             print_json(&protocol_informatics_v2::framing::probe_observation(
                 &state, &args[2], config,
@@ -1624,6 +1633,13 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             require_len(args, 4)?;
             let state = workflow::load(root)?;
             print_json(&protocol_informatics_v2::framing::infer_length_prefix(
+                &state, &args[2], &args[3],
+            )?)
+        }
+        "infer-chunks" => {
+            require_len(args, 4)?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::framing::infer_chunk_framing(
                 &state, &args[2], &args[3],
             )?)
         }

@@ -234,6 +234,8 @@ struct FramingProbeInput {
     byte_order: String,
     length_mode: String,
     alignment: usize,
+    #[serde(default)]
+    length_adjustment: usize,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -246,6 +248,8 @@ struct FramingCommitInput {
     length_mode: String,
     alignment: usize,
     key: String,
+    #[serde(default)]
+    length_adjustment: usize,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -756,6 +760,21 @@ impl InvestigationServer {
     }
 
     #[tool(
+        description = "Search held-out fixed-width chunk boundaries with 0–16 uncounted bytes per record, including PNG-like length plus type and checksum layouts.",
+        annotations(read_only_hint = true)
+    )]
+    fn infer_chunk_framing(
+        &self,
+        Parameters(input): Parameters<TrialPairInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(framing::infer_chunk_framing(
+            &self.load()?,
+            &input.discovery_trial_id,
+            &input.validation_trial_id,
+        )?)
+    }
+
+    #[tool(
         description = "Probe one candidate delimiter-terminated record layout with exact byte and source spans.",
         annotations(read_only_hint = true)
     )]
@@ -851,6 +870,7 @@ impl InvestigationServer {
                 input.byte_order,
                 input.length_mode,
                 input.alignment.to_string(),
+                input.length_adjustment.to_string(),
             ],
         )
         .await
@@ -919,6 +939,7 @@ impl InvestigationServer {
                 input.length_mode,
                 input.alignment.to_string(),
                 input.key,
+                input.length_adjustment.to_string(),
             ],
         )
         .await

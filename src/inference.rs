@@ -516,6 +516,7 @@ mod tests {
                     byte_order: FramingByteOrder::BigEndian,
                     length_mode: LengthMode::Payload,
                     alignment: 2,
+                    length_adjustment: 0,
                 },
                 records: vec![
                     FramingRecord {

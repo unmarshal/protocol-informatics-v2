@@ -199,6 +199,8 @@ pub fn render(root: &Path, state: &State) -> String {
         serde_json::to_value(exchange_validations).expect("exchange validations are serializable");
     let mut framing_inferences = Vec::new();
     let mut framing_previews = Vec::new();
+    let mut chunk_inferences = Vec::new();
+    let mut chunk_previews = Vec::new();
     let mut tlv_inferences = Vec::new();
     let mut varint_inferences = Vec::new();
     let mut varint_previews = Vec::new();
@@ -240,6 +242,39 @@ pub fn render(root: &Path, state: &State) -> String {
                 }));
             }
             framing_inferences.push(serde_json::json!({
+                "experiment_id": experiment.id,
+                "inference": inference,
+            }));
+        }
+        if let Ok(inference) =
+            crate::framing::infer_chunk_framing(state, &discovery.id, &validation.id)
+            && inference
+                .candidates
+                .iter()
+                .any(|candidate| candidate.config.length_adjustment > 0)
+        {
+            if let Some(candidate) = inference
+                .candidates
+                .iter()
+                .filter(|candidate| {
+                    candidate.validation_matches == inference.validation_count
+                        && candidate.config.length_adjustment > 0
+                })
+                .min_by_key(|candidate| candidate.config.length_adjustment)
+                && let Some(observation) = state.observations.iter().find(|observation| {
+                    state.captures.iter().any(|capture| {
+                        capture.id == observation.capture_id && capture.trial_id == discovery.id
+                    })
+                })
+                && let Ok(probe) =
+                    crate::framing::probe_observation(state, &observation.id, candidate.config)
+            {
+                chunk_previews.push(serde_json::json!({
+                    "experiment_id": experiment.id,
+                    "probe": probe,
+                }));
+            }
+            chunk_inferences.push(serde_json::json!({
                 "experiment_id": experiment.id,
                 "inference": inference,
             }));
@@ -313,6 +348,8 @@ pub fn render(root: &Path, state: &State) -> String {
     }
     view["framing_inferences"] = serde_json::Value::Array(framing_inferences);
     view["framing_previews"] = serde_json::Value::Array(framing_previews);
+    view["chunk_inferences"] = serde_json::Value::Array(chunk_inferences);
+    view["chunk_previews"] = serde_json::Value::Array(chunk_previews);
     view["tlv_inferences"] = serde_json::Value::Array(tlv_inferences);
     view["varint_inferences"] = serde_json::Value::Array(varint_inferences);
     view["varint_previews"] = serde_json::Value::Array(varint_previews);
@@ -392,6 +429,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
     <section class="panel"><h2>Frame alignment</h2><div id="frameAlignments"></div></section>
     <section class="panel"><h2>Candidate fields</h2><div id="fieldCandidates"></div></section>
     <section class="panel"><h2>Candidate record framing</h2><div id="framingCandidates"></div></section>
+    <section class="panel"><h2>Candidate chunk framing</h2><div id="chunkCandidates"></div></section>
     <section class="panel"><h2>Candidate typed records</h2><div id="tlvCandidates"></div></section>
     <section class="panel"><h2>Candidate variable-length records</h2><div id="varintCandidates"></div></section>
     <section class="panel"><h2>Candidate delimiter records</h2><div id="delimiterCandidates"></div></section>
@@ -416,6 +454,7 @@ const trialById = new Map(state.trials.map(x=>[x.id,x]));
 const clusterById = new Map((state.cluster_report?.clusters||[]).map(x=>[x.id,x]));
 const savedAnalysisById = new Map((state.saved_analysis_previews||[]).map(x=>[x.analysis_id,x]));
 const framingPreviewById = new Map((state.framing_previews||[]).map(x=>[x.probe.observation_id,x.probe]));
+for(const item of state.chunk_previews||[]) if(!framingPreviewById.has(item.probe.observation_id)) framingPreviewById.set(item.probe.observation_id,item.probe);
 for(const item of state.varint_previews||[]) if(!framingPreviewById.has(item.probe.observation_id)) framingPreviewById.set(item.probe.observation_id,item.probe);
 const committedRuns = [...(state.framing_runs||[]), ...(state.varint_runs||[]), ...(state.delimiter_runs||[])];
 for(const run of committedRuns) framingPreviewById.set(run.observation_id,{records:run.records,committed:true,key:run.key});
@@ -474,6 +513,22 @@ for(const item of state.framing_inferences||[]) {
   byId('framingCandidates').append(row);
 }
 if(!(state.framing_inferences||[]).length) byId('framingCandidates').append(node('div','Use discovery and validation trials to test length-prefix record boundaries.','small muted'));
+for(const item of state.chunk_inferences||[]) {
+  const inference=item.inference, row=node('div','', 'row');
+  row.append(node('strong',item.experiment_id+' · '+inference.candidate_count+' chunk model(s)'),node('div',inference.discovery_count+' discovery observation(s) · '+inference.validation_count+' held-out observation(s)','small muted'));
+  for(const candidate of inference.candidates.slice(0,5)) {
+    const config=candidate.config;
+    row.append(node('div','start '+config.start_offset+' · field +'+config.prefix_offset+' / '+config.prefix_width+' byte(s) '+config.byte_order+' · '+config.length_mode+' + '+config.length_adjustment+' byte(s) · align '+config.alignment+' · held-out '+candidate.validation_matches+'/'+inference.validation_count,'small'));
+    for(const failed of candidate.validation_counterexamples.slice(0,3)) row.append(node('div','↳ '+failed.observation_id+' stopped at '+failed.next_offset+' ('+failed.status+')','small muted'));
+  }
+  const preview=(state.chunk_previews||[]).find(x=>x.experiment_id===item.experiment_id)?.probe;
+  if(preview) {
+    row.append(node('div','One candidate’s proposed chunks in '+preview.observation_id+': '+preview.records.map(record=>'['+record.start+', '+record.end+')').join(' '),'small muted'));
+    const button=node('button','Inspect proposed chunks','small'); button.onclick=()=>{ const observation=state.observations.find(x=>x.id===preview.observation_id); if(observation) showDetail(observation); }; row.append(button);
+  }
+  byId('chunkCandidates').append(row);
+}
+if(!(state.chunk_inferences||[]).length) byId('chunkCandidates').append(node('div','Use discovery and validation trials to test length fields with fixed uncounted bytes.','small muted'));
 for(const item of state.tlv_inferences||[]) {
   const inference=item.inference, row=node('div','', 'row');
   row.append(node('strong',item.experiment_id+' · '+inference.candidate_count+' typed model(s)'),node('div',inference.discovery_count+' discovery · '+inference.validation_count+' held-out observations','small muted'));

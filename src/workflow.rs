@@ -18,7 +18,7 @@ use crate::pcap::{
 use crate::reassembly::{SourceSpan, reassemble_tcp_segments};
 use crate::varint::{VarintConfig, probe_varint};
 
-const SCHEMA_VERSION: u32 = 14;
+const SCHEMA_VERSION: u32 = 15;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 const MAX_RECOVERY_TAIL_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -797,6 +797,7 @@ impl State {
                         .any(|old| old.key == run.key || old.id == run.id)
                     || self.varint_runs.iter().any(|old| old.key == run.key)
                     || self.delimiter_runs.iter().any(|old| old.key == run.key)
+                    || (run.config.length_adjustment > 0 && record.schema_version < 15)
                     || run.config.validate()? != run.config
                 {
                     return Err("invalid or duplicate framing run".into());

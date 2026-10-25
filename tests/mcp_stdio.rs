@@ -127,7 +127,8 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 52);
+    assert_eq!(names.len(), 53);
+    assert!(names.contains(&"infer_chunk_framing"));
     assert!(names.contains(&"activity"));
     assert!(names.contains(&"frame_runs"));
     assert!(names.contains(&"cluster_frames"));
@@ -707,6 +708,90 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
     assert_eq!(varint_page["total"], 3);
     let verification = client.tool("verify", json!({}));
     assert_eq!(verification["captures"], 9);
+    client.stop();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn agent_can_infer_and_commit_png_chunks_over_mcp() {
+    let root = workspace();
+    let root_text = root.to_str().unwrap();
+    let init = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["init", root_text, "How are PNG chunks delimited?"])
+        .output()
+        .unwrap();
+    assert!(init.status.success());
+    let mut client = McpClient::start(&root);
+    client.request(
+        "initialize",
+        json!({"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"pi-test","version":"1"}}),
+    );
+    client.send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+    let experiment = client.tool(
+        "create_experiment",
+        json!({"question":"Which chunk length rule holds?","prediction":"One adjusted length model fits another PNG."}),
+    );
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let discovery = client.tool(
+        "create_trial",
+        json!({"experiment_id":experiment_id,"role":"discovery","changed_factor":"two PNGs"}),
+    );
+    let discovery_id = discovery["event"]["trial"]["id"].as_str().unwrap();
+    let validation = client.tool(
+        "create_trial",
+        json!({"experiment_id":experiment_id,"role":"validation","changed_factor":"third PNG"}),
+    );
+    let validation_id = validation["event"]["trial"]["id"].as_str().unwrap();
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let mut first_observation_id = String::new();
+    for (trial_id, filename, step_key) in [
+        (discovery_id, "png_chunk_discovery_a.png", "png-d1"),
+        (discovery_id, "png_chunk_discovery_b.png", "png-d2"),
+        (validation_id, "png_chunk_validation.png", "png-v1"),
+    ] {
+        let captured = client.tool(
+            "capture_step",
+            json!({"trial_id":trial_id,"kind":"fixture","detail":filename,"phase":"stimulus",
+                "label":"PNG chunk comparison","step_key":step_key,"format":"binary","timeout_ms":5000,
+                "command":["/bin/cat",examples.join(filename).to_str().unwrap()]}),
+        );
+        assert_eq!(captured["observation_count"], 1);
+        if first_observation_id.is_empty() {
+            first_observation_id = captured["first_observation_ids"][0]
+                .as_str()
+                .unwrap()
+                .to_owned();
+        }
+    }
+    let inferred = client.tool(
+        "infer_chunk_framing",
+        json!({"discovery_trial_id":discovery_id,"validation_trial_id":validation_id}),
+    );
+    assert!(
+        inferred["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| {
+                candidate["config"]["start_offset"] == 8
+                    && candidate["config"]["prefix_width"] == 4
+                    && candidate["config"]["length_adjustment"] == 8
+                    && candidate["validation_matches"] == 1
+            })
+    );
+    let config = json!({"observation_id":first_observation_id,"start_offset":8,
+        "prefix_offset":0,"prefix_width":4,"byte_order":"big","length_mode":"payload",
+        "alignment":1,"length_adjustment":8});
+    let probed = client.tool("probe_framing", config.clone());
+    assert_eq!(probed["status"], "complete");
+    assert_eq!(probed["records"].as_array().unwrap().len(), 4);
+    let mut committed_config = config;
+    committed_config["key"] = json!("mcp-png-chunks");
+    let committed = client.tool("commit_framing", committed_config);
+    assert_eq!(committed["run"]["records"].as_array().unwrap().len(), 4);
+    assert_eq!(committed["run"]["config"]["length_adjustment"], 8);
+    let verified = client.tool("verify", json!({}));
+    assert_eq!(verified["captures"], 3);
     client.stop();
     fs::remove_dir_all(root).unwrap();
 }

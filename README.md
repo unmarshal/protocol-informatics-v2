@@ -186,6 +186,23 @@ The candidate `[6, 8)` big-endian matches both held-out values. IPv6 parsing fol
 
 `infer-framing` searches a bounded set of those models across two discovery observations or more in one trial. It requires each discovery observation to parse into at least two records with varying length values, then reports exact fits and counterexamples from a separate validation trial in the same experiment. Its search covers start offsets 0–8, length-field offsets 0–4, field widths 1/2/4, both byte orders where relevant, total/payload lengths, and alignments 1/2/4. It examines at most 16 observations per trial and 64 KiB per observation. A structural fit is a candidate, not proof that the bytes encode a length.
 
+`infer-chunks` extends the search to records whose length value omits a fixed number of bytes. It tests adjustments of 0, 1, 2, 4, 8, 12, and 16 bytes, then checks surviving models on the held-out trial. `probe-framing` takes an optional final adjustment; `commit-framing` takes it after the retry key. The generated, independently checked PNG fixture crosses the 255-byte chunk-length boundary and uses 8 uncounted bytes per chunk: four type bytes and four CRC bytes. The tool finds exact boundaries but retains equivalent descriptions of those boundaries, including shorter field aliases. A new experiment with a length above 65535 would distinguish the two- and four-byte field hypotheses. See [the framing method](docs/framing-method.md).
+
+```sh
+python3 examples/generate_png_chunk_fixture.py
+cargo run -- init /tmp/pi-png 'Where are PNG chunk boundaries?'
+cargo run -- experiment /tmp/pi-png 'Vary image and text lengths' - 'One chunk model fits independent files'
+cargo run -- trial /tmp/pi-png exp-000002 discovery 'two PNG files'
+cargo run -- trial /tmp/pi-png exp-000002 validation 'held-out PNG file'
+cargo run -- import /tmp/pi-png trial-000003 binary examples/png_chunk_discovery_a.png
+cargo run -- import /tmp/pi-png trial-000003 binary examples/png_chunk_discovery_b.png
+cargo run -- import /tmp/pi-png trial-000004 binary examples/png_chunk_validation.png
+cargo run -- infer-chunks /tmp/pi-png trial-000003 trial-000004
+cargo run -- probe-framing /tmp/pi-png obs-000005-0000 8 0 4 big payload 1 8
+cargo run -- commit-framing /tmp/pi-png obs-000005-0000 8 0 4 big payload 1 png-chunks-v1 8
+cargo run -- report /tmp/pi-png /tmp/pi-png-report.html
+```
+
 `probe-tlv` treats the bytes before the length field as a one- or two-byte raw type code and reports each element's type, value, logical, and padded spans with source provenance. `infer-tlv` searches those typed layouts on discovery files, checks the boundaries on held-out files, and counts recurring type codes and novel held-out codes. Type recurrence is descriptive evidence; it does not assign a meaning to a code or reject a valid new code. See [the TLV method](docs/tlv-method.md).
 
 `probe-varint` tests unsigned LEB128 length prefixes with a variable number of encoded bytes. `infer-varint` searches candidate record starts, prefix offsets, length modes, and alignments; it requires a multibyte prefix in discovery and reports every discovery fit with held-out counterexamples. `commit-varint` persists a complete interpretation with retry-safe keys and stable frame IDs. Paged `frames`, `frame-span`, `frame-value`, and `infer-frame-value` work on these derived records. See [the varint method](docs/varint-method.md) and the independent four-file fixture in `examples/varint_*.bin`.
@@ -202,7 +219,7 @@ The candidate `[6, 8)` big-endian matches both held-out values. IPv6 parsing fol
 
 `align-frame-cluster` is a read-only, gap-aware alignment of one provisional record group. It returns column statistics and aligned rows mapped to stable frame IDs. It analyzes at most 32 frames, retaining the representative and outliers before deterministic sampling, and rejects frames above 4096 logical bytes or alignments above a 25-million-cell work estimate. The HTML report previews up to four short groups, showing variable columns and links to parent bytes. Recompute the cluster ID after a corpus revision; see [agent evidence navigation](docs/agent-query.md).
 
-`record-frame-alignment` saves that bounded result as a content-addressed artifact and a schema 14 event naming the exact frame IDs, group, model, run keys, and source revision. Use paged `analyses` to find saved observation or frame alignments, then `analysis-result` to page their columns and rows without loading a large matrix into one tool response. `analysis-status` compares a saved selection with the current scope, reporting added and missing IDs and any committed run keys excluded by a saved frame selection. This is an input check, not a judgment that the analysis or protocol claim is still correct. The HTML report lets a person open verified previews of recent saved alignments and jump from a row to source bytes. `verify` checks artifact hashes and frame-analysis metadata. Existing schema 13 investigations remain readable and accept new events.
+`record-frame-alignment` saves that bounded result as a content-addressed artifact naming the exact frame IDs, group, model, run keys, and source revision. Use paged `analyses` to find saved observation or frame alignments, then `analysis-result` to page their columns and rows without loading a large matrix into one tool response. `analysis-status` compares a saved selection with the current scope, reporting added and missing IDs and any committed run keys excluded by a saved frame selection. This is an input check, not a judgment that the analysis or protocol claim is still correct. The HTML report lets a person open verified previews of recent saved alignments and jump from a row to source bytes. `verify` checks artifact hashes and frame-analysis metadata. New events use schema 15; existing schema 13 and 14 investigations remain readable and accept new events.
 
 ```sh
 python3 examples/generate_records_fixture.py

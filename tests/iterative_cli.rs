@@ -41,6 +41,147 @@ fn path(path: &Path) -> &str {
 }
 
 #[test]
+fn png_chunks_need_uncounted_length_bytes_and_survive_holdout() {
+    let root = workspace();
+    let root_text = path(&root);
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let truth: Value =
+        serde_json::from_slice(&fs::read(examples.join("png_chunks.truth.json")).unwrap()).unwrap();
+    cli(&["init", root_text, "Where do PNG chunks begin and end?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Change image and text lengths",
+        "-",
+        "One additive record size fits independent files",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let discovery = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "discovery",
+        "two PNG files",
+    ]);
+    let discovery_id = discovery["event"]["trial"]["id"].as_str().unwrap();
+    let validation = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "validation",
+        "different image and text",
+    ]);
+    let validation_id = validation["event"]["trial"]["id"].as_str().unwrap();
+    let mut discovery_observations = Vec::new();
+    for file in &truth["files"].as_array().unwrap()[..2] {
+        let source = examples.join(file["file"].as_str().unwrap());
+        let imported = cli(&["import", root_text, discovery_id, "binary", path(&source)]);
+        discovery_observations.push(
+            imported["event"]["observations"][0]["id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    let validation_source = examples.join(truth["files"][2]["file"].as_str().unwrap());
+    cli(&[
+        "import",
+        root_text,
+        validation_id,
+        "binary",
+        path(&validation_source),
+    ]);
+    let without_adjustment = cli(&[
+        "probe-framing",
+        root_text,
+        &discovery_observations[0],
+        "8",
+        "0",
+        "4",
+        "big",
+        "payload",
+        "1",
+    ]);
+    assert_ne!(without_adjustment["status"], "complete");
+    let inferred = cli(&["infer-chunks", root_text, discovery_id, validation_id]);
+    assert_eq!(inferred["method"], "length_prefix_with_adjustment_v1");
+    assert!(
+        inferred["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|candidate| candidate["config"]["prefix_width"] != 1)
+    );
+    assert!(
+        inferred["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| {
+                let config = &candidate["config"];
+                config["start_offset"] == 8
+                    && config["prefix_offset"] == 0
+                    && config["prefix_width"] == 4
+                    && config["byte_order"] == "big_endian"
+                    && config["length_mode"] == "payload"
+                    && config["alignment"] == 1
+                    && config["length_adjustment"] == 8
+                    && candidate["validation_matches"] == 1
+            })
+    );
+    let probed = cli(&[
+        "probe-framing",
+        root_text,
+        &discovery_observations[0],
+        "8",
+        "0",
+        "4",
+        "big",
+        "payload",
+        "1",
+        "8",
+    ]);
+    assert_eq!(probed["status"], "complete");
+    assert_eq!(probed["record_count"], 4);
+    for (actual, expected) in probed["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(truth["files"][0]["chunks"].as_array().unwrap())
+    {
+        assert_eq!(actual["start"], expected["start"]);
+        assert_eq!(actual["end"], expected["end"]);
+        assert_eq!(actual["length_value"], expected["length"]);
+    }
+    let committed = cli(&[
+        "commit-framing",
+        root_text,
+        &discovery_observations[0],
+        "8",
+        "0",
+        "4",
+        "big",
+        "payload",
+        "1",
+        "png-chunks-discovery-a",
+        "8",
+    ]);
+    assert_eq!(committed["run"]["records"].as_array().unwrap().len(), 4);
+    assert_eq!(committed["run"]["config"]["length_adjustment"], 8);
+    let first_frame_id = committed["run"]["records"][0]["id"].as_str().unwrap();
+    let header = cli(&["frame-span", root_text, first_frame_id, "0", "8"]);
+    assert_eq!(header["bytes_hex"], "0000000d49484452");
+    assert_eq!(cli(&["verify", root_text])["observations"], 3);
+    let report = root.join("png-report.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("Candidate chunk framing"));
+    assert!(html.contains("length_prefix_with_adjustment_v1"));
+    assert!(html.contains("\"length_adjustment\":8"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn committed_frames_cluster_by_correlated_record_evidence() {
     let root = workspace();
     let root_text = path(&root);
@@ -123,7 +264,7 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
     );
     let event_log = root.join(".pi/events.jsonl");
     let prior_log = fs::read_to_string(&event_log).unwrap();
-    let legacy_log = prior_log.replace("\"schema_version\":14", "\"schema_version\":13");
+    let legacy_log = prior_log.replace("\"schema_version\":15", "\"schema_version\":13");
     assert_ne!(legacy_log, prior_log);
     fs::write(&event_log, legacy_log).unwrap();
     let recorded = cli(&[
@@ -136,7 +277,7 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
     ]);
     let saved = &recorded["event"]["analysis"];
     let analysis_id = saved["id"].as_str().unwrap();
-    assert_eq!(recorded["schema_version"], 14);
+    assert_eq!(recorded["schema_version"], 15);
     assert_eq!(saved["scope"]["kind"], "frame_cluster");
     assert_eq!(saved["frame_ids"], alignment["frame_ids"]);
     assert_eq!(saved["scope"]["source_revision"], alignment["revision"]);
@@ -516,7 +657,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     assert_eq!(summary["observation_count"], 48);
     assert_eq!(summary["hypotheses"][0]["score"], 0.9);
     let corpus = cli(&["summary", root_text]);
-    assert_eq!(corpus["schema_version"], 14);
+    assert_eq!(corpus["schema_version"], 15);
     assert_eq!(corpus["revision"], 13);
     assert_eq!(corpus["counts"]["captures"], 2);
     assert_eq!(corpus["counts"]["observations"], 48);
@@ -552,7 +693,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
         serde_json::json!({"trial_id":"trial-000004","direction":direction,"offset":2,"limit":3})
             .to_string();
     let matches = cli(&["search-observations", root_text, &direction_query]);
-    assert_eq!(matches["schema_version"], 14);
+    assert_eq!(matches["schema_version"], 15);
     assert_eq!(matches["total"], 24);
     assert_eq!(matches["observations"].as_array().unwrap().len(), 3);
     assert_eq!(matches["next_offset"], 5);
@@ -2976,7 +3117,7 @@ fn replays_v1_log_and_appends_current_events() {
         "Old investigation"
     );
     let appended = cli(&["hypothesis", path(&root), "A new claim"]);
-    assert_eq!(appended["schema_version"], 14);
+    assert_eq!(appended["schema_version"], 15);
     assert_eq!(appended["revision"], 2);
     assert_eq!(
         cli(&["changes", path(&root), "0"])

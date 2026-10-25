@@ -55,6 +55,8 @@ pub struct FramingConfig {
     pub byte_order: ByteOrder,
     pub length_mode: LengthMode,
     pub alignment: usize,
+    #[serde(default)]
+    pub length_adjustment: usize,
 }
 
 impl FramingConfig {
@@ -69,6 +71,9 @@ impl FramingConfig {
         }
         if !matches!(self.alignment, 1 | 2 | 4 | 8) {
             return Err("record alignment must be 1, 2, 4, or 8 bytes".into());
+        }
+        if self.length_adjustment > 16 {
+            return Err("length adjustment must be at most 16 bytes".into());
         }
         Ok(self)
     }
@@ -171,7 +176,7 @@ fn probe_bytes(bytes: &[u8], config: FramingConfig) -> CoreProbe {
             &bytes[length_field_start..length_field_end],
             config.byte_order,
         );
-        let logical_length = match config.length_mode {
+        let base_length = match config.length_mode {
             LengthMode::Total => length_value as usize,
             LengthMode::Payload => {
                 let Some(length) = config.header_length().checked_add(length_value as usize) else {
@@ -179,6 +184,9 @@ fn probe_bytes(bytes: &[u8], config: FramingConfig) -> CoreProbe {
                 };
                 length
             }
+        };
+        let Some(logical_length) = base_length.checked_add(config.length_adjustment) else {
+            break FramingStatus::TruncatedRecord;
         };
         if logical_length < config.header_length() {
             break FramingStatus::InvalidLength;
@@ -370,11 +378,44 @@ pub fn infer_length_prefix(
     )
 }
 
+pub fn infer_chunk_framing(
+    state: &State,
+    discovery_trial_id: &str,
+    validation_trial_id: &str,
+) -> Result<FramingInference, String> {
+    infer_length_prefix_for_offsets_and_adjustments(
+        state,
+        discovery_trial_id,
+        validation_trial_id,
+        &[0, 1, 2, 3, 4],
+        &[0, 1, 2, 4, 8, 12, 16],
+        "length_prefix_with_adjustment_v1",
+    )
+}
+
 pub(crate) fn infer_length_prefix_for_offsets(
     state: &State,
     discovery_trial_id: &str,
     validation_trial_id: &str,
     prefix_offsets: &[usize],
+) -> Result<FramingInference, String> {
+    infer_length_prefix_for_offsets_and_adjustments(
+        state,
+        discovery_trial_id,
+        validation_trial_id,
+        prefix_offsets,
+        &[0],
+        "length_prefix_exact_fit_v1",
+    )
+}
+
+fn infer_length_prefix_for_offsets_and_adjustments(
+    state: &State,
+    discovery_trial_id: &str,
+    validation_trial_id: &str,
+    prefix_offsets: &[usize],
+    length_adjustments: &[usize],
+    method: &'static str,
 ) -> Result<FramingInference, String> {
     let discovery_trial = state
         .trials
@@ -415,72 +456,77 @@ pub(crate) fn infer_length_prefix_for_offsets(
                     }
                     for length_mode in [LengthMode::Total, LengthMode::Payload] {
                         for alignment in [1, 2, 4] {
-                            let config = FramingConfig {
-                                start_offset,
-                                prefix_offset,
-                                prefix_width,
-                                byte_order,
-                                length_mode,
-                                alignment,
-                            };
-                            let mut values = BTreeSet::new();
-                            let mut discovery_records = 0;
-                            let mut fits_discovery = true;
-                            for bytes in &discovery_bytes {
-                                if start_offset >= bytes.len() {
-                                    fits_discovery = false;
-                                    break;
+                            for &length_adjustment in length_adjustments {
+                                let config = FramingConfig {
+                                    start_offset,
+                                    prefix_offset,
+                                    prefix_width,
+                                    byte_order,
+                                    length_mode,
+                                    alignment,
+                                    length_adjustment,
+                                };
+                                let mut values = BTreeSet::new();
+                                let mut discovery_records = 0;
+                                let mut fits_discovery = true;
+                                for bytes in &discovery_bytes {
+                                    if start_offset >= bytes.len() {
+                                        fits_discovery = false;
+                                        break;
+                                    }
+                                    let probe = probe_bytes(bytes, config);
+                                    if probe.status != FramingStatus::Complete
+                                        || probe.records.len() < 2
+                                    {
+                                        fits_discovery = false;
+                                        break;
+                                    }
+                                    discovery_records += probe.records.len();
+                                    values.extend(
+                                        probe.records.iter().map(|record| record.length_value),
+                                    );
                                 }
-                                let probe = probe_bytes(bytes, config);
-                                if probe.status != FramingStatus::Complete
-                                    || probe.records.len() < 2
-                                {
-                                    fits_discovery = false;
-                                    break;
-                                }
-                                discovery_records += probe.records.len();
-                                values
-                                    .extend(probe.records.iter().map(|record| record.length_value));
-                            }
-                            if !fits_discovery || values.len() < 2 {
-                                continue;
-                            }
-                            let mut validation_matches = 0;
-                            let mut validation_records = 0;
-                            let mut validation_counterexamples = Vec::new();
-                            for (observation, bytes) in validation.iter().zip(&validation_bytes) {
-                                if start_offset >= bytes.len() {
-                                    validation_counterexamples.push(FramingCounterexample {
-                                        observation_id: observation.id.clone(),
-                                        status: FramingStatus::StartOutsideObservation,
-                                        next_offset: bytes.len(),
-                                        record_count: 0,
-                                    });
+                                if !fits_discovery || values.len() < 2 {
                                     continue;
                                 }
-                                let probe = probe_bytes(bytes, config);
-                                if probe.status == FramingStatus::Complete
-                                    && probe.records.len() >= 2
+                                let mut validation_matches = 0;
+                                let mut validation_records = 0;
+                                let mut validation_counterexamples = Vec::new();
+                                for (observation, bytes) in validation.iter().zip(&validation_bytes)
                                 {
-                                    validation_matches += 1;
-                                    validation_records += probe.records.len();
-                                } else {
-                                    validation_counterexamples.push(FramingCounterexample {
-                                        observation_id: observation.id.clone(),
-                                        status: probe.status,
-                                        next_offset: probe.next_offset,
-                                        record_count: probe.records.len(),
-                                    });
+                                    if start_offset >= bytes.len() {
+                                        validation_counterexamples.push(FramingCounterexample {
+                                            observation_id: observation.id.clone(),
+                                            status: FramingStatus::StartOutsideObservation,
+                                            next_offset: bytes.len(),
+                                            record_count: 0,
+                                        });
+                                        continue;
+                                    }
+                                    let probe = probe_bytes(bytes, config);
+                                    if probe.status == FramingStatus::Complete
+                                        && probe.records.len() >= 2
+                                    {
+                                        validation_matches += 1;
+                                        validation_records += probe.records.len();
+                                    } else {
+                                        validation_counterexamples.push(FramingCounterexample {
+                                            observation_id: observation.id.clone(),
+                                            status: probe.status,
+                                            next_offset: probe.next_offset,
+                                            record_count: probe.records.len(),
+                                        });
+                                    }
                                 }
+                                candidates.push(FramingCandidate {
+                                    config,
+                                    discovery_records,
+                                    distinct_discovery_lengths: values.len(),
+                                    validation_matches,
+                                    validation_records,
+                                    validation_counterexamples,
+                                });
                             }
-                            candidates.push(FramingCandidate {
-                                config,
-                                discovery_records,
-                                distinct_discovery_lengths: values.len(),
-                                validation_matches,
-                                validation_records,
-                                validation_counterexamples,
-                            });
                         }
                     }
                 }
@@ -503,7 +549,7 @@ pub(crate) fn infer_length_prefix_for_offsets(
     candidates.truncate(MAX_REPORTED_CANDIDATES);
     Ok(FramingInference {
         revision: state.revision,
-        method: "length_prefix_exact_fit_v1",
+        method,
         discovery_trial_id: discovery_trial_id.into(),
         validation_trial_id: validation_trial_id.into(),
         discovery_count: discovery.len(),
@@ -526,6 +572,7 @@ mod tests {
             byte_order: ByteOrder::BigEndian,
             length_mode,
             alignment: 1,
+            length_adjustment: 0,
         }
     }
 

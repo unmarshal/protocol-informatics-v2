@@ -39,6 +39,7 @@ impl TlvConfig {
             byte_order: self.byte_order,
             length_mode: self.length_mode,
             alignment: self.alignment,
+            length_adjustment: 0,
         }
     }
 
