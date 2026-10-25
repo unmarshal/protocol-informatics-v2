@@ -1,6 +1,6 @@
 # Agent and human interface design
 
-Status: partial implementation, October 2026. A JSON CLI, a stdio MCP server, and a read-only HTML report share the event-sourced investigation model. The MCP server exposes 63 navigation, workflow, and inference tools; the deeper viewer remains planned.
+Status: partial implementation, October 2026. A JSON CLI, a stdio MCP server, and a read-only HTML report share the event-sourced investigation model. The MCP server exposes 64 navigation, workflow, and inference tools; the deeper viewer remains planned.
 
 ## Principle
 
@@ -31,6 +31,8 @@ Use small JSONL manifests for portable interchange and content-addressed binary 
 An observation assembled from multiple TCP packets has no single source-file offset. Its `source_spans` map half-open message-byte ranges to packet indices and original file offsets. A `read_span` response clips that map to the requested bytes, so an agent can cite the exact packets behind an inferred field. Sequence gaps create distinct observations; conflicting retransmissions are reported as errors rather than silently choosing bytes.
 
 ## Agent navigation
+
+`attention` supplies a bounded resume queue derived from durable investigation events. It flags capture reservations, capture steps awaiting acquisition or tags, experiments with new evidence to review, uncaptured trials, and experiments without trials. It gives next tool hints and omitted counts; `capture_status` checks the live process state behind a reservation. The HTML report presents the same pending work to a human.
 
 Start with the structured JSON CLI or the [stdio MCP server](mcp-server.md). The server exposes a bounded set of the same operations. Each operation needs a bounded result, stable IDs, schema version, explicit units, reproducible ordering, and a cursor for pagination.
 
