@@ -196,6 +196,8 @@ The candidate `[6, 8)` big-endian matches both held-out values. IPv6 parsing fol
 
 `frame-value` attaches a controlled unsigned value to a committed frame as discovery or validation evidence. `infer-frame-value` runs the same exact-match search as `infer-value`, using frame-relative logical bytes (excluding alignment padding) and returning frame IDs for held-out counterexamples. At least three discovery frames with two distinct values are required. Discovery and validation frames must come from separate captures; the result lists those capture IDs. A later annotation of the same variable on the same frame supersedes the earlier one in the materialized state, while both events remain in the log. The HTML report shows frame field candidates and highlights a unique shortest validated candidate in the parent observation.
 
+`cluster-frames` groups the logical bytes of committed frames within one framing model. It accepts an optional trial filter, direction mode, and run-key selection, and returns provisional groups with frame IDs, representative frames, stable header bytes, and outlier candidates. Use the frame IDs with `frame-span` to inspect evidence. The grouping cap and deterministic stratified sampling match raw observation clustering; mixed framing models are kept separate. Competing runs over the same observation require an explicit selection of one key per observation.
+
 ```sh
 python3 examples/generate_records_fixture.py
 cargo run -- init /tmp/pi-records 'Where are record boundaries?'

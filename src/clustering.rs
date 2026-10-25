@@ -73,6 +73,46 @@ pub struct ClusterReport {
     pub clusters: Vec<Cluster>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct FrameOutlierCandidate {
+    pub frame_id: String,
+    pub distance_to_representative: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FrameCluster {
+    pub id: String,
+    pub member_frame_ids: Vec<String>,
+    pub representative_frame_id: String,
+    pub member_count: usize,
+    pub minimum_length: usize,
+    pub maximum_length: usize,
+    pub split_rules: Vec<SplitRule>,
+    pub stable_header_bytes: Vec<StableByte>,
+    pub farthest_members: Vec<FrameOutlierCandidate>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FrameClusterReport {
+    pub revision: u64,
+    pub method: &'static str,
+    pub provisional: bool,
+    pub coordinate_system: &'static str,
+    pub source_model: String,
+    pub run_keys: Vec<String>,
+    pub direction_mode: &'static str,
+    pub trial_id: Option<String>,
+    pub selected_frame_count: usize,
+    pub frame_count: usize,
+    pub sampling_method: &'static str,
+    pub sampling_strata_count: usize,
+    pub maximum_frames: usize,
+    pub maximum_header_bytes: usize,
+    pub maximum_distance_bytes: usize,
+    pub minimum_evidence_separation: usize,
+    pub clusters: Vec<FrameCluster>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ValidationStatus {
@@ -493,11 +533,214 @@ pub fn cluster_observations(
             })
         })
         .collect();
+    cluster_selected(state, trial_id, respect_direction, &selected)
+}
+
+pub fn cluster_frames(
+    state: &State,
+    model: &str,
+    trial_id: Option<&str>,
+    respect_direction: bool,
+    run_keys: Option<&[String]>,
+) -> Result<FrameClusterReport, String> {
+    if !["fixed_width", "unsigned_leb128", "delimiter"].contains(&model) {
+        return Err(format!("unknown frame model {model}"));
+    }
+    if let Some(id) = trial_id
+        && !state.trials.iter().any(|trial| trial.id == id)
+    {
+        return Err(format!("unknown trial {id}"));
+    }
+    if let Some(keys) = run_keys
+        && (keys.is_empty() || keys.len() > 100 || keys.iter().any(String::is_empty))
+    {
+        return Err("run_keys must contain 1 to 100 nonempty keys".into());
+    }
+    let available_keys: BTreeSet<&str> = match model {
+        "fixed_width" => state
+            .framing_runs
+            .iter()
+            .map(|run| run.key.as_str())
+            .collect(),
+        "unsigned_leb128" => state
+            .varint_runs
+            .iter()
+            .map(|run| run.key.as_str())
+            .collect(),
+        "delimiter" => state
+            .delimiter_runs
+            .iter()
+            .map(|run| run.key.as_str())
+            .collect(),
+        _ => unreachable!("model validated above"),
+    };
+    if let Some(key) = run_keys
+        .into_iter()
+        .flatten()
+        .find(|key| !available_keys.contains(key.as_str()))
+    {
+        return Err(format!("unknown {model} frame run key {key}"));
+    }
+    let observations: BTreeMap<_, _> = state
+        .observations
+        .iter()
+        .map(|observation| (observation.id.as_str(), observation))
+        .collect();
+    let captures: BTreeMap<_, _> = state
+        .captures
+        .iter()
+        .map(|capture| (capture.id.as_str(), capture))
+        .collect();
+    let mut bounds = Vec::new();
+    match model {
+        "fixed_width" => {
+            for run in &state.framing_runs {
+                if run_keys.is_some_and(|keys| !keys.contains(&run.key)) {
+                    continue;
+                }
+                for record in &run.records {
+                    bounds.push((
+                        record.id.as_str(),
+                        run.key.as_str(),
+                        run.observation_id.as_str(),
+                        record.start,
+                        record.logical_end,
+                    ));
+                }
+            }
+        }
+        "unsigned_leb128" => {
+            for run in &state.varint_runs {
+                if run_keys.is_some_and(|keys| !keys.contains(&run.key)) {
+                    continue;
+                }
+                for record in &run.records {
+                    bounds.push((
+                        record.id.as_str(),
+                        run.key.as_str(),
+                        run.observation_id.as_str(),
+                        record.start,
+                        record.logical_end,
+                    ));
+                }
+            }
+        }
+        "delimiter" => {
+            for run in &state.delimiter_runs {
+                if run_keys.is_some_and(|keys| !keys.contains(&run.key)) {
+                    continue;
+                }
+                for record in &run.records {
+                    bounds.push((
+                        record.id.as_str(),
+                        run.key.as_str(),
+                        run.observation_id.as_str(),
+                        record.start,
+                        record.logical_end,
+                    ));
+                }
+            }
+        }
+        _ => unreachable!("model validated above"),
+    }
+    let mut derived = Vec::new();
+    let mut chosen_runs = BTreeMap::<&str, &str>::new();
+    let mut used_keys = BTreeSet::<String>::new();
+    for (frame_id, run_key, observation_id, start, logical_end) in bounds {
+        let parent = observations
+            .get(observation_id)
+            .ok_or_else(|| format!("frame {frame_id} has unknown observation {observation_id}"))?;
+        let capture = captures
+            .get(parent.capture_id.as_str())
+            .ok_or_else(|| format!("frame {frame_id} has unknown capture {}", parent.capture_id))?;
+        if trial_id.is_some_and(|wanted| wanted != capture.trial_id) {
+            continue;
+        }
+        if let Some(previous_key) = chosen_runs.insert(observation_id, run_key)
+            && previous_key != run_key
+        {
+            return Err(format!(
+                "observation {observation_id} has competing {model} runs ({previous_key}, {run_key}); select one run key per observation"
+            ));
+        }
+        used_keys.insert(run_key.into());
+        let bytes_hex = parent
+            .bytes_hex
+            .get(start.saturating_mul(2)..logical_end.saturating_mul(2))
+            .ok_or_else(|| format!("frame {frame_id} exceeds parent observation"))?;
+        derived.push(Observation {
+            id: frame_id.into(),
+            capture_id: parent.capture_id.clone(),
+            source_index: parent.source_index,
+            source_offset: None,
+            timestamp_ns: parent.timestamp_ns,
+            direction: parent.direction.clone(),
+            source_port: parent.source_port,
+            destination_port: parent.destination_port,
+            tcp_sequence: parent.tcp_sequence,
+            stream_gap_before: parent.stream_gap_before,
+            source_spans: Vec::new(),
+            bytes_hex: bytes_hex.into(),
+        });
+    }
+    if derived.is_empty() {
+        return Err("no committed frames selected".into());
+    }
+    let selected: Vec<_> = derived.iter().collect();
+    let report = cluster_selected(state, trial_id, respect_direction, &selected)?;
+    Ok(FrameClusterReport {
+        revision: report.revision,
+        method: report.method,
+        provisional: report.provisional,
+        coordinate_system: "logical_frame_bytes",
+        source_model: model.into(),
+        run_keys: used_keys.into_iter().collect(),
+        direction_mode: report.direction_mode,
+        trial_id: report.trial_id,
+        selected_frame_count: report.selected_observation_count,
+        frame_count: report.observation_count,
+        sampling_method: report.sampling_method,
+        sampling_strata_count: report.sampling_strata_count,
+        maximum_frames: report.maximum_observations,
+        maximum_header_bytes: report.maximum_header_bytes,
+        maximum_distance_bytes: report.maximum_distance_bytes,
+        minimum_evidence_separation: report.minimum_evidence_separation,
+        clusters: report
+            .clusters
+            .into_iter()
+            .map(|cluster| FrameCluster {
+                id: cluster.id,
+                member_frame_ids: cluster.member_observation_ids,
+                representative_frame_id: cluster.representative_observation_id,
+                member_count: cluster.member_count,
+                minimum_length: cluster.minimum_length,
+                maximum_length: cluster.maximum_length,
+                split_rules: cluster.split_rules,
+                stable_header_bytes: cluster.stable_header_bytes,
+                farthest_members: cluster
+                    .farthest_members
+                    .into_iter()
+                    .map(|member| FrameOutlierCandidate {
+                        frame_id: member.observation_id,
+                        distance_to_representative: member.distance_to_representative,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    })
+}
+
+fn cluster_selected(
+    state: &State,
+    trial_id: Option<&str>,
+    respect_direction: bool,
+    selected: &[&Observation],
+) -> Result<ClusterReport, String> {
     if selected.is_empty() {
         return Err("no observations selected".into());
     }
     let selected_observation_count = selected.len();
-    let (selected, sampling_method, sampling_strata_count) = sample_observations(&selected);
+    let (selected, sampling_method, sampling_strata_count) = sample_observations(selected);
     let samples: Vec<Sample> = selected
         .iter()
         .map(|observation| {

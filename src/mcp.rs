@@ -70,6 +70,15 @@ struct ClusterInput {
     respect_direction: bool,
 }
 
+#[derive(Deserialize, JsonSchema)]
+struct FrameClusterInput {
+    model: String,
+    trial_id: Option<String>,
+    run_keys: Option<Vec<String>>,
+    #[serde(default = "default_true")]
+    respect_direction: bool,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -499,6 +508,23 @@ impl InvestigationServer {
             &self.load()?,
             input.trial_id.as_deref(),
             input.respect_direction,
+        )?)
+    }
+
+    #[tool(
+        description = "Discover provisional record groups in committed logical frames of one model, optionally within one trial.",
+        annotations(read_only_hint = true)
+    )]
+    fn cluster_frames(
+        &self,
+        Parameters(input): Parameters<FrameClusterInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(clustering::cluster_frames(
+            &self.load()?,
+            &input.model,
+            input.trial_id.as_deref(),
+            input.respect_direction,
+            input.run_keys.as_deref(),
         )?)
     }
 

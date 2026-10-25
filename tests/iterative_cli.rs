@@ -40,6 +40,69 @@ fn path(path: &Path) -> &str {
     path.to_str().unwrap()
 }
 
+#[test]
+fn committed_frames_cluster_by_correlated_record_evidence() {
+    let root = workspace();
+    let root_text = path(&root);
+    let mut bytes = Vec::new();
+    for record in [
+        "01a0b0c01001",
+        "01a1b1c11002",
+        "01a2b2c21003",
+        "02d0e0f02004",
+        "02d1e1f12005",
+        "02d2e2f22006",
+    ] {
+        bytes.extend(workflow::from_hex(record).unwrap());
+        bytes.push(b'\n');
+    }
+    let sample = root.join("records.bin");
+    fs::write(&sample, bytes).unwrap();
+    cli(&["init", root_text, "Which recurring record types appear?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Do record types correlate with later bytes?",
+        "-",
+        "Two groups have distinct payload structure",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let trial = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "discovery",
+        "six records",
+    ]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let imported = cli(&["import", root_text, trial_id, "binary", path(&sample)]);
+    let observation_id = imported["event"]["observations"][0]["id"].as_str().unwrap();
+    cli(&[
+        "commit-delimiter",
+        root_text,
+        observation_id,
+        "0",
+        "0a",
+        "six-records",
+    ]);
+    let groups = cli(&["cluster-frames", root_text, "delimiter", trial_id, "ignore"]);
+    assert_eq!(groups["selected_frame_count"], 6);
+    assert_eq!(groups["clusters"].as_array().unwrap().len(), 2);
+    for cluster in groups["clusters"].as_array().unwrap() {
+        assert_eq!(cluster["member_count"], 3);
+        assert_eq!(cluster["split_rules"][0]["kind"], "byte");
+        assert_eq!(cluster["split_rules"][0]["offset"], 0);
+        assert!(
+            cluster["split_rules"][0]["evidence_offsets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|offset| offset == 4)
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn wait_for_capture(root: &str, key: &str, deadline: Duration) -> Value {
     let started = Instant::now();
     loop {
@@ -4031,6 +4094,26 @@ fn held_out_delimiter_inference_rejects_strict_crlf_on_lf_records() {
         discovery_runs["frame_runs"][0]["first_frame_ids"][0],
         runs[0]["run"]["records"][0]["id"]
     );
+    let grouped = cli(&["cluster-frames", root_text, "delimiter", "-", "ignore"]);
+    assert_eq!(grouped["coordinate_system"], "logical_frame_bytes");
+    assert_eq!(grouped["selected_frame_count"], 6);
+    assert_eq!(grouped["frame_count"], 6);
+    assert_eq!(grouped["clusters"][0]["member_count"], 6);
+    assert!(
+        grouped["clusters"][0]["member_frame_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|id| id == &runs[0]["run"]["records"][0]["id"])
+    );
+    let discovery_grouped = cli(&[
+        "cluster-frames",
+        root_text,
+        "delimiter",
+        discovery_id,
+        "ignore",
+    ]);
+    assert_eq!(discovery_grouped["selected_frame_count"], 3);
     assert_eq!(
         cli(&["frame-runs", root_text, discovery_id, "fixed_width"])["total"],
         0
@@ -4106,6 +4189,30 @@ fn held_out_delimiter_inference_rejects_strict_crlf_on_lf_records() {
         .output()
         .unwrap();
     assert!(!incomplete_commit.status.success());
+    cli(&[
+        "commit-delimiter",
+        root_text,
+        &observation_ids[0],
+        "0",
+        "0d0a",
+        "delimiter-competing",
+    ]);
+    let ambiguous_group = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args(["cluster-frames", root_text, "delimiter", "-", "ignore"])
+        .output()
+        .unwrap();
+    assert!(!ambiguous_group.status.success());
+    assert!(String::from_utf8_lossy(&ambiguous_group.stderr).contains("competing delimiter runs"));
+    let selected_group = cli(&[
+        "cluster-frames",
+        root_text,
+        "delimiter",
+        "-",
+        "ignore",
+        "delimiter-discovery,delimiter-validation",
+    ]);
+    assert_eq!(selected_group["selected_frame_count"], 6);
+    assert_eq!(selected_group["run_keys"].as_array().unwrap().len(), 2);
     let event_path = root.join(".pi/events.jsonl");
     let mut events: Vec<Value> = fs::read_to_string(&event_path)
         .unwrap()
