@@ -726,7 +726,7 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
     );
     let event_log = root.join(".pi/events.jsonl");
     let prior_log = fs::read_to_string(&event_log).unwrap();
-    let legacy_log = prior_log.replace("\"schema_version\":16", "\"schema_version\":13");
+    let legacy_log = prior_log.replace("\"schema_version\":17", "\"schema_version\":13");
     assert_ne!(legacy_log, prior_log);
     fs::write(&event_log, legacy_log).unwrap();
     let recorded = cli(&[
@@ -739,7 +739,7 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
     ]);
     let saved = &recorded["event"]["analysis"];
     let analysis_id = saved["id"].as_str().unwrap();
-    assert_eq!(recorded["schema_version"], 16);
+    assert_eq!(recorded["schema_version"], 17);
     assert_eq!(saved["scope"]["kind"], "frame_cluster");
     assert_eq!(saved["frame_ids"], alignment["frame_ids"]);
     assert_eq!(saved["scope"]["source_revision"], alignment["revision"]);
@@ -1119,7 +1119,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     assert_eq!(summary["observation_count"], 48);
     assert_eq!(summary["hypotheses"][0]["score"], 0.9);
     let corpus = cli(&["summary", root_text]);
-    assert_eq!(corpus["schema_version"], 16);
+    assert_eq!(corpus["schema_version"], 17);
     assert_eq!(corpus["revision"], 13);
     assert_eq!(corpus["counts"]["captures"], 2);
     assert_eq!(corpus["counts"]["observations"], 48);
@@ -1155,7 +1155,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
         serde_json::json!({"trial_id":"trial-000004","direction":direction,"offset":2,"limit":3})
             .to_string();
     let matches = cli(&["search-observations", root_text, &direction_query]);
-    assert_eq!(matches["schema_version"], 16);
+    assert_eq!(matches["schema_version"], 17);
     assert_eq!(matches["total"], 24);
     assert_eq!(matches["observations"].as_array().unwrap().len(), 3);
     assert_eq!(matches["next_offset"], 5);
@@ -3579,7 +3579,7 @@ fn replays_v1_log_and_appends_current_events() {
         "Old investigation"
     );
     let appended = cli(&["hypothesis", path(&root), "A new claim"]);
-    assert_eq!(appended["schema_version"], 16);
+    assert_eq!(appended["schema_version"], 17);
     assert_eq!(appended["revision"], 2);
     assert_eq!(
         cli(&["changes", path(&root), "0"])
@@ -4353,6 +4353,100 @@ fn capture_step_start_finishes_background_capture_and_tags_on_retry() {
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("invalid capture step scope"));
     fs::write(&events_path, original_events).unwrap();
+    assert_eq!(cli(&["verify", root_text])["observations"], 2);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn keyed_observation_tag_replays_and_rejects_cross_trial_action() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&[
+        "init",
+        root_text,
+        "Which observation followed the stimulus?",
+    ]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Vary stimulus",
+        "-",
+        "Identify one response",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let first_trial = cli(&["trial", root_text, experiment_id, "discovery", "first"]);
+    let second_trial = cli(&["trial", root_text, experiment_id, "validation", "second"]);
+    let first_trial_id = first_trial["event"]["trial"]["id"].as_str().unwrap();
+    let second_trial_id = second_trial["event"]["trial"]["id"].as_str().unwrap();
+    let source = root.join("one.hex");
+    fs::write(&source, "aabb\n").unwrap();
+    let first = cli(&["import", root_text, first_trial_id, "hex", path(&source)]);
+    let second = cli(&["import", root_text, second_trial_id, "hex", path(&source)]);
+    let first_observation = first["event"]["observations"][0]["id"].as_str().unwrap();
+    let second_observation = second["event"]["observations"][0]["id"].as_str().unwrap();
+    let action = cli(&[
+        "mark-keyed",
+        root_text,
+        first_trial_id,
+        "stimulus",
+        "sent first request",
+        "tag-test-action",
+    ]);
+    let action_id = action["action"]["id"].as_str().unwrap();
+    let arguments = [
+        "tag-keyed",
+        root_text,
+        first_observation,
+        "response",
+        "candidate echo",
+        "candidate-echo-1",
+        action_id,
+    ];
+    let tagged = cli(&arguments);
+    assert_eq!(tagged["tag"]["key"], "candidate-echo-1");
+    assert_eq!(tagged["tag"]["action_id"], action_id);
+    assert_eq!(tagged["replayed"], false);
+    let revision = tagged["revision"].as_u64().unwrap();
+    let replay = cli(&arguments);
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(replay["revision"], revision);
+    assert_eq!(replay["tag"]["id"], tagged["tag"]["id"]);
+    assert_eq!(
+        cli(&["tag-status", root_text, "candidate-echo-1"])["tag"],
+        tagged["tag"]
+    );
+    let conflict = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "tag-keyed",
+            root_text,
+            first_observation,
+            "response",
+            "other label",
+            "candidate-echo-1",
+            action_id,
+        ])
+        .output()
+        .unwrap();
+    assert!(!conflict.status.success());
+    assert!(String::from_utf8_lossy(&conflict.stderr).contains("different arguments"));
+    let cross_trial = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+        .args([
+            "tag-keyed",
+            root_text,
+            second_observation,
+            "response",
+            "candidate echo",
+            "candidate-echo-2",
+            action_id,
+        ])
+        .output()
+        .unwrap();
+    assert!(!cross_trial.status.success());
+    assert!(String::from_utf8_lossy(&cross_trial.stderr).contains("same trial"));
+    assert_eq!(
+        cli(&["summary", root_text])["counts"]["tagged_observations"],
+        1
+    );
     assert_eq!(cli(&["verify", root_text])["observations"], 2);
     fs::remove_dir_all(root).unwrap();
 }

@@ -387,6 +387,15 @@ struct TagCaptureInput {
     count: Option<usize>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+struct TagObservationInput {
+    observation_id: String,
+    phase: String,
+    label: String,
+    key: String,
+    action_id: Option<String>,
+}
+
 impl InvestigationServer {
     fn load(&self) -> Result<workflow::State, String> {
         workflow::load(&self.root)
@@ -1397,6 +1406,32 @@ impl InvestigationServer {
             "replayed":result["replayed"],
             "batch":compact_batch(&result["batch"]),
         })))
+    }
+
+    #[tool(
+        description = "Retry-safe phase/label tag for one observation, optionally linked to an action in the same trial. Use this for a specific response or background message after inspecting evidence.",
+        annotations(idempotent_hint = true)
+    )]
+    async fn tag_observation(
+        &self,
+        Parameters(input): Parameters<TagObservationInput>,
+    ) -> Result<CallToolResult, String> {
+        let mut args = vec![input.observation_id, input.phase, input.label, input.key];
+        if let Some(action_id) = input.action_id {
+            args.push(action_id);
+        }
+        self.invoke("tag-keyed", args).await
+    }
+
+    #[tool(
+        description = "Inspect a completed keyed observation tag without changing it.",
+        annotations(read_only_hint = true)
+    )]
+    async fn tag_status(
+        &self,
+        Parameters(input): Parameters<KeyInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke("tag-status", vec![input.key]).await
     }
 }
 

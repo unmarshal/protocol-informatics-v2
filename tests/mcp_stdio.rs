@@ -127,7 +127,7 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 56);
+    assert_eq!(names.len(), 58);
     assert!(names.contains(&"infer_chunk_framing"));
     assert!(names.contains(&"infer_frame_crc32"));
     assert!(names.contains(&"activity"));
@@ -143,6 +143,8 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
     assert!(names.contains(&"capture_step"));
     assert!(names.contains(&"capture_step_start"));
     assert!(names.contains(&"capture_step_finish"));
+    assert!(names.contains(&"tag_observation"));
+    assert!(names.contains(&"tag_status"));
     assert!(names.contains(&"validate_exchanges"));
     assert!(names.contains(&"annotate_value"));
     assert!(names.contains(&"infer_value"));
@@ -248,6 +250,29 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
     assert_eq!(search["total"], 6);
     assert_eq!(search["observations"].as_array().unwrap().len(), 2);
     assert_eq!(search["next_offset"], 2);
+    let specific_tag = client.tool(
+        "tag_observation",
+        json!({"observation_id":first["first_observation_ids"][1],"phase":"response","label":"candidate echo reply","key":"mcp-reply-tag-1","action_id":first["action"]["id"]}),
+    );
+    assert_eq!(specific_tag["tag"]["key"], "mcp-reply-tag-1");
+    assert_eq!(specific_tag["replayed"], false);
+    let specific_replay = client.tool(
+        "tag_observation",
+        json!({"observation_id":first["first_observation_ids"][1],"phase":"response","label":"candidate echo reply","key":"mcp-reply-tag-1","action_id":first["action"]["id"]}),
+    );
+    assert_eq!(specific_replay["replayed"], true);
+    assert_eq!(specific_replay["tag"]["id"], specific_tag["tag"]["id"]);
+    let tag_status = client.tool("tag_status", json!({"key":"mcp-reply-tag-1"}));
+    assert_eq!(tag_status["tag"]["id"], specific_tag["tag"]["id"]);
+    let specific_search = client.tool(
+        "search_observations",
+        json!({"tag_label":"candidate echo reply","limit":10}),
+    );
+    assert_eq!(specific_search["total"], 1);
+    assert_eq!(
+        specific_search["observations"][0]["id"],
+        first["first_observation_ids"][1]
+    );
     let span = client.tool(
         "span",
         json!({"observation_id":first["first_observation_ids"][0],"start":6,"end":8}),

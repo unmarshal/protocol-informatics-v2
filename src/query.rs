@@ -1858,6 +1858,7 @@ mod tests {
                 label: if index == 0 { "alpha" } else { "beta" }.into(),
                 phase: if index == 0 { "stimulus" } else { "response" }.into(),
                 action_id: None,
+                key: None,
             });
         }
         let summary = corpus_summary(&state);

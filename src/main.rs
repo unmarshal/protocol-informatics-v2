@@ -77,6 +77,8 @@ fn print_help() {
     println!("  mark-keyed <dir> <trial-id> <kind> <detail> <key> [timestamp-ns]");
     println!("  mark-at <dir> <trial-id> <timestamp-ns> <kind> <detail>");
     println!("  tag <dir> <obs-id> <phase> <label>");
+    println!("  tag-keyed <dir> <obs-id> <phase> <label> <key> [action-id]");
+    println!("  tag-status <dir> <key>             inspect a keyed observation tag");
     println!("  tag-window <dir> <action-id> <end-ns> <phase> <label> <key>");
     println!(
         "  tag-capture <dir> <action-id> <capture-id> <phase> <label> <key> [offset count<=1000]"
@@ -890,6 +892,7 @@ fn tag_window(root: &Path, args: &[String]) -> Result<(), String> {
             phase: phase.clone(),
             label: label.clone(),
             action_id: Some(action_id.clone()),
+            key: None,
         })
         .collect();
     let window = WindowTag {
@@ -985,6 +988,69 @@ fn mark_keyed(root: &Path, args: &[String]) -> Result<(), String> {
     Err(appended
         .err()
         .unwrap_or_else(|| "keyed action was not recorded".into()))
+}
+
+fn tag_keyed(root: &Path, args: &[String]) -> Result<(), String> {
+    if args.len() != 6 && args.len() != 7 {
+        return Err("expected observation, phase, label, key, and optional action ID".into());
+    }
+    let observation_id = &args[2];
+    let phase = &args[3];
+    let label = &args[4];
+    let key = &args[5];
+    let action_id = args.get(6).filter(|value| value.as_str() != "-");
+    if key.is_empty()
+        || key.len() > 128
+        || key.chars().any(char::is_control)
+        || phase.trim().is_empty()
+        || label.trim().is_empty()
+    {
+        return Err("tag phase, label, and key must be nonempty; key has a 128-byte limit".into());
+    }
+    let matches_request = |tag: &Tag| {
+        &tag.observation_id == observation_id
+            && &tag.phase == phase
+            && &tag.label == label
+            && tag.action_id.as_ref() == action_id
+    };
+    let state = workflow::load(root)?;
+    if let Some(tag) = state.tags.iter().find(|tag| tag.key.as_ref() == Some(key)) {
+        return if matches_request(tag) {
+            print_json(&json!({"revision": state.revision, "tag": tag, "replayed": true}))
+        } else {
+            Err(format!(
+                "observation tag key {key} was used with different arguments"
+            ))
+        };
+    }
+    let tag = Tag {
+        id: String::new(),
+        observation_id: observation_id.clone(),
+        phase: phase.clone(),
+        label: label.clone(),
+        action_id: action_id.cloned(),
+        key: Some(key.clone()),
+    };
+    let appended = workflow::append(root, Event::ObservationTagged { tag });
+    let updated = workflow::load(root)?;
+    if let Some(tag) = updated
+        .tags
+        .iter()
+        .find(|tag| tag.key.as_ref() == Some(key))
+    {
+        return if matches_request(tag) {
+            print_json(
+                &json!({"revision": updated.revision, "tag": tag, "replayed": appended.is_err()}),
+            )
+        } else {
+            Err(format!(
+                "observation tag key {key} was used with different arguments"
+            ))
+        };
+    }
+    Err(appended
+        .err()
+        .unwrap_or_else(|| "keyed observation tag was not recorded".into()))
 }
 
 fn tag_capture(root: &Path, args: &[String]) -> Result<(), String> {
@@ -1086,6 +1152,7 @@ fn tag_capture(root: &Path, args: &[String]) -> Result<(), String> {
             phase: phase.clone(),
             label: label.clone(),
             action_id: Some(action_id.clone()),
+            key: None,
         })
         .collect();
     let batch = CaptureTagBatch {
@@ -1467,8 +1534,20 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 phase: args[3].clone(),
                 label: args[4].clone(),
                 action_id: None,
+                key: None,
             };
             print_json(&workflow::append(root, Event::ObservationTagged { tag })?)
+        }
+        "tag-keyed" => tag_keyed(root, args),
+        "tag-status" => {
+            require_len(args, 3)?;
+            let state = workflow::load(root)?;
+            let tag = state
+                .tags
+                .iter()
+                .find(|tag| tag.key.as_deref() == Some(args[2].as_str()))
+                .ok_or_else(|| format!("unknown observation tag key {}", args[2]))?;
+            print_json(&json!({"revision": state.revision, "tag": tag}))
         }
         "tag-window" => tag_window(root, args),
         "tag-capture" => tag_capture(root, args),

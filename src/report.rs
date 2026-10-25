@@ -899,7 +899,7 @@ function showDetail(observation) {
     for(const span of observation.source_spans) sources.append(node('div','Message ['+span.message_start+', '+span.message_end+') ← packet '+span.packet_index+' at file offset '+span.file_offset,'small muted'));
     detail.append(sources);
   }
-  for(const tag of tagsFor(observation.id)) detail.append(node('span',tag.phase+': '+tag.label+(tag.action_id?' · '+tag.action_id:''),'pill'));
+  for(const tag of tagsFor(observation.id)) detail.append(node('span',tag.phase+': '+tag.label+(tag.action_id?' · '+tag.action_id:'')+(tag.key?' · key '+tag.key:''),'pill'));
   for(const value of valuesFor(observation.id)) detail.append(node('span',value.variable+'='+value.value+' ('+value.set+')','pill'));
   if(framing) detail.append(node('div',(framing.committed?'Committed':'Candidate')+' record spans: '+framing.records.map(record=>'['+record.start+', '+record.end+')').join(' '),'small muted'));
   const total=observation.bytes_hex.length/2, pageSize=256;

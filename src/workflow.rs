@@ -18,7 +18,7 @@ use crate::pcap::{
 use crate::reassembly::{SourceSpan, reassemble_tcp_segments};
 use crate::varint::{VarintConfig, probe_varint};
 
-const SCHEMA_VERSION: u32 = 16;
+const SCHEMA_VERSION: u32 = 17;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 const MAX_RECOVERY_TAIL_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -262,6 +262,8 @@ pub struct Tag {
     pub phase: String,
     #[serde(default)]
     pub action_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1009,15 +1011,45 @@ impl State {
                 self.actions.push(action.clone());
             }
             Event::ObservationTagged { tag } => {
-                if !self.observations.iter().any(|o| o.id == tag.observation_id) {
-                    return Err(format!("unknown observation {}", tag.observation_id));
-                }
+                let observation = self
+                    .observations
+                    .iter()
+                    .find(|o| o.id == tag.observation_id)
+                    .ok_or_else(|| format!("unknown observation {}", tag.observation_id))?;
                 if tag.label.trim().is_empty()
                     || tag.phase.trim().is_empty()
-                    || tag.action_id.is_some()
                     || self.tags.iter().any(|t| t.id == tag.id)
                 {
                     return Err("empty or duplicate tag".into());
+                }
+                if let Some(key) = &tag.key
+                    && (record.schema_version < 17
+                        || key.is_empty()
+                        || key.len() > 128
+                        || key.chars().any(char::is_control)
+                        || self.tags.iter().any(|old| old.key.as_ref() == Some(key)))
+                {
+                    return Err("invalid or duplicate keyed observation tag".into());
+                }
+                if let Some(action_id) = &tag.action_id {
+                    if tag.key.is_none() {
+                        return Err("an action-linked observation tag needs a key".into());
+                    }
+                    let action = self
+                        .actions
+                        .iter()
+                        .find(|action| action.id == *action_id)
+                        .ok_or_else(|| format!("unknown action {action_id}"))?;
+                    let capture = self
+                        .captures
+                        .iter()
+                        .find(|capture| capture.id == observation.capture_id)
+                        .ok_or_else(|| format!("unknown capture {}", observation.capture_id))?;
+                    if action.trial_id != capture.trial_id {
+                        return Err(
+                            "tag action and observation must belong to the same trial".into()
+                        );
+                    }
                 }
                 self.tags.push(tag.clone());
             }
@@ -1067,6 +1099,7 @@ impl State {
                         || tag.phase != window.phase
                         || tag.label != window.label
                         || tag.action_id.as_deref() != Some(window.action_id.as_str())
+                        || tag.key.is_some()
                         || self.tags.iter().any(|old| old.id == tag.id)
                         || tags[..index].iter().any(|old| old.id == tag.id)
                     {
@@ -1141,6 +1174,7 @@ impl State {
                         || tag.phase != batch.phase
                         || tag.label != batch.label
                         || tag.action_id.as_deref() != Some(batch.action_id.as_str())
+                        || tag.key.is_some()
                         || self.tags.iter().any(|old| old.id == tag.id)
                     {
                         return Err("invalid capture tag".into());
