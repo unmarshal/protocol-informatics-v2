@@ -5,6 +5,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
+use crate::query::{CaptureUpdateSummary, capture_updates_after_assessment};
 use crate::workflow::{ExperimentAssessment, State};
 use crate::{clustering, delimiter, framing, tlv, varint};
 
@@ -223,6 +224,7 @@ pub struct TrialReview {
     pub prediction: String,
     pub prediction_assessed: bool,
     pub latest_experiment_assessment: Option<ExperimentAssessment>,
+    pub latest_assessment_capture_updates: Option<CaptureUpdateSummary>,
     pub discovery_trial_id: String,
     pub validation_trial_id: String,
     pub discovery_capture_count: usize,
@@ -574,6 +576,12 @@ pub fn review_trials(
             .rev()
             .find(|assessment| assessment.experiment_id == experiment.id)
             .cloned(),
+        latest_assessment_capture_updates: state
+            .experiment_assessments
+            .iter()
+            .rev()
+            .find(|assessment| assessment.experiment_id == experiment.id)
+            .map(|assessment| capture_updates_after_assessment(state, assessment)),
         discovery_trial_id: discovery_trial_id.into(),
         validation_trial_id: validation_trial_id.into(),
         discovery_capture_count: discovery_captures.len(),

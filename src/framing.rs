@@ -738,6 +738,7 @@ mod tests {
             experiment_assessments: Vec::new(),
             trials: Vec::new(),
             captures: Vec::new(),
+            capture_import_revisions: std::collections::BTreeMap::new(),
             capture_runs: Vec::new(),
             observations: vec![Observation {
                 id: "obs-1".into(),

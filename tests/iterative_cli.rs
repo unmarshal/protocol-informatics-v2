@@ -123,6 +123,7 @@ fn experiment_assessments_preserve_revisions_and_reject_foreign_evidence() {
     ];
     let first = cli(&args);
     assert_eq!(first["replayed"], false);
+    assert_eq!(first["capture_updates"]["new_capture_count"], 0);
     assert_eq!(first["assessment"]["evidence_ids"], json!([evidence_id]));
     assert_eq!(
         first["assessment"]["basis_revision"],
@@ -147,6 +148,24 @@ fn experiment_assessments_preserve_revisions_and_reject_foreign_evidence() {
         cli(&["experiment-assessment-status", root_text, "assessment-v1"])["assessment"],
         first["assessment"]
     );
+    cli(&["import", root_text, foreign_id, "hex", path(&source)]);
+    assert_eq!(
+        cli(&["experiment-assessment-status", root_text, "assessment-v1"])["capture_updates"]["new_capture_count"],
+        0
+    );
+    let newer_import = cli(&["import", root_text, validation_id, "hex", path(&source)]);
+    let newer_capture_id = newer_import["event"]["capture"]["id"].as_str().unwrap();
+    let newer_observation_id = newer_import["event"]["observations"][0]["id"]
+        .as_str()
+        .unwrap();
+    let pending = cli(&["experiment-assessment-status", root_text, "assessment-v1"]);
+    assert_eq!(pending["capture_updates"]["new_capture_count"], 1);
+    assert_eq!(pending["capture_updates"]["new_observation_count"], 2);
+    assert_eq!(
+        pending["capture_updates"]["first_new_capture_ids"],
+        json!([newer_capture_id])
+    );
+    assert_eq!(cli(&args)["capture_updates"]["new_capture_count"], 1);
     let revised = cli(&[
         "experiment-assess",
         root_text,
@@ -154,16 +173,26 @@ fn experiment_assessments_preserve_revisions_and_reject_foreign_evidence() {
         "contradicted",
         "Held-out byte stayed constant",
         "assessment-v2",
-        evidence_id,
+        newer_observation_id,
     ]);
     assert_eq!(revised["assessment"]["verdict"], "contradicted");
+    assert_eq!(revised["capture_updates"]["new_capture_count"], 0);
     let page = cli(&["experiment-assessments", root_text, experiment_id, "0", "1"]);
     assert_eq!(page["total"], 2);
     assert_eq!(page["next_offset"], 1);
     assert_eq!(page["assessments"][0]["id"], revised["assessment"]["id"]);
     assert_eq!(
+        page["assessments"][0]["capture_updates"]["new_capture_count"],
+        0
+    );
+    assert_eq!(
         cli(&["experiment-assessments", root_text, experiment_id, "1", "1"])["assessments"][0]["id"],
         first["assessment"]["id"]
+    );
+    assert_eq!(
+        cli(&["experiment-assessments", root_text, experiment_id, "1", "1"])["assessments"][0]["capture_updates"]
+            ["new_capture_count"],
+        1
     );
     let listed = cli(&["experiments", root_text]);
     let preview = listed["experiments"]
@@ -174,11 +203,19 @@ fn experiment_assessments_preserve_revisions_and_reject_foreign_evidence() {
         .unwrap();
     assert_eq!(preview["assessment_count"], 2);
     assert_eq!(preview["latest_verdict"], "contradicted");
+    assert_eq!(
+        preview["latest_assessment_capture_updates"]["new_capture_count"],
+        0
+    );
     let review = cli(&["review-trials", root_text, discovery_id, validation_id]);
     assert_eq!(review["prediction_assessed"], true);
     assert_eq!(
         review["latest_experiment_assessment"]["id"],
         revised["assessment"]["id"]
+    );
+    assert_eq!(
+        review["latest_assessment_capture_updates"]["new_capture_count"],
+        0
     );
     let activity = cli(&[
         "activity",
@@ -201,7 +238,8 @@ fn experiment_assessments_preserve_revisions_and_reject_foreign_evidence() {
     let html = fs::read_to_string(&report).unwrap();
     assert!(html.contains("Latest assessment:"));
     assert!(html.contains("state.experiment_assessments"));
-    assert_eq!(cli(&["verify", root_text])["observations"], 6);
+    assert!(html.contains("assessment_capture_updates"));
+    assert_eq!(cli(&["verify", root_text])["observations"], 10);
     fs::remove_dir_all(root).unwrap();
 }
 

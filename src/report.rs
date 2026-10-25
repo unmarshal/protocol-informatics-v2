@@ -15,6 +15,14 @@ pub fn render(root: &Path, state: &State) -> String {
         .filter_map(|variable| crate::inference::infer_unsigned_field(state, variable).ok())
         .collect();
     let mut view = serde_json::to_value(state).expect("state is serializable");
+    view["assessment_capture_updates"] = serde_json::json!(state
+        .experiment_assessments
+        .iter()
+        .map(|assessment| serde_json::json!({
+            "assessment_id": assessment.id,
+            "capture_updates": crate::query::capture_updates_after_assessment(state, assessment),
+        }))
+        .collect::<Vec<_>>());
     let saved_analysis_previews: Vec<_> = state
         .analyses
         .iter()
@@ -491,6 +499,7 @@ for(const run of committedRuns) framingPreviewById.set(run.observation_id,{recor
 const frameById = new Map(committedRuns.flatMap(run=>run.records.map(frame=>[frame.id,{frame,run}])));
 const tagsFor = id => state.tags.filter(x=>x.observation_id===id);
 const activeTagsFor = id => tagsFor(id).filter(x=>!x.retraction);
+const assessmentCaptureUpdates = new Map((state.assessment_capture_updates||[]).map(item=>[item.assessment_id,item.capture_updates]));
 const valuesFor = id => state.known_values.filter(x=>x.observation_id===id);
 const fieldOverlays = state.field_inferences.flatMap(inference => {
   const preferred=inference.candidates.filter(candidate=>candidate.preferred);
@@ -653,6 +662,8 @@ for(const experiment of state.experiments) {
     row.append(node('div','Latest assessment: '+assessments[assessments.length-1].verdict+' · '+assessments.length+' recorded','small'));
     for(const assessment of assessments.slice().reverse()) {
       row.append(node('div',assessment.id+' · '+assessment.verdict+' at basis revision '+assessment.basis_revision+' · '+assessment.explanation,'small muted'));
+      const updates=assessmentCaptureUpdates.get(assessment.id);
+      if(updates?.new_capture_count) row.append(node('div',updates.new_capture_count+' newer capture(s) with '+updates.new_observation_count+' observation(s) to review · '+updates.first_new_capture_ids.join(', ')+(updates.new_capture_ids_omitted?' and '+updates.new_capture_ids_omitted+' more':''),'small'));
       for(const evidenceId of assessment.evidence_ids) {
         const button=node('button','↳ evidence '+evidenceId,'small');
         button.onclick=()=>{const observation=state.observations.find(value=>value.id===evidenceId);if(observation) showDetail(observation);};
@@ -673,7 +684,7 @@ for(const experiment of state.experiments) {
 for(const review of state.trial_reviews||[]) {
   const row=node('div','', 'row');
   row.append(node('strong',review.experiment_id+' · '+review.question),node('div',review.discovery_observation_count+' discovery observations · '+review.validation_observation_count+' held-out observations','small muted'));
-  row.append(node('div','Prediction: '+review.prediction+' · '+(review.latest_experiment_assessment?'latest experiment assessment '+review.latest_experiment_assessment.verdict+' ('+review.latest_experiment_assessment.id+')':'assessment pending'),'small muted'));
+  row.append(node('div','Prediction: '+review.prediction+' · '+(review.latest_experiment_assessment?'latest experiment assessment '+review.latest_experiment_assessment.verdict+' ('+review.latest_experiment_assessment.id+')'+(review.latest_assessment_capture_updates?.new_capture_count?' · '+review.latest_assessment_capture_updates.new_capture_count+' newer capture(s) to review':''):'assessment pending'),'small muted'));
   for(const method of review.methods) {
     row.append(node('div',method.method+': '+(method.status==='evaluated'?method.candidate_count+' candidate(s), best reported held-out '+(method.best_reported_validation_matches===null?'none':method.best_reported_validation_matches+'/'+method.validation_total):'unavailable — '+method.error),'small'));
     if(method.identifiability) row.append(node('div','↳ '+method.identifiability.fully_validated_candidate_count+' fully validated description(s), '+method.identifiability.distinct_boundary_rule_count+' distinct boundary rule(s)','small muted'));

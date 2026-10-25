@@ -431,6 +431,22 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
     assert_eq!(large["observation_ids_omitted"], 1004);
     assert_eq!(large["tag_batches"].as_array().unwrap().len(), 2);
     assert_eq!(large["tag_batches"][0]["observation_count"], 1000);
+    let pending_assessment = client.tool(
+        "experiment_assessment_status",
+        json!({"key":"mcp-echo-assessment-1"}),
+    );
+    assert_eq!(
+        pending_assessment["capture_updates"]["new_capture_count"],
+        1
+    );
+    assert_eq!(
+        pending_assessment["capture_updates"]["new_observation_count"],
+        1024
+    );
+    assert_eq!(
+        pending_assessment["capture_updates"]["first_new_capture_ids"],
+        json!([large["capture"]["id"]])
+    );
     let activity = client.tool(
         "activity",
         json!({"after_revision":stress["revision"],"limit":3,"through_revision":large["revision"]}),

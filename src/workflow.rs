@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::IpAddr;
@@ -595,6 +596,9 @@ pub struct State {
     pub experiment_assessments: Vec<ExperimentAssessment>,
     pub trials: Vec<Trial>,
     pub captures: Vec<Capture>,
+    /// Reconstructed from import events; kept out of the portable state view.
+    #[serde(skip_serializing)]
+    pub capture_import_revisions: BTreeMap<String, u64>,
     pub capture_runs: Vec<CaptureRun>,
     pub observations: Vec<Observation>,
     pub framing_runs: Vec<FramingRun>,
@@ -689,6 +693,7 @@ impl State {
             experiment_assessments: Vec::new(),
             trials: Vec::new(),
             captures: Vec::new(),
+            capture_import_revisions: BTreeMap::new(),
             capture_runs: Vec::new(),
             observations: Vec::new(),
             framing_runs: Vec::new(),
@@ -886,6 +891,8 @@ impl State {
                     None
                 };
                 self.captures.push(capture.clone());
+                self.capture_import_revisions
+                    .insert(capture.id.clone(), record.revision);
                 self.observations.extend(observations.clone());
                 if let Some(index) = run_index {
                     self.capture_runs[index].status = CaptureRunStatus::Completed;

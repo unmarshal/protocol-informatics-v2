@@ -52,6 +52,8 @@ Start and stop calls accept idempotency keys so retries do not create duplicate 
 
 After a trial review, `experiment-assess` or MCP `assess_experiment` records `supported`, `contradicted`, or `inconclusive` for the experiment's prediction. Supported and contradicted verdicts must cite at least one observation from the experiment's trials. Every verdict includes a reason and the evidence revision it assessed; a later key creates another assessment. The tool records a human or agent interpretation of the evidence rather than promoting a structural fit to proof. Use `experiment-assessments` or MCP `experiment_assessments` to page the history and `experiment-assessment-status` or MCP `experiment_assessment_status` to inspect one retry key.
 
+Assessment status, history pages, experiment summaries, and trial reviews count captures imported into the same experiment after the assessment's basis revision. They also return the new observation count and up to ten capture IDs. A capture in another experiment does not trigger that signal. The agent can inspect those captures and record a new assessment with a new key if the prediction judgment changes; the earlier assessment remains available.
+
 ## Human view
 
 Show the experiment as a timeline: capture intervals, marked actions, message bursts, inferred request/response links, and phase tags. Let an analyst compare baseline and variant trials side by side, inspect exact bytes behind each claimed difference, and correct an assignment. Retracting a mistaken tag records the reason and revision; current searches stop using it. The corrected tag becomes available to the agent as versioned evidence.

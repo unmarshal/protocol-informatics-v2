@@ -256,7 +256,9 @@ fn experiment_assess(root: &Path, args: &[String]) -> Result<(), String> {
         .find(|item| item.key == *key)
     {
         return if matches_request(existing) {
-            print_json(&json!({"revision":state.revision,"assessment":existing,"replayed":true}))
+            print_json(&json!({"revision":state.revision,"assessment":existing,
+                "capture_updates":protocol_informatics_v2::query::capture_updates_after_assessment(&state, existing),
+                "replayed":true}))
         } else {
             Err(format!(
                 "experiment assessment key {key} was used with different arguments"
@@ -280,9 +282,9 @@ fn experiment_assess(root: &Path, args: &[String]) -> Result<(), String> {
         .find(|item| item.key == *key)
     {
         return if matches_request(existing) {
-            print_json(
-                &json!({"revision":updated.revision,"assessment":existing,"replayed":appended.is_err()}),
-            )
+            print_json(&json!({"revision":updated.revision,"assessment":existing,
+                    "capture_updates":protocol_informatics_v2::query::capture_updates_after_assessment(&updated, existing),
+                    "replayed":appended.is_err()}))
         } else {
             Err(format!(
                 "experiment assessment key {key} was used with different arguments"
@@ -1606,7 +1608,8 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 .iter()
                 .find(|item| item.key == args[2])
                 .ok_or_else(|| format!("unknown experiment assessment key {}", args[2]))?;
-            print_json(&json!({"revision":state.revision,"assessment":assessment}))
+            print_json(&json!({"revision":state.revision,"assessment":assessment,
+                "capture_updates":protocol_informatics_v2::query::capture_updates_after_assessment(&state, assessment)}))
         }
         "trial" => {
             require_len(args, 5)?;

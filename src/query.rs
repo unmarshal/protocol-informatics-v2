@@ -190,6 +190,24 @@ pub struct ExperimentPreview {
     pub assessment_count: usize,
     pub latest_verdict: Option<crate::workflow::AssessmentVerdict>,
     pub latest_assessment_id: Option<String>,
+    pub latest_assessment_capture_updates: Option<CaptureUpdateSummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CaptureUpdateSummary {
+    pub basis_revision: u64,
+    pub through_revision: u64,
+    pub new_capture_count: usize,
+    pub new_observation_count: usize,
+    pub first_new_capture_ids: Vec<String>,
+    pub new_capture_ids_omitted: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AssessmentWithCaptureUpdates<'a> {
+    #[serde(flatten)]
+    pub assessment: &'a crate::workflow::ExperimentAssessment,
+    pub capture_updates: CaptureUpdateSummary,
 }
 
 #[derive(Debug, Serialize)]
@@ -201,7 +219,7 @@ pub struct ExperimentAssessmentPage<'a> {
     pub offset: usize,
     pub next_offset: Option<usize>,
     pub order: &'static str,
-    pub assessments: Vec<&'a crate::workflow::ExperimentAssessment>,
+    pub assessments: Vec<AssessmentWithCaptureUpdates<'a>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -945,6 +963,8 @@ pub fn list_experiments(
                 assessment_count: assessment.map_or(0, |(count, _)| *count),
                 latest_verdict: assessment.map(|(_, item)| item.verdict),
                 latest_assessment_id: assessment.map(|(_, item)| item.id.clone()),
+                latest_assessment_capture_updates: assessment
+                    .map(|(_, item)| capture_updates_after_assessment(state, item)),
             }
         })
         .collect();
@@ -957,6 +977,45 @@ pub fn list_experiments(
         order: "newest_first",
         experiments,
     })
+}
+
+/// Report only captures imported after the assessed revision. A new import
+/// warrants review; it does not automatically invalidate the prior verdict.
+pub fn capture_updates_after_assessment(
+    state: &State,
+    assessment: &crate::workflow::ExperimentAssessment,
+) -> CaptureUpdateSummary {
+    let trial_ids: BTreeSet<_> = state
+        .trials
+        .iter()
+        .filter(|trial| trial.experiment_id == assessment.experiment_id)
+        .map(|trial| trial.id.as_str())
+        .collect();
+    let mut new_capture_count = 0;
+    let mut new_observation_count = 0;
+    let mut first_new_capture_ids = Vec::new();
+    for capture in &state.captures {
+        if trial_ids.contains(capture.trial_id.as_str())
+            && state
+                .capture_import_revisions
+                .get(&capture.id)
+                .is_some_and(|revision| *revision > assessment.basis_revision)
+        {
+            new_capture_count += 1;
+            new_observation_count += capture.observation_count;
+            if first_new_capture_ids.len() < 10 {
+                first_new_capture_ids.push(capture.id.clone());
+            }
+        }
+    }
+    CaptureUpdateSummary {
+        basis_revision: assessment.basis_revision,
+        through_revision: state.revision,
+        new_capture_count,
+        new_observation_count,
+        new_capture_ids_omitted: new_capture_count.saturating_sub(first_new_capture_ids.len()),
+        first_new_capture_ids,
+    }
 }
 
 pub fn list_experiment_assessments<'a>(
@@ -988,6 +1047,10 @@ pub fn list_experiment_assessments<'a>(
         .filter(|item| item.experiment_id == experiment_id)
         .skip(offset)
         .take(limit)
+        .map(|assessment| AssessmentWithCaptureUpdates {
+            assessment,
+            capture_updates: capture_updates_after_assessment(state, assessment),
+        })
         .collect();
     Ok(ExperimentAssessmentPage {
         schema_version: state.schema_version,
