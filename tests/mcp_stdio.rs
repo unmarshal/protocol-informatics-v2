@@ -127,7 +127,8 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 63);
+    assert_eq!(names.len(), 64);
+    assert!(names.contains(&"attention"));
     assert!(names.contains(&"infer_chunk_framing"));
     assert!(names.contains(&"infer_frame_crc32"));
     assert!(names.contains(&"activity"));
@@ -200,6 +201,10 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         json!({"experiment_id":experiment_id,"role":"validation","changed_factor":"one mismatched reply sequence"}),
     );
     let validation_trial_id = validation["event"]["trial"]["id"].as_str().unwrap();
+    assert_eq!(
+        client.tool("attention", json!({}))["planned_trials"]["total"],
+        2
+    );
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
     let capture = |trial_id: &str, step_key: &str, filename: &str| {
         json!({
@@ -431,6 +436,15 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
     assert_eq!(large["observation_ids_omitted"], 1004);
     assert_eq!(large["tag_batches"].as_array().unwrap().len(), 2);
     assert_eq!(large["tag_batches"][0]["observation_count"], 1000);
+    let attention = client.tool("attention", json!({}));
+    assert_eq!(
+        attention["experiment_reviews"]["items"][0]["reason"],
+        "new_capture_evidence"
+    );
+    assert_eq!(
+        attention["experiment_reviews"]["items"][0]["new_observation_count"],
+        1024
+    );
     let pending_assessment = client.tool(
         "experiment_assessment_status",
         json!({"key":"mcp-echo-assessment-1"}),

@@ -1,5 +1,7 @@
 # Repeatable agent capture steps
 
+On resume, `attention <dir>` or MCP `attention` identifies steps awaiting capture or tag completion. A completed capture with missing tag pages appears as `tags_pending` and points to `capture-step-finish`. A reserved capture points to `capture-status`. A failed step reports `new_step_key_required: true`; its key cannot silently execute again. The queue reports up to 20 recent steps and an omitted count.
+
 An agent can run one synchronous step with:
 
 ```sh

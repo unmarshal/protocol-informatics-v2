@@ -14,6 +14,296 @@ use crate::workflow::{
 };
 
 const MAX_SUMMARY_GROUPS: usize = 20;
+const MAX_ATTENTION_ITEMS: usize = 20;
+
+#[derive(Debug, Serialize)]
+pub struct AttentionGroup<T> {
+    pub total: usize,
+    pub items: Vec<T>,
+    pub omitted: usize,
+}
+
+impl<T> AttentionGroup<T> {
+    fn bounded(mut items: Vec<T>) -> Self {
+        let total = items.len();
+        items.truncate(MAX_ATTENTION_ITEMS);
+        Self {
+            total,
+            omitted: total.saturating_sub(items.len()),
+            items,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct CaptureRunAttention {
+    pub key: String,
+    pub trial_id: String,
+    pub stop_requested: bool,
+    pub tool_hint: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CaptureStepAttention {
+    pub step_key: String,
+    pub trial_id: String,
+    pub status: &'static str,
+    pub capture_key: String,
+    pub capture_id: Option<String>,
+    pub observation_count: usize,
+    pub page_tagged_observations: usize,
+    pub new_step_key_required: bool,
+    pub tool_hint: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExperimentAttention {
+    pub experiment_id: String,
+    pub reason: &'static str,
+    pub latest_assessment_id: Option<String>,
+    pub new_capture_count: usize,
+    pub new_observation_count: usize,
+    pub first_new_capture_ids: Vec<String>,
+    pub tool_hint: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TrialAttention {
+    pub trial_id: String,
+    pub experiment_id: String,
+    pub role: String,
+    pub tool_hint: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExperimentPlanningAttention {
+    pub experiment_id: String,
+    pub tool_hint: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AttentionReport {
+    pub schema_version: u32,
+    pub revision: u64,
+    pub maximum_items_per_group: usize,
+    pub capture_runs: AttentionGroup<CaptureRunAttention>,
+    pub capture_steps: AttentionGroup<CaptureStepAttention>,
+    pub experiment_reviews: AttentionGroup<ExperimentAttention>,
+    pub planned_trials: AttentionGroup<TrialAttention>,
+    pub unstarted_experiments: AttentionGroup<ExperimentPlanningAttention>,
+}
+
+/// A compact work queue derived from durable state, with tool hints for
+/// resuming rather than guesses about whether a reserved process is alive.
+pub fn attention(state: &State) -> AttentionReport {
+    let capture_runs = state
+        .capture_runs
+        .iter()
+        .rev()
+        .filter(|run| run.status == CaptureRunStatus::Reserved)
+        .map(|run| CaptureRunAttention {
+            key: run.key.clone(),
+            trial_id: run.trial_id.clone(),
+            stop_requested: run.stop_requested,
+            tool_hint: "capture_status",
+        })
+        .collect();
+    let capture_steps = state
+        .actions
+        .iter()
+        .rev()
+        .filter_map(|action| {
+            let scope = action.capture_scope.as_ref()?;
+            let step_key = action.key.as_deref()?.strip_suffix(":action")?;
+            let capture_key = format!("{step_key}:capture");
+            let run = state.capture_runs.iter().find(|run| run.key == capture_key);
+            let (status, capture_id, observation_count, page_tagged_observations, tool_hint) =
+                match run {
+                    None => ("pending_capture", None, 0, 0, "capture_step_start"),
+                    Some(run) if run.status == CaptureRunStatus::Reserved => {
+                        ("capture_reserved", None, 0, 0, "capture_status")
+                    }
+                    Some(run) if run.status == CaptureRunStatus::Failed => {
+                        ("capture_failed", None, 0, 0, "capture_step")
+                    }
+                    Some(run) => {
+                        let capture = run
+                            .capture_id
+                            .as_ref()
+                            .and_then(|id| state.captures.iter().find(|capture| &capture.id == id));
+                        let Some(capture) = capture else {
+                            return Some(CaptureStepAttention {
+                                step_key: step_key.into(),
+                                trial_id: action.trial_id.clone(),
+                                status: "missing_capture",
+                                capture_key,
+                                capture_id: run.capture_id.clone(),
+                                observation_count: 0,
+                                page_tagged_observations: 0,
+                                new_step_key_required: false,
+                                tool_hint: "verify",
+                            });
+                        };
+                        let tagged = state
+                            .capture_tag_batches
+                            .iter()
+                            .filter(|batch| {
+                                batch.action_id == action.id
+                                    && batch.capture_id == capture.id
+                                    && batch.phase == scope.phase
+                                    && batch.label == scope.label
+                            })
+                            .map(|batch| batch.observation_ids.len())
+                            .sum::<usize>();
+                        if tagged >= capture.observation_count {
+                            return None;
+                        }
+                        (
+                            "tags_pending",
+                            Some(capture.id.clone()),
+                            capture.observation_count,
+                            tagged,
+                            "capture_step_finish",
+                        )
+                    }
+                };
+            Some(CaptureStepAttention {
+                step_key: step_key.into(),
+                trial_id: action.trial_id.clone(),
+                status,
+                capture_key,
+                capture_id,
+                observation_count,
+                page_tagged_observations,
+                new_step_key_required: status == "capture_failed",
+                tool_hint,
+            })
+        })
+        .collect();
+    let experiment_reviews = state
+        .experiments
+        .iter()
+        .rev()
+        .filter_map(|experiment| {
+            let trial_ids: BTreeSet<_> = state
+                .trials
+                .iter()
+                .filter(|trial| trial.experiment_id == experiment.id)
+                .map(|trial| trial.id.as_str())
+                .collect();
+            let captures: Vec<_> = state
+                .captures
+                .iter()
+                .filter(|capture| trial_ids.contains(capture.trial_id.as_str()))
+                .collect();
+            if captures.is_empty() {
+                return None;
+            }
+            let latest = state
+                .experiment_assessments
+                .iter()
+                .rev()
+                .find(|assessment| assessment.experiment_id == experiment.id);
+            let updates =
+                latest.map(|assessment| capture_updates_after_assessment(state, assessment));
+            if updates
+                .as_ref()
+                .is_some_and(|updates| updates.new_capture_count == 0)
+            {
+                return None;
+            }
+            let has_pair = ["discovery", "validation"].into_iter().all(|role| {
+                state.trials.iter().any(|trial| {
+                    trial.experiment_id == experiment.id
+                        && trial.role == role
+                        && captures.iter().any(|capture| capture.trial_id == trial.id)
+                })
+            });
+            Some(ExperimentAttention {
+                experiment_id: experiment.id.clone(),
+                reason: if latest.is_some() {
+                    "new_capture_evidence"
+                } else {
+                    "unassessed"
+                },
+                latest_assessment_id: latest.map(|assessment| assessment.id.clone()),
+                new_capture_count: updates
+                    .as_ref()
+                    .map_or(captures.len(), |item| item.new_capture_count),
+                new_observation_count: updates.as_ref().map_or_else(
+                    || {
+                        captures
+                            .iter()
+                            .map(|capture| capture.observation_count)
+                            .sum()
+                    },
+                    |item| item.new_observation_count,
+                ),
+                first_new_capture_ids: updates.map_or_else(
+                    || {
+                        captures
+                            .iter()
+                            .take(10)
+                            .map(|capture| capture.id.clone())
+                            .collect()
+                    },
+                    |item| item.first_new_capture_ids,
+                ),
+                tool_hint: if has_pair {
+                    "review_trials"
+                } else {
+                    "search_observations"
+                },
+            })
+        })
+        .collect();
+    let planned_trials = state
+        .trials
+        .iter()
+        .rev()
+        .filter(|trial| {
+            !state
+                .captures
+                .iter()
+                .any(|capture| capture.trial_id == trial.id)
+                && !state
+                    .capture_runs
+                    .iter()
+                    .any(|run| run.trial_id == trial.id && run.status == CaptureRunStatus::Reserved)
+        })
+        .map(|trial| TrialAttention {
+            trial_id: trial.id.clone(),
+            experiment_id: trial.experiment_id.clone(),
+            role: trial.role.clone(),
+            tool_hint: "capture_step",
+        })
+        .collect();
+    let unstarted_experiments = state
+        .experiments
+        .iter()
+        .rev()
+        .filter(|experiment| {
+            !state
+                .trials
+                .iter()
+                .any(|trial| trial.experiment_id == experiment.id)
+        })
+        .map(|experiment| ExperimentPlanningAttention {
+            experiment_id: experiment.id.clone(),
+            tool_hint: "create_trial",
+        })
+        .collect();
+    AttentionReport {
+        schema_version: state.schema_version,
+        revision: state.revision,
+        maximum_items_per_group: MAX_ATTENTION_ITEMS,
+        capture_runs: AttentionGroup::bounded(capture_runs),
+        capture_steps: AttentionGroup::bounded(capture_steps),
+        experiment_reviews: AttentionGroup::bounded(experiment_reviews),
+        planned_trials: AttentionGroup::bounded(planned_trials),
+        unstarted_experiments: AttentionGroup::bounded(unstarted_experiments),
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct CorpusCounts {

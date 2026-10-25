@@ -354,6 +354,10 @@ cargo run -- infer-value /tmp/pi-wav sample_rate
 
 The candidate `[24, 28)` little-endian matches the held-out rate. It remains a hypothesis about the format field even though the fixture generator has a known answer.
 
+## Resume an investigation
+
+For an existing investigation, `protocol-informatics-v2 attention <dir>` gives agents a bounded resume queue. It identifies reserved capture runs, unfinished capture steps, experiments ready for review, and planned trials still awaiting capture. The same view is available as MCP `attention` and in the HTML report. See the [agent query guide](docs/agent-query.md).
+
 ## One-shot analysis
 
 ```sh

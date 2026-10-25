@@ -39,6 +39,8 @@ pub fn render(root: &Path, state: &State) -> String {
     view["saved_analyses_omitted"] = serde_json::json!(state.analyses.len().saturating_sub(8));
     view["corpus_summary"] = serde_json::to_value(crate::query::corpus_summary(state))
         .expect("corpus summary is serializable");
+    view["attention"] =
+        serde_json::to_value(crate::query::attention(state)).expect("attention is serializable");
     view["field_inferences"] =
         serde_json::to_value(inferences).expect("inferences are serializable");
     let frame_variables: BTreeSet<&str> = state
@@ -452,6 +454,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
 <main class="layout">
   <div class="stack">
     <section class="panel"><h2>Corpus overview</h2><div id="corpusSummary"></div></section>
+    <section class="panel"><h2>Needs attention</h2><div id="attention"></div></section>
     <section class="panel"><h2>Hypotheses</h2><div id="hypotheses"></div></section>
     <section class="panel"><h2>Experiments and trials</h2><div id="experiments"></div></section>
     <section class="panel"><h2>Trial evidence review</h2><div id="trialReviews"></div></section>
@@ -518,6 +521,29 @@ for(const [label,count] of [['Observations',state.observations.length],['Capture
   const box=node('div','', 'metric'); box.append(node('strong',String(count)),node('span',label)); byId('metrics').append(box);
 }
 const corpus=state.corpus_summary, lengths=corpus.observation_lengths_bytes;
+const attention=state.attention;
+const attentionGroups=[
+  ['Capture runs to check',attention.capture_runs],
+  ['Capture steps to finish',attention.capture_steps],
+  ['Experiments to review',attention.experiment_reviews],
+  ['Trials to capture',attention.planned_trials],
+  ['Experiments to plan',attention.unstarted_experiments],
+];
+for(const [title,group] of attentionGroups) {
+  if(!group.total) continue;
+  byId('attention').append(node('strong',title+' · '+group.total));
+  for(const item of group.items) {
+    let line='';
+    if(item.step_key) line=item.step_key+' · '+item.status+(item.status==='tags_pending'?' · '+item.page_tagged_observations+'/'+item.observation_count+' capture-scope tags':'')+(item.new_step_key_required?' · use a new step key':'');
+    else if(item.key) line=item.key+' · trial '+item.trial_id+(item.stop_requested?' · stop requested':'');
+    else if(item.reason) line=item.experiment_id+' · '+item.reason.replaceAll('_',' ')+' · '+item.new_capture_count+' capture(s), '+item.new_observation_count+' observation(s)'+(item.first_new_capture_ids.length?' · '+item.first_new_capture_ids.join(', '):'');
+    else if(item.trial_id) line=item.trial_id+' · '+item.role;
+    else line=item.experiment_id;
+    byId('attention').append(node('div',line+' · next '+item.tool_hint,'small'));
+  }
+  if(group.omitted) byId('attention').append(node('div',group.omitted+' more available through the attention command','small muted'));
+}
+if(!attentionGroups.some(([,group])=>group.total)) byId('attention').append(node('div','No pending work in the durable investigation state.','small muted'));
 byId('corpusSummary').append(node('div',corpus.counts.observation_bytes+' observed bytes · '+corpus.counts.tagged_observations+'/'+corpus.counts.observations+' tagged observations · '+(corpus.counts.observations-corpus.missing_timestamp_observations)+' timestamped','small'));
 if(corpus.counts.retracted_tags) byId('corpusSummary').append(node('div',corpus.counts.retracted_tags+' historical tag retraction(s)','small muted'));
 byId('corpusSummary').append(node('div','Message length (bytes): '+(lengths.min===null?'no observations':lengths.min+' min · '+lengths.median+' median · '+lengths.p90+' p90 · '+lengths.max+' max'),'small muted'));

@@ -542,6 +542,14 @@ impl InvestigationServer {
     }
 
     #[tool(
+        description = "Bounded pending work from durable investigation state: capture run reservations, unfinished capture-step tags, experiments needing assessment or new-evidence review, and unstarted plans. For reserved runs, call capture_status to check the live process.",
+        annotations(read_only_hint = true)
+    )]
+    fn attention(&self) -> Result<CallToolResult, String> {
+        Self::json(query::attention(&self.load()?))
+    }
+
+    #[tool(
         description = "Page compact, validated investigation events after a revision; set through_revision from the first page to pin a snapshot.",
         annotations(read_only_hint = true)
     )]

@@ -2,6 +2,8 @@
 
 Status: partial implementation, October 2026. The Rust CLI now persists versioned investigation events, hypotheses, experiments, trials, captures, tags, prediction assessments, analysis records, and decisions. A bounded read-only trial review now suggests next checks; full automated planning and managed live capture remain proposed.
 
+`attention <dir>` (also available as MCP `attention` and in the HTML report) derives a compact work queue from those events. It flags reserved capture runs, capture steps awaiting capture or tag pages, experiments needing an assessment or new-evidence review, trials without captures, and experiments without trials. Each group is bounded and gives totals, omitted counts, and next tool hints. It does not assign experimental priority or infer a prediction verdict.
+
 ## Unit of work
 
 The durable unit is an **investigation**, not one capture or one analysis run. It has a question, a corpus of immutable observations, competing hypotheses, experiments, decisions, and open work. An agent or analyst can pause, resume, branch, and compare revisions.

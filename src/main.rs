@@ -153,6 +153,7 @@ fn print_help() {
     println!("  analyze-cluster <dir> <cluster-id> [trial-id|-] [respect|ignore]");
     println!("  decide <dir> <decision> [evidence-ids]");
     println!("  summary <dir>                      bounded corpus overview for agents");
+    println!("  attention <dir>                    bounded pending work for resuming agents");
     println!("  trials <dir> [offset] [limit<=100]  page trial metadata newest first");
     println!("  experiments <dir> [offset] [limit<=100]  page experiment plans");
     println!("  hypotheses <dir> [offset] [limit<=100]  page claims and evidence counts");
@@ -2360,6 +2361,11 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             require_len(args, 2)?;
             let state = workflow::load(root)?;
             print_json(&protocol_informatics_v2::query::corpus_summary(&state))
+        }
+        "attention" => {
+            require_len(args, 2)?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::query::attention(&state))
         }
         "trials" => {
             let (offset, limit) = page_arguments(args)?;

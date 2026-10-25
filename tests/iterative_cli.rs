@@ -1,4 +1,6 @@
-use protocol_informatics_v2::workflow::{self, CaptureRun, CaptureRunStatus, Event};
+use protocol_informatics_v2::workflow::{
+    self, Action, CaptureRun, CaptureRunStatus, CaptureStepScope, Event,
+};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,6 +40,174 @@ fn cli(args: &[&str]) -> Value {
 
 fn path(path: &Path) -> &str {
     path.to_str().unwrap()
+}
+
+#[test]
+fn attention_queue_tracks_capture_step_and_prediction_work() {
+    let root = workspace();
+    let root_text = path(&root);
+    cli(&["init", root_text, "Which messages change?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Vary input",
+        "-",
+        "Second byte changes",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    assert_eq!(
+        cli(&["attention", root_text])["unstarted_experiments"]["total"],
+        1
+    );
+    let trial = cli(&["trial", root_text, experiment_id, "discovery", "input A"]);
+    let trial_id = trial["event"]["trial"]["id"].as_str().unwrap();
+    let attention = cli(&["attention", root_text]);
+    assert_eq!(attention["unstarted_experiments"]["total"], 0);
+    assert_eq!(
+        attention["planned_trials"]["items"][0]["trial_id"],
+        trial_id
+    );
+    workflow::append(
+        &root,
+        Event::ActionMarked {
+            action: Action {
+                id: String::new(),
+                trial_id: trial_id.into(),
+                kind: "stimulus".into(),
+                detail: "send input A".into(),
+                timestamp_ns: Some(1700000000000000000),
+                key: Some("queue-step-1:action".into()),
+                capture_scope: Some(CaptureStepScope {
+                    phase: "capture_scope".into(),
+                    label: "input A".into(),
+                }),
+            },
+        },
+    )
+    .unwrap();
+    let attention = cli(&["attention", root_text]);
+    assert_eq!(
+        attention["capture_steps"]["items"][0]["status"],
+        "pending_capture"
+    );
+    assert_eq!(
+        attention["capture_steps"]["items"][0]["tool_hint"],
+        "capture_step_start"
+    );
+    let source = root.join("messages.hex");
+    fs::write(&source, "01 02\n01 03\n").unwrap();
+    let captured = cli(&[
+        "capture-command",
+        root_text,
+        trial_id,
+        "hex",
+        "queue-step-1:capture",
+        "5000",
+        "--",
+        "/bin/cat",
+        path(&source),
+    ]);
+    assert_eq!(captured["status"], "completed");
+    let attention = cli(&["attention", root_text]);
+    assert_eq!(
+        attention["capture_steps"]["items"][0]["status"],
+        "tags_pending"
+    );
+    assert_eq!(
+        attention["capture_steps"]["items"][0]["observation_count"],
+        2
+    );
+    assert_eq!(
+        attention["capture_steps"]["items"][0]["page_tagged_observations"],
+        0
+    );
+    assert_eq!(
+        attention["experiment_reviews"]["items"][0]["reason"],
+        "unassessed"
+    );
+    assert_eq!(
+        attention["experiment_reviews"]["items"][0]["new_observation_count"],
+        2
+    );
+    cli(&["capture-step-finish", root_text, "queue-step-1"]);
+    assert_eq!(cli(&["attention", root_text])["capture_steps"]["total"], 0);
+    let evidence_id = captured["observation_ids"][0].as_str().unwrap();
+    cli(&[
+        "experiment-assess",
+        root_text,
+        experiment_id,
+        "inconclusive",
+        "Need another input",
+        "queue-assessment-1",
+        evidence_id,
+    ]);
+    assert_eq!(
+        cli(&["attention", root_text])["experiment_reviews"]["total"],
+        0
+    );
+    let new_capture = cli(&["import", root_text, trial_id, "hex", path(&source)]);
+    let attention = cli(&["attention", root_text]);
+    assert_eq!(
+        attention["experiment_reviews"]["items"][0]["reason"],
+        "new_capture_evidence"
+    );
+    assert_eq!(
+        attention["experiment_reviews"]["items"][0]["first_new_capture_ids"],
+        json!([new_capture["event"]["capture"]["id"]])
+    );
+    assert_eq!(
+        attention["experiment_reviews"]["items"][0]["new_observation_count"],
+        2
+    );
+    workflow::append(
+        &root,
+        Event::CaptureRunReserved {
+            run: CaptureRun {
+                id: String::new(),
+                key: "queue-pending-run".into(),
+                trial_id: trial_id.into(),
+                format: "hex".into(),
+                command_fingerprint: "0".repeat(64),
+                timeout_ms: 5000,
+                status: CaptureRunStatus::Reserved,
+                capture_id: None,
+                error: None,
+                stop_requested: false,
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        cli(&["attention", root_text])["capture_runs"]["items"][0]["key"],
+        "queue-pending-run"
+    );
+    workflow::append(
+        &root,
+        Event::CaptureRunStopRequested {
+            key: "queue-pending-run".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        cli(&["attention", root_text])["capture_runs"]["items"][0]["stop_requested"],
+        true
+    );
+    workflow::append(
+        &root,
+        Event::CaptureRunFailed {
+            key: "queue-pending-run".into(),
+            error: "driver ended".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(cli(&["attention", root_text])["capture_runs"]["total"], 0);
+    let report = root.join("attention.html");
+    cli(&["report", root_text, path(&report)]);
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("Needs attention"));
+    assert!(html.contains("state.attention"));
+    assert_eq!(cli(&["verify", root_text])["observations"], 4);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
