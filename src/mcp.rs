@@ -226,6 +226,16 @@ struct FramePageInput {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct FrameRunPageInput {
+    trial_id: Option<String>,
+    model: Option<String>,
+    #[serde(default)]
+    offset: usize,
+    #[serde(default = "default_page_limit")]
+    limit: usize,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct FrameValueInput {
     frame_id: String,
     variable: String,
@@ -769,6 +779,23 @@ impl InvestigationServer {
             return Self::json(json!({"revision":state.revision,"model":"delimiter","run":run}));
         }
         Err(format!("unknown frame run key {}", input.key))
+    }
+
+    #[tool(
+        description = "Page committed frame runs across fixed-width, unsigned LEB128, and delimiter models; optionally filter by trial and model, newest first.",
+        annotations(read_only_hint = true)
+    )]
+    fn frame_runs(
+        &self,
+        Parameters(input): Parameters<FrameRunPageInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(query::list_frame_runs(
+            &self.load()?,
+            input.trial_id.as_deref(),
+            input.model.as_deref(),
+            input.offset,
+            input.limit,
+        )?)
     }
 
     #[tool(

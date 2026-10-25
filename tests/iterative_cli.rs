@@ -4005,6 +4005,36 @@ fn held_out_delimiter_inference_rejects_strict_crlf_on_lf_records() {
         cli(&["delimiter-status", root_text, "delimiter-discovery"])["run"]["id"],
         runs[0]["run"]["id"]
     );
+    let run_page = cli(&["frame-runs", root_text, "-", "-", "0", "1"]);
+    assert_eq!(run_page["total"], 2);
+    assert_eq!(run_page["next_offset"], 1);
+    assert_eq!(run_page["frame_runs"][0]["key"], "delimiter-validation");
+    let discovery_runs = cli(&[
+        "frame-runs",
+        root_text,
+        discovery_id,
+        "delimiter",
+        "0",
+        "10",
+    ]);
+    assert_eq!(discovery_runs["total"], 1);
+    assert_eq!(
+        discovery_runs["frame_runs"][0]["key"],
+        "delimiter-discovery"
+    );
+    assert_eq!(discovery_runs["frame_runs"][0]["record_count"], 3);
+    assert_eq!(
+        discovery_runs["frame_runs"][0]["config"]["delimiter_hex"],
+        "0d0a"
+    );
+    assert_eq!(
+        discovery_runs["frame_runs"][0]["first_frame_ids"][0],
+        runs[0]["run"]["records"][0]["id"]
+    );
+    assert_eq!(
+        cli(&["frame-runs", root_text, discovery_id, "fixed_width"])["total"],
+        0
+    );
     let frame_page = cli(&["frames", root_text, "delimiter-discovery", "0", "1"]);
     assert_eq!(frame_page["model"], "delimiter");
     assert_eq!(frame_page["total"], 3);

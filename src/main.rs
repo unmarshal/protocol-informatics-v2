@@ -105,6 +105,9 @@ fn print_help() {
         "  commit-framing <dir> <obs-id> <start> <field-offset> <width> <big|little> <total|payload> <alignment> <key>"
     );
     println!("  framing-status <dir> <key>         inspect a committed framing run");
+    println!(
+        "  frame-runs <dir> [trial-id|-] [fixed_width|unsigned_leb128|delimiter|-] [offset] [limit<=100]"
+    );
     println!("  frames <dir> <key> [offset] [limit<=100]");
     println!("  frame-span <dir> <frame-id> <start> <end>  read half-open frame byte span");
     println!(
@@ -1468,6 +1471,29 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 .find(|run| run.key == args[2])
                 .ok_or_else(|| format!("unknown delimiter key {}", args[2]))?;
             print_json(&json!({"revision": state.revision, "run": run}))
+        }
+        "frame-runs" => {
+            if args.len() < 2 || args.len() > 6 {
+                return Err("expected optional trial ID, model, offset and limit".into());
+            }
+            let trial_id = args
+                .get(2)
+                .filter(|value| value.as_str() != "-")
+                .map(String::as_str);
+            let model = args
+                .get(3)
+                .filter(|value| value.as_str() != "-")
+                .map(String::as_str);
+            let offset: usize = args.get(4).map_or(Ok(0), |value| {
+                value.parse().map_err(|_| "offset must be an integer")
+            })?;
+            let limit: usize = args.get(5).map_or(Ok(50), |value| {
+                value.parse().map_err(|_| "limit must be an integer")
+            })?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::query::list_frame_runs(
+                &state, trial_id, model, offset, limit,
+            )?)
         }
         "frames" => {
             if args.len() < 3 || args.len() > 5 {

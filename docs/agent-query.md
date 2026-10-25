@@ -2,6 +2,8 @@
 
 Start with `summary <dir>`, then use `experiments`, `trials`, `hypotheses`, and `decisions` with `[offset] [limit]` to page the investigation records. Use `search-observations <dir> <json-filter>` to narrow the corpus. Read exact bytes with `span <dir> <observation-id> <start> <end>`. Each record page and search returns `revision`, `total`, `offset`, `next_offset`, and at most 100 bounded previews. Results follow capture import order, so a new import can change page offsets; pin the revision while paging and restart if it changes.
 
+Committed record interpretations have their own index: `frame-runs <dir> [trial-id|-] [fixed_width|unsigned_leb128|delimiter|-] [offset] [limit]`. It pages runs newest first across all three models, with the retry key, parent observation and capture, record count, first three frame IDs, and model configuration. Use the returned key with `frames <dir> <key> [offset] [limit]`, then `frame-span` for exact bytes. The MCP equivalents are `frame_runs`, `frames`, and `frame_span`. Pin `revision` while paging this index too.
+
 The filter is one JSON object. All supplied fields are combined with AND. Unknown field names and unknown experiment, trial, capture, or framing IDs are errors. An empty object returns the first 50 observations.
 
 | Field | Meaning |

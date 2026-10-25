@@ -222,6 +222,166 @@ fn valid_page_limit(limit: usize) -> Result<(), String> {
     }
 }
 
+#[derive(Debug, Serialize)]
+pub struct FrameRunPreview {
+    pub id: String,
+    pub key: String,
+    pub model: &'static str,
+    pub observation_id: String,
+    pub capture_id: String,
+    pub trial_id: String,
+    pub record_count: usize,
+    pub first_frame_ids: Vec<String>,
+    pub frame_ids_omitted: usize,
+    pub config: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FrameRunPage {
+    pub schema_version: u32,
+    pub revision: u64,
+    pub total: usize,
+    pub offset: usize,
+    pub next_offset: Option<usize>,
+    pub order: &'static str,
+    pub frame_runs: Vec<FrameRunPreview>,
+}
+
+pub fn list_frame_runs(
+    state: &State,
+    trial_id: Option<&str>,
+    model: Option<&str>,
+    offset: usize,
+    limit: usize,
+) -> Result<FrameRunPage, String> {
+    valid_page_limit(limit)?;
+    if let Some(id) = trial_id
+        && !state.trials.iter().any(|trial| trial.id == id)
+    {
+        return Err(format!("unknown trial {id}"));
+    }
+    if let Some(name) = model
+        && !["fixed_width", "unsigned_leb128", "delimiter"].contains(&name)
+    {
+        return Err(format!("unknown frame model {name}"));
+    }
+    let captures: BTreeMap<_, _> = state
+        .captures
+        .iter()
+        .map(|capture| (capture.id.as_str(), capture))
+        .collect();
+    let observations: BTreeMap<_, _> = state
+        .observations
+        .iter()
+        .map(|observation| (observation.id.as_str(), observation))
+        .collect();
+    let mut runs = Vec::new();
+    let mut add = |id: &str,
+                   key: &str,
+                   observation_id: &str,
+                   run_model: &'static str,
+                   config: serde_json::Value,
+                   record_count: usize,
+                   first_frame_ids: Vec<String>|
+     -> Result<(), String> {
+        if model.is_some_and(|wanted| wanted != run_model) {
+            return Ok(());
+        }
+        let observation = observations
+            .get(observation_id)
+            .ok_or_else(|| format!("frame run {id} has unknown observation {observation_id}"))?;
+        let capture = captures
+            .get(observation.capture_id.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "frame run {id} has unknown capture {}",
+                    observation.capture_id
+                )
+            })?;
+        if trial_id.is_some_and(|wanted| wanted != capture.trial_id) {
+            return Ok(());
+        }
+        runs.push(FrameRunPreview {
+            id: id.into(),
+            key: key.into(),
+            model: run_model,
+            observation_id: observation_id.into(),
+            capture_id: capture.id.clone(),
+            trial_id: capture.trial_id.clone(),
+            record_count,
+            frame_ids_omitted: record_count.saturating_sub(first_frame_ids.len()),
+            first_frame_ids,
+            config,
+        });
+        Ok(())
+    };
+    for run in &state.framing_runs {
+        add(
+            &run.id,
+            &run.key,
+            &run.observation_id,
+            "fixed_width",
+            serde_json::to_value(run.config).map_err(|error| error.to_string())?,
+            run.records.len(),
+            run.records
+                .iter()
+                .take(3)
+                .map(|record| record.id.clone())
+                .collect(),
+        )?;
+    }
+    for run in &state.varint_runs {
+        add(
+            &run.id,
+            &run.key,
+            &run.observation_id,
+            "unsigned_leb128",
+            serde_json::to_value(run.config).map_err(|error| error.to_string())?,
+            run.records.len(),
+            run.records
+                .iter()
+                .take(3)
+                .map(|record| record.id.clone())
+                .collect(),
+        )?;
+    }
+    for run in &state.delimiter_runs {
+        add(
+            &run.id,
+            &run.key,
+            &run.observation_id,
+            "delimiter",
+            serde_json::to_value(&run.config).map_err(|error| error.to_string())?,
+            run.records.len(),
+            run.records
+                .iter()
+                .take(3)
+                .map(|record| record.id.clone())
+                .collect(),
+        )?;
+    }
+    runs.sort_by_key(|run| {
+        std::cmp::Reverse(
+            run.id
+                .rsplit('-')
+                .next()
+                .unwrap_or_default()
+                .parse::<u64>()
+                .unwrap_or_default(),
+        )
+    });
+    let total = runs.len();
+    Ok(FrameRunPage {
+        schema_version: state.schema_version,
+        revision: state.revision,
+        total,
+        offset,
+        next_offset: (offset.saturating_add(limit) < total).then_some(offset + limit),
+        order: "newest_first",
+        frame_runs: runs.into_iter().skip(offset).take(limit).collect(),
+    })
+}
+
 fn preview_text(text: &str) -> (String, bool) {
     (text.chars().take(200).collect(), text.chars().count() > 200)
 }

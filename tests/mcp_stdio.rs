@@ -127,7 +127,8 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 43);
+    assert_eq!(names.len(), 44);
+    assert!(names.contains(&"frame_runs"));
     assert!(names.contains(&"summary"));
     assert!(names.contains(&"capture_step"));
     assert!(names.contains(&"validate_exchanges"));
@@ -412,6 +413,13 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
         "commit_framing",
         framing_config(&record_observations[3], "mcp-frames-validation"),
     );
+    let run_page = client.tool(
+        "frame_runs",
+        json!({"trial_id":discovery_id,"model":"fixed_width"}),
+    );
+    assert_eq!(run_page["total"], 1);
+    assert_eq!(run_page["frame_runs"][0]["key"], "mcp-frames-discovery");
+    assert_eq!(run_page["frame_runs"][0]["record_count"], 3);
     let status = client.tool("frame_run_status", json!({"key":"mcp-frames-discovery"}));
     assert_eq!(status["model"], "fixed_width");
     let page = client.tool("frames", json!({"key":"mcp-frames-discovery","limit":1}));
@@ -556,6 +564,15 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
             "mcp-delimiter-validation",
         ),
     );
+    let delimiter_runs = client.tool(
+        "frame_runs",
+        json!({"trial_id":delimiter_discovery_id,"model":"delimiter"}),
+    );
+    assert_eq!(delimiter_runs["total"], 1);
+    assert_eq!(
+        delimiter_runs["frame_runs"][0]["key"],
+        "mcp-delimiter-discovery"
+    );
     assert_eq!(
         client.tool("frame_run_status", json!({"key":"mcp-delimiter-discovery"}))["model"],
         "delimiter"
@@ -626,6 +643,9 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
     );
     let varint_status = client.tool("frame_run_status", json!({"key":"mcp-varint-frames"}));
     assert_eq!(varint_status["model"], "unsigned_leb128");
+    let varint_runs = client.tool("frame_runs", json!({"model":"unsigned_leb128","limit":1}));
+    assert_eq!(varint_runs["total"], 1);
+    assert_eq!(varint_runs["frame_runs"][0]["key"], "mcp-varint-frames");
     let varint_page = client.tool("frames", json!({"key":"mcp-varint-frames","limit":1}));
     assert_eq!(varint_page["total"], 3);
     let verification = client.tool("verify", json!({}));

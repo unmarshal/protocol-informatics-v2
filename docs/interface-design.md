@@ -1,6 +1,6 @@
 # Agent and human interface design
 
-Status: partial implementation, October 2026. A JSON CLI, a stdio MCP server, and a read-only HTML report share the event-sourced investigation model. The MCP server exposes the first 43 navigation, workflow, and inference tools; the deeper viewer remains planned.
+Status: partial implementation, October 2026. A JSON CLI, a stdio MCP server, and a read-only HTML report share the event-sourced investigation model. The MCP server exposes 44 navigation, workflow, and inference tools; the deeper viewer remains planned.
 
 ## Principle
 
