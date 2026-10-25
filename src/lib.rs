@@ -18,6 +18,7 @@ mod profile;
 pub mod query;
 pub mod reassembly;
 pub mod report;
+pub mod review;
 pub mod tlv;
 pub mod varint;
 pub mod workflow;

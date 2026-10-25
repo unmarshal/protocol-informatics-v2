@@ -3,7 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use protocol_informatics_v2::{
-    checksum, clustering, delimiter, exchanges, framing, inference, query, tlv, varint, workflow,
+    checksum, clustering, delimiter, exchanges, framing, inference, query, review, tlv, varint,
+    workflow,
 };
 use rmcp::{
     ServerHandler, ServiceExt,
@@ -563,6 +564,21 @@ impl InvestigationServer {
         Parameters(input): Parameters<TrialPairInput>,
     ) -> Result<CallToolResult, String> {
         Self::json(delimiter::infer_delimiter(
+            &self.load()?,
+            &input.discovery_trial_id,
+            &input.validation_trial_id,
+        )?)
+    }
+
+    #[tool(
+        description = "Review one discovery/validation trial pair across structural models and held-out grouping; return bounded counterexamples and suggested next tool actions without assigning a probability.",
+        annotations(read_only_hint = true)
+    )]
+    fn review_trials(
+        &self,
+        Parameters(input): Parameters<TrialPairInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(review::review_trials(
             &self.load()?,
             &input.discovery_trial_id,
             &input.validation_trial_id,

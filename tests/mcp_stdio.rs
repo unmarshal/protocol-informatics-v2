@@ -127,7 +127,7 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 42);
+    assert_eq!(names.len(), 43);
     assert!(names.contains(&"summary"));
     assert!(names.contains(&"capture_step"));
     assert!(names.contains(&"validate_exchanges"));
@@ -140,6 +140,7 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
     assert!(names.contains(&"commit_delimiter"));
     assert!(names.contains(&"frame_span"));
     assert!(names.contains(&"infer_frame_value"));
+    assert!(names.contains(&"review_trials"));
     assert!(names.contains(&"experiments"));
     assert!(names.contains(&"hypotheses"));
     assert!(names.contains(&"decisions"));
@@ -511,6 +512,13 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
         "infer_delimiter",
         json!({"discovery_trial_id":delimiter_discovery_id,"validation_trial_id":delimiter_validation_id}),
     );
+    let review = client.tool(
+        "review_trials",
+        json!({"discovery_trial_id":delimiter_discovery_id,"validation_trial_id":delimiter_validation_id}),
+    );
+    assert_eq!(review["validation_observation_count"], 2);
+    assert_eq!(review["methods"].as_array().unwrap().len(), 4);
+    assert_eq!(review["prediction_assessed"], false);
     assert!(
         delimiter_result["candidates"]
             .as_array()

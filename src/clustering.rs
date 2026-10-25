@@ -13,7 +13,7 @@ const MAX_CLUSTERS: usize = 32;
 const MAX_DEPTH: usize = 4;
 const MAX_HEADER_BYTES: usize = 16;
 const MAX_DISTANCE_BYTES: usize = 256;
-const MIN_CHILD_SIZE: usize = 3;
+pub(crate) const MIN_CHILD_SIZE: usize = 3;
 const MIN_EVIDENCE_SEPARATION: usize = 4;
 
 #[derive(Debug, Clone, Serialize)]

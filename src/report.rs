@@ -129,6 +129,7 @@ pub fn render(state: &State) -> String {
     let mut varint_previews = Vec::new();
     let mut delimiter_inferences = Vec::new();
     let mut delimiter_previews = Vec::new();
+    let mut trial_reviews = Vec::new();
     for experiment in state.experiments.iter().take(8) {
         let discovery = state
             .trials
@@ -141,6 +142,9 @@ pub fn render(state: &State) -> String {
         let (Some(discovery), Some(validation)) = (discovery, validation) else {
             continue;
         };
+        if let Ok(review) = crate::review::review_trials(state, &discovery.id, &validation.id) {
+            trial_reviews.push(review);
+        }
         if let Ok(inference) =
             crate::framing::infer_length_prefix(state, &discovery.id, &validation.id)
         {
@@ -239,6 +243,7 @@ pub fn render(state: &State) -> String {
     view["varint_previews"] = serde_json::Value::Array(varint_previews);
     view["delimiter_inferences"] = serde_json::Value::Array(delimiter_inferences);
     view["delimiter_previews"] = serde_json::Value::Array(delimiter_previews);
+    view["trial_reviews"] = serde_json::to_value(trial_reviews).expect("reviews are serializable");
     let data = serde_json::to_string(&view)
         .expect("state is serializable")
         .replace('<', "\\u003c")
@@ -295,6 +300,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
     <section class="panel"><h2>Corpus overview</h2><div id="corpusSummary"></div></section>
     <section class="panel"><h2>Hypotheses</h2><div id="hypotheses"></div></section>
     <section class="panel"><h2>Experiments and trials</h2><div id="experiments"></div></section>
+    <section class="panel"><h2>Trial evidence review</h2><div id="trialReviews"></div></section>
     <section class="panel"><h2>Capture command runs</h2><div id="captureRuns"></div></section>
     <section class="panel"><h2>Tagged action windows</h2><div id="tagWindows"></div></section>
     <section class="panel"><h2>Capture scope tags</h2><div id="captureTags"></div></section>
@@ -458,6 +464,17 @@ for(const experiment of state.experiments) {
   }
   byId('experiments').append(row);
 }
+for(const review of state.trial_reviews||[]) {
+  const row=node('div','', 'row');
+  row.append(node('strong',review.experiment_id+' · '+review.question),node('div',review.discovery_observation_count+' discovery observations · '+review.validation_observation_count+' held-out observations','small muted'));
+  row.append(node('div','Prediction: '+review.prediction+' · analyst assessment pending','small muted'));
+  for(const method of review.methods) row.append(node('div',method.method+': '+(method.status==='evaluated'?method.candidate_count+' candidate(s), best reported held-out '+(method.best_reported_validation_matches===null?'none':method.best_reported_validation_matches+'/'+method.validation_total):'unavailable — '+method.error),'small'));
+  if(review.grouping.status==='evaluated') row.append(node('div','Grouping: '+review.grouping.assigned_count+' assigned · '+review.grouping.ambiguous_count+' ambiguous · '+review.grouping.unassigned_count+' unassigned','small'));
+  else if(review.grouping.error) row.append(node('div','Grouping: '+review.grouping.error,'small muted'));
+  for(const action of review.next_actions) row.append(node('div','Next: '+action.kind+' via '+action.tool_hint+' — '+action.reason+(action.observation_ids.length?' · '+action.observation_ids.join(', '):''),'small muted'));
+  byId('trialReviews').append(row);
+}
+if(!(state.trial_reviews||[]).length) byId('trialReviews').append(node('div','Create discovery and validation trials to review model evidence and next actions.','small muted'));
 for(const run of state.capture_runs) {
   const row=node('div','', 'row');
   row.append(node('strong',run.id+' · '+run.key),node('div',run.status+(run.stop_requested?' · stop requested':'')+' · '+run.trial_id+' · '+run.format+' · limit '+run.timeout_ms+' ms','small muted'));

@@ -3918,12 +3918,51 @@ fn held_out_delimiter_inference_rejects_strict_crlf_on_lf_records() {
         crlf["validation_counterexamples"][0]["observation_id"],
         observation_ids[3]
     );
+    let review = cli(&["review-trials", root_text, discovery_id, validation_id]);
+    assert_eq!(review["prediction_assessed"], false);
+    assert_eq!(review["discovery_capture_count"], 2);
+    assert_eq!(review["validation_observation_count"], 2);
+    let delimiter_method = review["methods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|method| method["method"] == "delimiter")
+        .unwrap();
+    assert_eq!(delimiter_method["candidate_count"], 3);
+    assert_eq!(delimiter_method["fully_validated_reported_count"], 1);
+    assert_eq!(delimiter_method["best_reported_validation_matches"], 2);
+    assert_eq!(
+        review["grouping"]["status"],
+        "insufficient_discovery_members"
+    );
+    assert!(
+        review["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| { action["kind"] == "capture_grouping_support" })
+    );
+    assert!(
+        review["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| {
+                action["kind"] == "inspect_model_counterexamples"
+                    && action["observation_ids"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&Value::String(observation_ids[3].clone()))
+            })
+    );
     let report = root.join("delimiter-report.html");
     cli(&["report", root_text, path(&report)]);
     let html = fs::read_to_string(report).unwrap();
     assert!(html.contains("Candidate delimiter records"));
     assert!(!html.contains("\"delimiter_inferences\":[]"));
     assert!(html.contains("delimiterCandidates"));
+    assert!(html.contains("Trial evidence review"));
+    assert!(html.contains("\"trial_reviews\":[{"));
     let mut runs = Vec::new();
     for (observation_id, key) in [
         (&observation_ids[0], "delimiter-discovery"),
@@ -4153,5 +4192,61 @@ fn committed_delimiter_spans_trace_a_terminator_split_across_tcp_packets() {
         assert_eq!(&raw[offset..offset + end - start], &b"A\r\n"[start..end]);
     }
     assert_eq!(cli(&["verify", root_text])["artifacts_verified"], 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn trial_review_identifies_missing_independent_evidence() {
+    let root = workspace();
+    let root_text = path(&root);
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    cli(&["init", root_text, "What evidence is missing?"]);
+    let experiment = cli(&[
+        "experiment",
+        root_text,
+        "Check record boundaries",
+        "-",
+        "A terminator survives a changed capture",
+    ]);
+    let experiment_id = experiment["event"]["experiment"]["id"].as_str().unwrap();
+    let discovery = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "discovery",
+        "first message",
+    ]);
+    let validation = cli(&[
+        "trial",
+        root_text,
+        experiment_id,
+        "validation",
+        "held-out message",
+    ]);
+    let discovery_id = discovery["event"]["trial"]["id"].as_str().unwrap();
+    let validation_id = validation["event"]["trial"]["id"].as_str().unwrap();
+    cli(&[
+        "import",
+        root_text,
+        discovery_id,
+        "binary",
+        path(&examples.join("delimiter_discovery_a.bin")),
+    ]);
+    let revision_before = cli(&["resume", root_text])["revision"].clone();
+    let review = cli(&["review-trials", root_text, discovery_id, validation_id]);
+    assert_eq!(cli(&["resume", root_text])["revision"], revision_before);
+    assert_eq!(review["discovery_observation_count"], 1);
+    assert_eq!(review["validation_observation_count"], 0);
+    assert_eq!(review["prediction_assessed"], false);
+    assert_eq!(review["methods"][0]["status"], "unavailable");
+    let actions: Vec<_> = review["next_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|action| action["kind"].as_str().unwrap())
+        .collect();
+    assert!(actions.contains(&"capture_distinct_discovery"));
+    assert!(actions.contains(&"capture_held_out_validation"));
+    assert_eq!(cli(&["verify", root_text])["observations"], 1);
     fs::remove_dir_all(root).unwrap();
 }

@@ -250,6 +250,7 @@ cargo run -- import /tmp/pi-delimiter trial-000003 binary examples/delimiter_dis
 cargo run -- import /tmp/pi-delimiter trial-000004 binary examples/delimiter_validation_a.bin
 cargo run -- import /tmp/pi-delimiter trial-000004 binary examples/delimiter_validation_b.bin
 cargo run -- infer-delimiter /tmp/pi-delimiter trial-000003 trial-000004
+cargo run -- review-trials /tmp/pi-delimiter trial-000003 trial-000004
 cargo run -- probe-delimiter /tmp/pi-delimiter obs-000005-0000 0 0d0a
 cargo run -- commit-delimiter /tmp/pi-delimiter obs-000005-0000 0 0d0a discovery-crlf-v1
 cargo run -- delimiter-status /tmp/pi-delimiter discovery-crlf-v1
@@ -258,6 +259,8 @@ cargo run -- report /tmp/pi-delimiter /tmp/pi-delimiter-report.html
 ```
 
 The [framing method](docs/framing-method.md) describes the evidence rule, counterexamples, and model families still to add.
+
+The [trial review](docs/trial-review.md) combines bounded structural and grouping checks for one discovery/validation pair. It names counterexample observation IDs and suggests the next capture or byte inspection while leaving prediction assessment to the agent or analyst.
 
 The WAV fixture generator makes four tiny PCM files with the same sample data and different sample rates. Python's `wave` reader and the system `file` command independently recognize the outputs.
 

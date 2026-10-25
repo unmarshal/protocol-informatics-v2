@@ -113,6 +113,9 @@ fn print_help() {
     println!("  analyze-investigation <dir> [trial-id]");
     println!("  cluster <dir> [trial-id|-] [respect|ignore]");
     println!("  validate-clusters <dir> <discovery-trial> <validation-trial> [respect|ignore]");
+    println!(
+        "  review-trials <dir> <discovery-trial> <validation-trial>  bounded evidence and next actions"
+    );
     println!("  pair-exchanges <dir> <capture-id> [max-lag-ms] [offset] [limit<=100]");
     println!("  validate-exchanges <dir> <discovery-capture> <validation-capture> [max-lag-ms]");
     println!("  analyze-cluster <dir> <cluster-id> [trial-id|-] [respect|ignore]");
@@ -1372,6 +1375,13 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             require_len(args, 4)?;
             let state = workflow::load(root)?;
             print_json(&protocol_informatics_v2::delimiter::infer_delimiter(
+                &state, &args[2], &args[3],
+            )?)
+        }
+        "review-trials" => {
+            require_len(args, 4)?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::review::review_trials(
                 &state, &args[2], &args[3],
             )?)
         }

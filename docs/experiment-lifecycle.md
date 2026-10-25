@@ -1,6 +1,6 @@
 # Experiment and capture lifecycle
 
-Status: partial implementation, October 2026. Experiment, trial, keyed action marker, capture import, observation tag, hypothesis evaluation, repeatable capture steps, and bounded keyed capture commands with background start and explicit stop exist. A dedicated network capture adapter remains a proposal.
+Status: partial implementation, October 2026. Experiment, trial, keyed action marker, capture import, observation tag, hypothesis evaluation, read-only trial review, repeatable capture steps, and bounded keyed capture commands with background start and explicit stop exist. A dedicated network capture adapter remains a proposal.
 
 ## Model
 
@@ -42,7 +42,8 @@ The capture adapter and action driver are separate. A first network adapter can 
 | `import_capture` | artifact ID for an existing trace or file |
 | `tag_observations` | versioned links to trial phase or action event |
 | `compare_trials` | changed factors, matched observations, predicted and actual outcomes |
-| `evaluate_experiment` | evidence for each hypothesis and unresolved observations |
+| `review_trials` | implemented read-only evidence summary, counterexample IDs, and next tool actions for one controlled pair |
+| `evaluate_experiment` | planned prediction assessment and evidence for each hypothesis |
 | `record_decision` | selected next action and a link to the new investigation revision |
 
 Start and stop calls accept idempotency keys so retries do not create duplicate captures. Long-running captures return handles and status updates. Failed or interrupted captures remain inspectable with their partial artifact and failure reason.
