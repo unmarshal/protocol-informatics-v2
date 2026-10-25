@@ -1658,6 +1658,205 @@ pub fn changes_since(root: &Path, revision: u64, limit: usize) -> Result<Vec<Eve
     Ok(changes)
 }
 
+#[derive(Debug, Serialize)]
+pub struct ActivityPreview {
+    pub revision: u64,
+    pub timestamp_ms: u64,
+    pub kind: &'static str,
+    pub subject_id: Option<String>,
+    pub details: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ActivityPage {
+    pub schema_version: u32,
+    pub current_revision: u64,
+    pub through_revision: u64,
+    pub after_revision: u64,
+    pub next_after_revision: Option<u64>,
+    pub events: Vec<ActivityPreview>,
+}
+
+fn activity_text_preview(value: &str) -> (String, bool) {
+    let mut chars = value.chars();
+    let preview = chars.by_ref().take(80).collect();
+    (preview, chars.next().is_some())
+}
+
+fn activity_preview(record: &EventRecord) -> ActivityPreview {
+    use serde_json::json;
+    let (kind, subject_id, details) = match &record.event {
+        Event::Created { .. } => ("created", None, json!({})),
+        Event::HypothesisAdded { hypothesis } => {
+            ("hypothesis_added", Some(hypothesis.id.clone()), json!({}))
+        }
+        Event::HypothesisEvaluated {
+            hypothesis_id,
+            evidence,
+            counterexamples,
+            ..
+        } => (
+            "hypothesis_evaluated",
+            Some(hypothesis_id.clone()),
+            json!({"evidence_count":evidence.len(),"counterexample_count":counterexamples.len(),
+                "first_evidence_ids":evidence.iter().take(3).collect::<Vec<_>>(),
+                "first_counterexample_ids":counterexamples.iter().take(3).collect::<Vec<_>>() }),
+        ),
+        Event::ExperimentCreated { experiment } => (
+            "experiment_created",
+            Some(experiment.id.clone()),
+            json!({"hypothesis_count":experiment.hypothesis_ids.len()}),
+        ),
+        Event::TrialCreated { trial } => (
+            "trial_created",
+            Some(trial.id.clone()),
+            json!({"experiment_id":trial.experiment_id,
+                "role_preview":activity_text_preview(&trial.role).0,
+                "role_truncated":activity_text_preview(&trial.role).1}),
+        ),
+        Event::CaptureImported {
+            capture,
+            observations,
+        } => (
+            "capture_imported",
+            Some(capture.id.clone()),
+            json!({"trial_id":capture.trial_id,"format":capture.format,
+                "observation_count":observations.len(),
+                "first_observation_ids":observations.iter().take(3).map(|item| &item.id).collect::<Vec<_>>(),
+                "observation_ids_omitted":observations.len().saturating_sub(3) }),
+        ),
+        Event::FramingCommitted { run } => (
+            "framing_committed",
+            Some(run.id.clone()),
+            json!({"observation_id":run.observation_id,"record_count":run.records.len()}),
+        ),
+        Event::VarintCommitted { run } => (
+            "varint_committed",
+            Some(run.id.clone()),
+            json!({"observation_id":run.observation_id,"record_count":run.records.len()}),
+        ),
+        Event::DelimiterCommitted { run } => (
+            "delimiter_committed",
+            Some(run.id.clone()),
+            json!({"observation_id":run.observation_id,"record_count":run.records.len()}),
+        ),
+        Event::CaptureRunReserved { run } => (
+            "capture_run_reserved",
+            Some(run.id.clone()),
+            json!({"trial_id":run.trial_id,"key":run.key,"format":run.format}),
+        ),
+        Event::CaptureRunFailed { key, .. } => ("capture_run_failed", None, json!({"key":key})),
+        Event::CaptureRunStopRequested { key } => {
+            ("capture_run_stop_requested", None, json!({"key":key}))
+        }
+        Event::ActionMarked { action } => (
+            "action_marked",
+            Some(action.id.clone()),
+            json!({"trial_id":action.trial_id,
+                "kind_preview":activity_text_preview(&action.kind).0,
+                "kind_truncated":activity_text_preview(&action.kind).1}),
+        ),
+        Event::ObservationTagged { tag } => (
+            "observation_tagged",
+            Some(tag.id.clone()),
+            json!({"observation_id":tag.observation_id,"action_id":tag.action_id}),
+        ),
+        Event::ObservationWindowTagged { window, .. } => (
+            "observation_window_tagged",
+            Some(window.id.clone()),
+            json!({"action_id":window.action_id,"observation_count":window.observation_ids.len(),
+                "first_observation_ids":window.observation_ids.iter().take(3).collect::<Vec<_>>(),
+                "observation_ids_omitted":window.observation_ids.len().saturating_sub(3) }),
+        ),
+        Event::CaptureTagged { batch, .. } => (
+            "capture_tagged",
+            Some(batch.id.clone()),
+            json!({"capture_id":batch.capture_id,"action_id":batch.action_id,
+                "start_index":batch.start_index,"observation_count":batch.observation_ids.len(),
+                "first_observation_ids":batch.observation_ids.iter().take(3).collect::<Vec<_>>(),
+                "observation_ids_omitted":batch.observation_ids.len().saturating_sub(3) }),
+        ),
+        Event::ValueAnnotated { known_value } => (
+            "value_annotated",
+            Some(known_value.id.clone()),
+            json!({"observation_id":known_value.observation_id,
+                "variable_preview":activity_text_preview(&known_value.variable).0,
+                "variable_truncated":activity_text_preview(&known_value.variable).1}),
+        ),
+        Event::FrameValueAnnotated { known_value } => (
+            "frame_value_annotated",
+            Some(known_value.id.clone()),
+            json!({"frame_id":known_value.frame_id,
+                "variable_preview":activity_text_preview(&known_value.variable).0,
+                "variable_truncated":activity_text_preview(&known_value.variable).1}),
+        ),
+        Event::AnalysisRecorded { analysis } => (
+            "analysis_recorded",
+            Some(analysis.id.clone()),
+            json!({"kind":if analysis.frame_ids.is_empty(){"observation"}else{"frame"},
+                "entity_count":analysis.observation_ids.len()+analysis.frame_ids.len(),
+                "aligned_width":analysis.aligned_width}),
+        ),
+        Event::DecisionRecorded { decision } => (
+            "decision_recorded",
+            Some(decision.id.clone()),
+            json!({"evidence_count":decision.evidence_ids.len(),
+                "first_evidence_ids":decision.evidence_ids.iter().take(3).collect::<Vec<_>>() }),
+        ),
+    };
+    ActivityPreview {
+        revision: record.revision,
+        timestamp_ms: record.timestamp_ms,
+        kind,
+        subject_id,
+        details,
+    }
+}
+
+/// Compact, validated event pages for agents resuming after a capture.
+pub fn activity_since(
+    root: &Path,
+    after_revision: u64,
+    limit: usize,
+    through_revision: Option<u64>,
+) -> Result<ActivityPage, String> {
+    if limit == 0 || limit > 100 {
+        return Err("activity limit must be between 1 and 100".into());
+    }
+    let mut file = fs::File::open(event_path(root)).map_err(|error| error.to_string())?;
+    file.lock_shared().map_err(|error| error.to_string())?;
+    require_newline_terminated(&mut file)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| error.to_string())?;
+    let mut state = State::empty();
+    let mut events = Vec::new();
+    for (index, line) in BufReader::new(&file).lines().enumerate() {
+        let line = line.map_err(|error| error.to_string())?;
+        let record: EventRecord = serde_json::from_str(&line)
+            .map_err(|error| format!("event line {}: {error}", index + 1))?;
+        state.apply(&record)?;
+        if record.revision > after_revision
+            && through_revision.is_none_or(|through| record.revision <= through)
+            && events.len() < limit
+        {
+            events.push(activity_preview(&record));
+        }
+    }
+    let through_revision = through_revision.unwrap_or(state.revision);
+    if after_revision > through_revision || through_revision > state.revision {
+        return Err("activity revision range is outside the investigation".into());
+    }
+    let last_revision = events.last().map_or(after_revision, |event| event.revision);
+    Ok(ActivityPage {
+        schema_version: SCHEMA_VERSION,
+        current_revision: state.revision,
+        through_revision,
+        after_revision,
+        next_after_revision: (last_revision < through_revision).then_some(last_revision),
+        events,
+    })
+}
+
 pub fn append(root: &Path, mut event: Event) -> Result<EventRecord, String> {
     let mut file = OpenOptions::new()
         .read(true)

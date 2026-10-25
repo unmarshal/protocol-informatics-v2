@@ -127,7 +127,8 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 50);
+    assert_eq!(names.len(), 51);
+    assert!(names.contains(&"activity"));
     assert!(names.contains(&"frame_runs"));
     assert!(names.contains(&"cluster_frames"));
     assert!(names.contains(&"align_frame_cluster"));
@@ -312,6 +313,15 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
     assert_eq!(large["observation_ids_omitted"], 1004);
     assert_eq!(large["tag_batches"].as_array().unwrap().len(), 2);
     assert_eq!(large["tag_batches"][0]["observation_count"], 1000);
+    let activity = client.tool(
+        "activity",
+        json!({"after_revision":stress["revision"],"limit":3,"through_revision":large["revision"]}),
+    );
+    assert_eq!(activity["events"][0]["kind"], "action_marked");
+    assert_eq!(activity["events"][1]["kind"], "capture_run_reserved");
+    assert_eq!(activity["events"][2]["kind"], "capture_imported");
+    assert_eq!(activity["events"][2]["details"]["observation_count"], 1024);
+    assert!(activity.to_string().len() < 1800);
     let large_search = client.tool(
         "search_observations",
         json!({"capture_id":large["capture"]["id"],"limit":1}),

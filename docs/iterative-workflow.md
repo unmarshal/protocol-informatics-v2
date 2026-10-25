@@ -20,7 +20,7 @@ The cycle is a guide, not a forced wizard. A new capture may arrive at any time,
 
 An investigation revision records the current evidence set, analysis versions, hypothesis scores, unresolved contradictions, open questions, and queued next actions. A decision records the actor, chosen action, alternatives considered, evidence references, expected information gain or simpler rationale, and the revision it produced. The event log is append-only; a materialized view can make queries fast.
 
-This gives an agent four essential questions after resuming:
+The compact `activity` feed lets an agent page changes after its last revision without loading capture bytes. Its `through_revision` pins a snapshot during pagination, and its IDs lead back to the detailed record pages. This gives an agent four essential questions after resuming:
 
 1. What changed since my last checkpoint?
 2. Which hypotheses are still plausible, and what evidence contradicts them?

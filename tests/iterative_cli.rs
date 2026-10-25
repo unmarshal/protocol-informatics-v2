@@ -3616,6 +3616,37 @@ fn capture_step_pages_large_capture_tags_and_resumes_after_partial_tagging() {
     assert!(first["tag_batch"].is_null());
     assert_eq!(first["observation_ids"].as_array().unwrap().len(), 1024);
     assert_eq!(first["tag_batches"].as_array().unwrap().len(), 2);
+    let activity_first = cli(&["activity", root_text, "4", "1", "8"]);
+    assert_eq!(activity_first["current_revision"], 8);
+    assert_eq!(activity_first["through_revision"], 8);
+    assert_eq!(activity_first["events"][0]["kind"], "capture_run_reserved");
+    assert_eq!(activity_first["next_after_revision"], 5);
+    let activity_capture = cli(&["activity", root_text, "5", "1", "8"]);
+    assert_eq!(activity_capture["events"][0]["kind"], "capture_imported");
+    assert_eq!(
+        activity_capture["events"][0]["subject_id"],
+        first["capture"]["id"]
+    );
+    assert_eq!(
+        activity_capture["events"][0]["details"]["observation_count"],
+        1024
+    );
+    assert_eq!(
+        activity_capture["events"][0]["details"]["first_observation_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(
+        activity_capture["events"][0]["details"]["observation_ids_omitted"],
+        1021
+    );
+    assert!(activity_capture.to_string().len() < 1000);
+    let pinned_capture = cli(&["activity", root_text, "5", "1", "6"]);
+    assert_eq!(pinned_capture["current_revision"], 8);
+    assert_eq!(pinned_capture["through_revision"], 6);
+    assert_eq!(pinned_capture["next_after_revision"], Value::Null);
     assert_eq!(
         cli(&["span", root_text, "obs-000006-0510", "6", "8"])["bytes_hex"],
         "00ff"

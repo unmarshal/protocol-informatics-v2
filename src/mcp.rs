@@ -32,6 +32,19 @@ struct PageInput {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct ActivityInput {
+    #[serde(default)]
+    after_revision: u64,
+    #[serde(default = "default_activity_limit")]
+    limit: usize,
+    through_revision: Option<u64>,
+}
+
+fn default_activity_limit() -> usize {
+    20
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct AnalysisResultInput {
     analysis_id: String,
     #[serde(default)]
@@ -422,6 +435,22 @@ impl InvestigationServer {
     )]
     fn summary(&self) -> Result<CallToolResult, String> {
         Self::json(query::corpus_summary(&self.load()?))
+    }
+
+    #[tool(
+        description = "Page compact, validated investigation events after a revision; set through_revision from the first page to pin a snapshot.",
+        annotations(read_only_hint = true)
+    )]
+    fn activity(
+        &self,
+        Parameters(input): Parameters<ActivityInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(workflow::activity_since(
+            &self.root,
+            input.after_revision,
+            input.limit,
+            input.through_revision,
+        )?)
     }
 
     #[tool(

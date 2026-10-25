@@ -145,6 +145,7 @@ fn print_help() {
         "  analysis-result <dir> <analysis-id> [column-offset] [column-limit<=256] [row-offset] [row-limit<=10]"
     );
     println!("  resume <dir> | changes <dir> <revision> | report <dir> <html-file>");
+    println!("  activity <dir> [after-revision] [limit<=100] [through-revision|-]");
     println!("  recover-tail <dir> [--apply]       inspect or repair an unterminated final event");
     println!("  observations <dir> [trial-id|-] [offset] [limit<=100]");
     println!("  search-observations <dir> <json-filter>  bounded multi-filter query");
@@ -2076,6 +2077,34 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
                 .parse()
                 .map_err(|_| "revision must be an integer".to_string())?;
             print_json(&workflow::changes_since(root, revision, 100)?)
+        }
+        "activity" => {
+            if args.len() > 5 {
+                return Err("expected after revision, limit, and optional through revision".into());
+            }
+            let after_revision = args.get(2).map_or(Ok(0), |value| {
+                value
+                    .parse()
+                    .map_err(|_| "after revision must be an integer")
+            })?;
+            let limit = args.get(3).map_or(Ok(20), |value| {
+                value.parse().map_err(|_| "limit must be an integer")
+            })?;
+            let through_revision = args
+                .get(4)
+                .filter(|value| *value != "-")
+                .map(|value| {
+                    value
+                        .parse()
+                        .map_err(|_| "through revision must be an integer".to_string())
+                })
+                .transpose()?;
+            print_json(&workflow::activity_since(
+                root,
+                after_revision,
+                limit,
+                through_revision,
+            )?)
         }
         "report" => {
             require_len(args, 3)?;
