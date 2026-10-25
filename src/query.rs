@@ -284,6 +284,205 @@ pub fn list_analyses(state: &State, offset: usize, limit: usize) -> Result<Analy
 }
 
 #[derive(Debug, Serialize)]
+pub struct AnalysisStatus {
+    pub revision: u64,
+    pub analysis_id: String,
+    pub kind: &'static str,
+    pub status: &'static str,
+    pub source_revision: Option<u64>,
+    pub recorded_entity_count: usize,
+    pub current_entity_count: Option<usize>,
+    pub selected_inputs_match: Option<bool>,
+    pub added_entity_count: usize,
+    pub first_added_entity_ids: Vec<String>,
+    pub missing_entity_count: usize,
+    pub first_missing_entity_ids: Vec<String>,
+    pub unselected_run_key_count: usize,
+    pub first_unselected_run_keys: Vec<String>,
+    pub comparison_error: Option<String>,
+}
+
+pub fn analysis_status(state: &State, analysis_id: &str) -> Result<AnalysisStatus, String> {
+    let record = state
+        .analyses
+        .iter()
+        .find(|analysis| analysis.id == analysis_id)
+        .ok_or_else(|| format!("unknown analysis {analysis_id}"))?;
+    let frames = !record.frame_ids.is_empty();
+    let recorded_ids = if frames {
+        &record.frame_ids
+    } else {
+        &record.observation_ids
+    };
+    let mut source_revision = None;
+    let mut unselected_run_keys = Vec::new();
+    let current_ids = match &record.scope {
+        Some(AnalysisScope::All) => Ok(Some(
+            state
+                .observations
+                .iter()
+                .map(|item| item.id.clone())
+                .collect(),
+        )),
+        Some(AnalysisScope::Trial { trial_id }) => Ok(Some(
+            state
+                .observations
+                .iter()
+                .filter(|item| {
+                    state.captures.iter().any(|capture| {
+                        capture.id == item.capture_id && capture.trial_id == *trial_id
+                    })
+                })
+                .map(|item| item.id.clone())
+                .collect(),
+        )),
+        Some(AnalysisScope::Cluster {
+            cluster_id,
+            trial_id,
+            direction_mode,
+        }) => crate::clustering::cluster_observations(
+            state,
+            trial_id.as_deref(),
+            direction_mode == "respect",
+        )
+        .map(|report| {
+            report
+                .clusters
+                .iter()
+                .find(|item| &item.id == cluster_id)
+                .map(|cluster| {
+                    let members: BTreeSet<_> = cluster.member_observation_ids.iter().collect();
+                    state
+                        .observations
+                        .iter()
+                        .filter(|item| members.contains(&item.id))
+                        .map(|item| item.id.clone())
+                        .collect()
+                })
+        }),
+        Some(AnalysisScope::FrameCluster {
+            cluster_id,
+            model,
+            trial_id,
+            direction_mode,
+            run_keys,
+            source_revision: source,
+        }) => {
+            source_revision = Some(*source);
+            let selected: BTreeSet<_> = run_keys.iter().map(String::as_str).collect();
+            let all_runs: Vec<(&str, &str)> = match model.as_str() {
+                "fixed_width" => state
+                    .framing_runs
+                    .iter()
+                    .map(|run| (run.key.as_str(), run.observation_id.as_str()))
+                    .collect(),
+                "unsigned_leb128" => state
+                    .varint_runs
+                    .iter()
+                    .map(|run| (run.key.as_str(), run.observation_id.as_str()))
+                    .collect(),
+                "delimiter" => state
+                    .delimiter_runs
+                    .iter()
+                    .map(|run| (run.key.as_str(), run.observation_id.as_str()))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let capture_by_observation: BTreeMap<_, _> = state
+                .observations
+                .iter()
+                .map(|observation| (observation.id.as_str(), observation.capture_id.as_str()))
+                .collect();
+            let trial_by_capture: BTreeMap<_, _> = state
+                .captures
+                .iter()
+                .map(|capture| (capture.id.as_str(), capture.trial_id.as_str()))
+                .collect();
+            unselected_run_keys = all_runs
+                .into_iter()
+                .filter(|(key, observation_id)| {
+                    !selected.contains(key)
+                        && trial_id.as_ref().is_none_or(|wanted| {
+                            capture_by_observation
+                                .get(observation_id)
+                                .and_then(|capture_id| trial_by_capture.get(capture_id))
+                                .is_some_and(|trial| *trial == wanted)
+                        })
+                })
+                .map(|(key, _)| key.to_owned())
+                .collect();
+            unselected_run_keys.sort();
+            unselected_run_keys.dedup();
+            crate::frame_alignment::align_frame_cluster(
+                state,
+                model,
+                cluster_id,
+                trial_id.as_deref(),
+                direction_mode == "respect",
+                Some(run_keys),
+            )
+            .map(|report| Some(report.frame_ids))
+        }
+        None => Ok(None),
+    };
+    let (current_ids, comparison_error) = match current_ids {
+        Ok(Some(ids)) => (Some(ids), None),
+        Ok(None) => (
+            None,
+            Some(match &record.scope {
+                Some(AnalysisScope::Cluster { .. }) => {
+                    "saved cluster is absent at the current revision".into()
+                }
+                _ => "analysis has no recorded scope".into(),
+            }),
+        ),
+        Err(error) => (None, Some(error)),
+    };
+    let (added, missing, selected_inputs_match) = if let Some(current) = &current_ids {
+        let old: BTreeSet<_> = recorded_ids.iter().collect();
+        let now: BTreeSet<_> = current.iter().collect();
+        (
+            current
+                .iter()
+                .filter(|id| !old.contains(id))
+                .cloned()
+                .collect::<Vec<_>>(),
+            recorded_ids
+                .iter()
+                .filter(|id| !now.contains(id))
+                .cloned()
+                .collect::<Vec<_>>(),
+            Some(current == recorded_ids),
+        )
+    } else {
+        (Vec::new(), Vec::new(), None)
+    };
+    let status = match selected_inputs_match {
+        Some(false) => "selected_inputs_changed",
+        Some(true) if !unselected_run_keys.is_empty() => "unselected_runs_in_scope",
+        Some(true) => "same_selected_inputs",
+        None => "comparison_unavailable",
+    };
+    Ok(AnalysisStatus {
+        revision: state.revision,
+        analysis_id: analysis_id.into(),
+        kind: if frames { "frame" } else { "observation" },
+        status,
+        source_revision,
+        recorded_entity_count: recorded_ids.len(),
+        current_entity_count: current_ids.as_ref().map(Vec::len),
+        selected_inputs_match,
+        added_entity_count: added.len(),
+        first_added_entity_ids: added.into_iter().take(5).collect(),
+        missing_entity_count: missing.len(),
+        first_missing_entity_ids: missing.into_iter().take(5).collect(),
+        unselected_run_key_count: unselected_run_keys.len(),
+        first_unselected_run_keys: unselected_run_keys.into_iter().take(5).collect(),
+        comparison_error,
+    })
+}
+
+#[derive(Debug, Serialize)]
 pub struct AnalysisRowPreview {
     pub entity_id: String,
     pub aligned_bytes: Vec<Value>,

@@ -141,6 +141,7 @@ fn print_help() {
     println!("  hypotheses <dir> [offset] [limit<=100]  page claims and evidence counts");
     println!("  decisions <dir> [offset] [limit<=100]  page recorded decisions");
     println!("  analyses <dir> [offset] [limit<=100]  page saved alignments");
+    println!("  analysis-status <dir> <analysis-id>  compare saved and current input selections");
     println!(
         "  analysis-result <dir> <analysis-id> [column-offset] [column-limit<=256] [row-offset] [row-limit<=10]"
     );
@@ -1983,6 +1984,13 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             let state = workflow::load(root)?;
             print_json(&protocol_informatics_v2::query::list_analyses(
                 &state, offset, limit,
+            )?)
+        }
+        "analysis-status" => {
+            require_len(args, 3)?;
+            let state = workflow::load(root)?;
+            print_json(&protocol_informatics_v2::query::analysis_status(
+                &state, &args[2],
             )?)
         }
         "analysis-result" => {

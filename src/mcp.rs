@@ -57,6 +57,11 @@ struct AnalysisResultInput {
     row_limit: usize,
 }
 
+#[derive(Deserialize, JsonSchema)]
+struct AnalysisIdInput {
+    analysis_id: String,
+}
+
 fn default_analysis_column_limit() -> usize {
     64
 }
@@ -463,6 +468,17 @@ impl InvestigationServer {
             input.offset,
             input.limit,
         )?)
+    }
+
+    #[tool(
+        description = "Compare a saved alignment's selected input IDs with the current scope and list unselected committed runs in that scope; this does not revalidate a protocol claim.",
+        annotations(read_only_hint = true)
+    )]
+    fn analysis_status(
+        &self,
+        Parameters(input): Parameters<AnalysisIdInput>,
+    ) -> Result<CallToolResult, String> {
+        Self::json(query::analysis_status(&self.load()?, &input.analysis_id)?)
     }
 
     #[tool(

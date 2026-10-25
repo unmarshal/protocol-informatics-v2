@@ -172,6 +172,10 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
     let verified_analysis = cli(&["verify", root_text]);
     assert_eq!(verified_analysis["analyses"], 1);
     assert_eq!(verified_analysis["frame_analyses"], 1);
+    let initial_status = cli(&["analysis-status", root_text, analysis_id]);
+    assert_eq!(initial_status["status"], "same_selected_inputs");
+    assert_eq!(initial_status["source_revision"], alignment["revision"]);
+    assert_eq!(initial_status["unselected_run_key_count"], 0);
     let mut validation_bytes = Vec::new();
     for record in ["01a0b0c01001", "02d0e0f02004", "03e0f0a03007"] {
         validation_bytes.extend(workflow::from_hex(record).unwrap());
@@ -232,6 +236,38 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
     assert!(html.contains("Saved alignment explorer"));
     assert!(html.contains("\"saved_analysis_previews\":[{"));
     assert!(html.contains("\"total_rows\":3"));
+    let unchanged_status = cli(&["analysis-status", root_text, analysis_id]);
+    assert_eq!(unchanged_status["status"], "same_selected_inputs");
+    assert!(
+        unchanged_status["revision"].as_u64().unwrap()
+            > unchanged_status["source_revision"].as_u64().unwrap()
+    );
+    let extra_sample = root.join("extra-discovery.bin");
+    fs::write(
+        &extra_sample,
+        b"\x01\xa3\xb3\xc3\x10\x08\x0a\x01\xa4\xb4\xc4\x10\x09\x0a",
+    )
+    .unwrap();
+    let extra_capture = cli(&["import", root_text, trial_id, "binary", path(&extra_sample)]);
+    let extra_observation_id = extra_capture["event"]["observations"][0]["id"]
+        .as_str()
+        .unwrap();
+    cli(&[
+        "commit-delimiter",
+        root_text,
+        extra_observation_id,
+        "0",
+        "0a",
+        "extra-discovery-records",
+    ]);
+    let expanded_status = cli(&["analysis-status", root_text, analysis_id]);
+    assert_eq!(expanded_status["status"], "unselected_runs_in_scope");
+    assert_eq!(expanded_status["selected_inputs_match"], true);
+    assert_eq!(expanded_status["unselected_run_key_count"], 1);
+    assert_eq!(
+        expanded_status["first_unselected_run_keys"][0],
+        "extra-discovery-records"
+    );
     let saved_artifact = root.join(saved["artifact"].as_str().unwrap());
     fs::write(saved_artifact, b"{}").unwrap();
     for command in [
@@ -398,6 +434,10 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     assert_eq!(raw_page["kind"], "observation");
     assert_eq!(raw_page["coordinate_system"], "observation_bytes");
     assert_eq!(
+        cli(&["analysis-status", root_text, raw_analysis_id])["status"],
+        "same_selected_inputs"
+    );
+    assert_eq!(
         raw_page["rows"][0]["aligned_bytes"]
             .as_array()
             .unwrap()
@@ -433,6 +473,11 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     ]);
     assert_eq!(second["status"], "completed");
     assert_eq!(second["capture"]["observation_count"], 24);
+    let expanded_raw = cli(&["analysis-status", root_text, raw_analysis_id]);
+    assert_eq!(expanded_raw["status"], "selected_inputs_changed");
+    assert_eq!(expanded_raw["added_entity_count"], 24);
+    assert_eq!(expanded_raw["missing_entity_count"], 0);
+    assert_eq!(expanded_raw["first_added_entity_ids"][0], "obs-000013-0000");
     let replay = cli(&[
         "capture-command",
         root_text,
@@ -2999,6 +3044,11 @@ fn clusters_icmp_roles_before_alignment_and_exposes_members() {
             .len(),
         12
     );
+    let analysis_id = analysis["event"]["analysis"]["id"].as_str().unwrap();
+    assert_eq!(
+        cli(&["analysis-status", root_text, analysis_id])["status"],
+        "same_selected_inputs"
+    );
     let ignored = cli(&["cluster", root_text, trial_id, "ignore"]);
     assert_eq!(ignored["clusters"].as_array().unwrap().len(), 1);
     let report = root.join("report.html");
@@ -3007,6 +3057,12 @@ fn clusters_icmp_roles_before_alignment_and_exposes_members() {
     assert!(html.contains("Candidate format groups"));
     assert!(html.contains(first_id));
     cli(&["import", root_text, trial_id, "pcapng-icmp", path(&fixture)]);
+    let changed = cli(&["analysis-status", root_text, analysis_id]);
+    assert_eq!(changed["status"], "comparison_unavailable");
+    assert_eq!(
+        changed["comparison_error"],
+        "saved cluster is absent at the current revision"
+    );
     let stale = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
         .args(["analyze-cluster", root_text, first_id, trial_id, "respect"])
         .output()

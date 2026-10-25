@@ -27,7 +27,7 @@ The compact `activity` feed lets an agent page changes after its last revision w
 3. What experiment would best distinguish the leading explanations?
 4. What action is already running or waiting for a result?
 
-Saved analysis results name their input observation or committed-frame IDs, algorithm version, and scope. A frame alignment also retains the group, model, selected run keys, and source revision. The agent can inspect a prior result with `analyses` and `analysis-result`, or rerun an affected analysis when new data or a corrected tag changes the inputs. A derived claim should retain its source revision and exact supporting byte spans.
+Saved analysis results name their input observation or committed-frame IDs, algorithm version, and scope. A frame alignment also retains the group, model, selected run keys, and source revision. The agent can inspect a prior result with `analyses` and `analysis-result`, then use `analysis-status` to compare its selected inputs with the current scope and see unselected frame runs. Rerun an affected analysis when the input selection changes; treat the status as an input comparison, not a claim validation. A derived claim should retain its source revision and exact supporting byte spans.
 
 ## Agent action contract
 

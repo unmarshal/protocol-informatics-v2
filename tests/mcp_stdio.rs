@@ -127,7 +127,7 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 51);
+    assert_eq!(names.len(), 52);
     assert!(names.contains(&"activity"));
     assert!(names.contains(&"frame_runs"));
     assert!(names.contains(&"cluster_frames"));
@@ -135,6 +135,7 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
     assert!(names.contains(&"record_frame_alignment"));
     assert!(names.contains(&"analyses"));
     assert!(names.contains(&"analysis_result"));
+    assert!(names.contains(&"analysis_status"));
     assert!(names.contains(&"validate_frame_clusters"));
     assert!(names.contains(&"summary"));
     assert!(names.contains(&"capture_step"));
@@ -473,6 +474,9 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
     assert_eq!(saved_rows["kind"], "frame");
     assert_eq!(saved_rows["rows"].as_array().unwrap().len(), 1);
     assert_eq!(saved_rows["columns"].as_array().unwrap().len(), 2);
+    let saved_status = client.tool("analysis_status", json!({"analysis_id":saved_analysis_id}));
+    assert_eq!(saved_status["status"], "same_selected_inputs");
+    assert_eq!(saved_status["selected_inputs_match"], true);
     let status = client.tool("frame_run_status", json!({"key":"mcp-frames-discovery"}));
     assert_eq!(status["model"], "fixed_width");
     let page = client.tool("frames", json!({"key":"mcp-frames-discovery","limit":1}));
