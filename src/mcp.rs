@@ -377,6 +377,19 @@ struct CaptureStepInput {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct NetworkCaptureInput {
+    trial_id: String,
+    key: String,
+    interface: String,
+    capture_filter: String,
+    duration_ms: u64,
+    output_byte_limit: usize,
+    packet_limit: Option<u64>,
+    format: String,
+    executable: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct CaptureStartInput {
     trial_id: String,
     format: String,
@@ -1419,6 +1432,34 @@ impl InvestigationServer {
             self.invoke_value("capture-step-finish", vec![input.step_key])
                 .await?,
         ))
+    }
+
+    #[tool(
+        description = "Start dumpcap in the background with a hard file byte bound, retaining exact pcapng and capture conditions. Use capture_status and capture_stop with the same key. Executes as the server user.",
+        annotations(idempotent_hint = true)
+    )]
+    async fn network_capture_start(
+        &self,
+        Parameters(input): Parameters<NetworkCaptureInput>,
+    ) -> Result<CallToolResult, String> {
+        self.invoke(
+            "network-capture-start",
+            vec![
+                input.trial_id,
+                input.key,
+                input.interface,
+                input.capture_filter,
+                input.duration_ms.to_string(),
+                input.output_byte_limit.to_string(),
+                input
+                    .packet_limit
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                input.format,
+                input.executable.unwrap_or_else(|| "dumpcap".into()),
+            ],
+        )
+        .await
     }
 
     #[tool(

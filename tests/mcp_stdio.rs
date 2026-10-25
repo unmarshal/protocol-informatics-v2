@@ -127,8 +127,9 @@ fn agent_can_capture_tag_and_inspect_held_out_evidence_over_mcp() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 64);
+    assert_eq!(names.len(), 65);
     assert!(names.contains(&"attention"));
+    assert!(names.contains(&"network_capture_start"));
     assert!(names.contains(&"infer_chunk_framing"));
     assert!(names.contains(&"infer_frame_crc32"));
     assert!(names.contains(&"activity"));
@@ -1006,6 +1007,74 @@ fn agent_can_infer_and_commit_png_chunks_over_mcp() {
             .all(|candidate| candidate["config"]["prefix_width"] == 4)
     );
     assert_eq!(client.tool("verify", json!({}))["captures"], 5);
+    client.stop();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn structured_dumpcap_capture_is_available_over_mcp() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = workspace();
+    for (command, args) in [
+        ("init", vec!["network test"]),
+        ("experiment", vec!["echo", "-", "sequence"]),
+        ("trial", vec!["exp-000002", "discovery", "sequence"]),
+    ] {
+        assert!(
+            Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
+                .arg(command)
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+    let fake = root.join("fake dumpcap");
+    fs::write(
+        &fake,
+        format!(
+            r#"#!/usr/bin/env python3
+import sys, pathlib
+if '--version' in sys.argv:
+    print('Dumpcap fake MCP 1.0')
+else:
+    assert sys.argv[sys.argv.index('-f')+1] == 'icmp and host 192.0.2.1'
+    assert sys.argv[sys.argv.index('-c')+1] == '24'
+    pathlib.Path(sys.argv[sys.argv.index('-w')+1]).write_bytes(pathlib.Path({:?}).read_bytes())
+"#,
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("examples/icmp_echo.pcapng")
+                .to_str()
+                .unwrap()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut client = McpClient::start(&root);
+    client.request("initialize",json!({"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"dumpcap-test","version":"1"}}));
+    client.send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+    let input = json!({"trial_id":"trial-000003","key":"network","interface":"fake0",
+        "capture_filter":"icmp and host 192.0.2.1","duration_ms":1000,"output_byte_limit":1048576,
+        "packet_limit":24,"format":"pcapng-icmp","executable":fake});
+    let mut result = client.tool("network_capture_start", input.clone());
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while result["status"] != "completed" {
+        assert!(std::time::Instant::now() < deadline, "{result}");
+        thread::sleep(Duration::from_millis(20));
+        result = client.tool("capture_status", json!({"key":"network"}));
+    }
+    assert_eq!(result["capture"]["conditions"]["backend"], "dumpcap");
+    assert_eq!(
+        result["capture"]["conditions"]["quality"]["captured_packet_count"],
+        24
+    );
+    fs::remove_file(fake).unwrap();
+    let repeated = client.tool("network_capture_start", input);
+    assert_eq!(repeated["capture"]["id"], result["capture"]["id"]);
+    client.tool("verify", json!({}));
     client.stop();
     fs::remove_dir_all(root).unwrap();
 }

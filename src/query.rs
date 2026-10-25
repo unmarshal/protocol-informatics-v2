@@ -83,6 +83,8 @@ pub struct ExperimentPlanningAttention {
 
 #[derive(Debug, Serialize)]
 pub struct AttentionReport {
+    pub network_captures: Vec<Capture>,
+    pub network_captures_omitted: usize,
     pub schema_version: u32,
     pub revision: u64,
     pub maximum_items_per_group: usize,
@@ -294,6 +296,20 @@ pub fn attention(state: &State) -> AttentionReport {
         })
         .collect();
     AttentionReport {
+        network_captures: state
+            .captures
+            .iter()
+            .rev()
+            .filter(|c| c.conditions.is_some())
+            .take(20)
+            .cloned()
+            .collect(),
+        network_captures_omitted: state
+            .captures
+            .iter()
+            .filter(|c| c.conditions.is_some())
+            .count()
+            .saturating_sub(20),
         schema_version: state.schema_version,
         revision: state.revision,
         maximum_items_per_group: MAX_ATTENTION_ITEMS,
@@ -2222,6 +2238,7 @@ mod tests {
             artifact: String::new(),
             observation_count: 0,
             run_key: None,
+            conditions: None,
         });
         state.decisions.push(Decision {
             id: "decision-1".into(),
@@ -2267,6 +2284,7 @@ mod tests {
                 artifact: String::new(),
                 observation_count: 1,
                 run_key: None,
+                conditions: None,
             });
             state.observations.push(Observation {
                 id: observation_id,

@@ -75,6 +75,9 @@ fn print_help() {
     println!(
         "  capture-step-finish <dir> <step-key>  finish completed step tags without command args"
     );
+    println!(
+        "  network-capture[-start] <dir> <trial-id> <key> <interface> <filter> <duration-ms> <byte-limit> <packet-limit|-> <pcapng-format> [dumpcap-path]"
+    );
     println!("  capture-start <dir> <trial-id> <format> <key> <timeout-ms> -- <program> [args...]");
     println!("  capture-stop <dir> <key>             request a running capture to stop");
     println!("  capture-status <dir> <key>           inspect a reserved capture command");
@@ -398,6 +401,7 @@ fn capture_run_view(
         "timeout_ms": run.timeout_ms, "capture": capture,
         "observation_ids": observation_ids, "error": run.error,
         "stop_requested": run.stop_requested,
+        "error_code": run.error.as_deref().map(|error| error.split(':').next().unwrap_or("capture_failed")),
     })
 }
 
@@ -414,6 +418,48 @@ fn capture_status_name(root: &Path, run: &CaptureRun) -> Result<&'static str, St
                 Ok("running")
             }
         }
+    }
+}
+
+fn network_capture(root: &Path, args: &[String], background: bool) -> Result<(), String> {
+    if args.len() != 10 && args.len() != 11 {
+        return Err("expected <trial-id> <key> <interface> <filter> <duration-ms> <byte-limit> <packet-limit|-> <pcapng-format> [dumpcap-path]".into());
+    }
+    let options = protocol_informatics_v2::capture::DumpcapOptions {
+        executable: args.get(10).cloned().unwrap_or_else(|| "dumpcap".into()),
+        interface: args[4].clone(),
+        capture_filter: args[5].clone(),
+        duration_ms: args[6].parse().map_err(|_| "invalid duration")?,
+        output_byte_limit: args[7].parse().map_err(|_| "invalid byte limit")?,
+        packet_limit: if args[8] == "-" {
+            None
+        } else {
+            Some(args[8].parse().map_err(|_| "invalid packet limit")?)
+        },
+    };
+    options.validate()?;
+    if !args[9].starts_with("pcapng-") || !workflow::valid_capture_format(&args[9]) {
+        return Err("network capture requires a supported pcapng extraction format".into());
+    }
+    let normalized = vec![
+        if background {
+            "network-capture-start"
+        } else {
+            "network-capture"
+        }
+        .into(),
+        args[1].clone(),
+        args[2].clone(),
+        args[9].clone(),
+        args[3].clone(),
+        options.duration_ms.to_string(),
+        "--".into(),
+        serde_json::to_string(&options).map_err(|e| e.to_string())?,
+    ];
+    if background {
+        capture_start(root, &normalized)
+    } else {
+        capture_command(root, &normalized)
     }
 }
 
@@ -508,7 +554,7 @@ fn capture_command(root: &Path, args: &[String]) -> Result<(), String> {
     workflow::append(root, Event::CaptureRunReserved { run: reserved })?;
     let event_path = root.join(".pi/events.jsonl");
     let mut last_length = 0;
-    let result = protocol_informatics_v2::capture::run_command_with_stop(argv, timeout_ms, || {
+    let mut check_stop = || {
         let length = fs::metadata(&event_path)
             .map_err(|error| error.to_string())?
             .len();
@@ -523,17 +569,36 @@ fn capture_command(root: &Path, args: &[String]) -> Result<(), String> {
             .find(|run| &run.key == key)
             .ok_or_else(|| format!("capture run {key} disappeared"))?;
         Ok(run.stop_requested)
-    })
-    .and_then(|raw| {
-        workflow::import_capture_for_run(
+    };
+    let network = args[0].starts_with("network-capture");
+    let result = if network {
+        let options =
+            serde_json::from_str::<protocol_informatics_v2::capture::DumpcapOptions>(&argv[0])
+                .map_err(|e| e.to_string())?;
+        protocol_informatics_v2::capture::run_dumpcap(&options, &mut check_stop)
+            .map(|(raw, conditions)| (raw, Some(conditions)))
+    } else {
+        protocol_informatics_v2::capture::run_command_with_stop(argv, timeout_ms, &mut check_stop)
+            .map(|raw| (raw, None))
+    };
+    let result = result.and_then(|(raw, conditions)| {
+        workflow::import_capture_with_conditions(
             root,
             trial_id,
             &format!("command: {}", argv[0]),
             format,
             &raw,
             Some(key),
+            conditions,
         )
         .map(|_| ())
+        .map_err(|error| {
+            if network {
+                format!("invalid_capture_output: {error}")
+            } else {
+                error
+            }
+        })
     });
     if let Err(error) = result {
         workflow::append(
@@ -840,7 +905,11 @@ fn capture_start(root: &Path, args: &[String]) -> Result<(), String> {
     }
     let mut command = Command::new(env::current_exe().map_err(|error| error.to_string())?);
     command
-        .arg("capture-command")
+        .arg(if args[0].starts_with("network-capture") {
+            "network-capture-worker"
+        } else {
+            "capture-command"
+        })
         .args(&args[1..])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1637,6 +1706,9 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
             print_json(&finish_capture_step(root, &args[2], None)?)
         }
         "capture-start" => capture_start(root, args),
+        "network-capture" => network_capture(root, args, false),
+        "network-capture-start" => network_capture(root, args, true),
+        "network-capture-worker" => capture_command(root, args),
         "capture-stop" => {
             require_len(args, 3)?;
             capture_stop(root, &args[2])

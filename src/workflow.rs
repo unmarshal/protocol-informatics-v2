@@ -19,7 +19,7 @@ use crate::pcap::{
 use crate::reassembly::{SourceSpan, reassemble_tcp_segments};
 use crate::varint::{VarintConfig, probe_varint};
 
-const SCHEMA_VERSION: u32 = 19;
+const SCHEMA_VERSION: u32 = 20;
 const MAX_BINARY_OBSERVATION_BYTES: usize = 1024 * 1024;
 const MAX_RECOVERY_TAIL_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -78,6 +78,8 @@ pub struct Capture {
     pub observation_count: usize,
     #[serde(default)]
     pub run_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<crate::capture::CaptureConditions>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1914,7 +1916,7 @@ fn activity_preview(record: &EventRecord) -> ActivityPreview {
             "capture_imported",
             Some(capture.id.clone()),
             json!({"trial_id":capture.trial_id,"format":capture.format,
-                "observation_count":observations.len(),
+                "observation_count":observations.len(), "conditions":capture.conditions,
                 "first_observation_ids":observations.iter().take(3).map(|item| &item.id).collect::<Vec<_>>(),
                 "observation_ids_omitted":observations.len().saturating_sub(3) }),
         ),
@@ -2182,6 +2184,18 @@ pub fn import_capture_for_run(
     raw: &[u8],
     run_key: Option<&str>,
 ) -> Result<EventRecord, String> {
+    import_capture_with_conditions(root, trial_id, source, format, raw, run_key, None)
+}
+
+pub fn import_capture_with_conditions(
+    root: &Path,
+    trial_id: &str,
+    source: &str,
+    format: &str,
+    raw: &[u8],
+    run_key: Option<&str>,
+    conditions: Option<crate::capture::CaptureConditions>,
+) -> Result<EventRecord, String> {
     let revision = load(root)?.revision + 1;
     let capture_id = format!("cap-{revision:06}");
     let observations = match format {
@@ -2290,6 +2304,7 @@ pub fn import_capture_for_run(
         artifact,
         observation_count: observations.len(),
         run_key: run_key.map(str::to_owned),
+        conditions,
     };
     append(
         root,
@@ -2368,6 +2383,16 @@ pub fn verify(root: &Path) -> Result<Verification, String> {
             .map_err(|error| format!("capture {}: {error}", capture.id))?;
         if format!("{:x}", Sha256::digest(&raw)) != capture.sha256 {
             return Err(format!("capture {} has a SHA-256 mismatch", capture.id));
+        }
+        if let Some(conditions) = &capture.conditions {
+            let quality = crate::pcap::pcapng_quality(&raw)?;
+            if serde_json::to_value(&quality).map_err(|e| e.to_string())?
+                != serde_json::to_value(&conditions.quality).map_err(|e| e.to_string())?
+                || raw.len() >= conditions.output_byte_limit
+                || conditions.ended_at_ns < conditions.started_at_ns
+            {
+                return Err(format!("capture {} conditions mismatch", capture.id));
+            }
         }
         let actual: Vec<_> = state
             .observations

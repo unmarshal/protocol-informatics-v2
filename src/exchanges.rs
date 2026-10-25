@@ -647,6 +647,7 @@ mod tests {
             artifact: String::new(),
             observation_count: observations.len(),
             run_key: None,
+            conditions: None,
         });
         state.observations = observations;
         state

@@ -6,8 +6,10 @@ Purpose
 Make one controlled network experiment work from plan through live capture,
 evidence review, and a human-readable result. Build on the existing Rust CLI,
 MCP server, event log, PCAP/pcapng importers, capture-step workflow, attention
-queue, and HTML report. Start with the first milestone below. The later items
-are an ordered backlog, not a request to implement everything in one change.
+queue, and HTML report. Milestone 1 is complete (schema 20), including a
+successful real dumpcap smoke test. Start with the first implementation slice
+of milestone 2 below. The later items are an ordered backlog, not a request
+to implement everything in one change.
 
 1. First milestone: a first-class network capture adapter
 ---------------------------------------------------------
@@ -62,6 +64,46 @@ its scope, report why it needs review. Preserve the historical result; do not
 silently rewrite it. Let attention point to the exact stale result and the
 smallest useful next inspection. Test both relevant and irrelevant new events.
 
+Next implementation slice: saved-result freshness
+- Start with saved observation/frame alignments and experiment assessments.
+  Extend analysis-status and the existing post-assessment capture checks rather
+  than creating another store or a parallel analysis workflow.
+- Record a dependency manifest for each newly saved result: exact input IDs,
+  selection scope, method/version, parameters, and source revision. For human
+  assessments, identify the analyst-supplied method explicitly; do not invent
+  an algorithm version or imply a computed probability.
+- Compare that saved basis with current evidence. Explain relevant additions,
+  removed or superseded tags, and competing committed frame runs using stable
+  result and evidence IDs. A newer investigation revision alone is not a
+  reason to mark a result stale.
+- Keep the saved result and artifact unchanged. Report input freshness
+  separately from whether the underlying hypothesis is true. For legacy
+  results with incomplete dependency information, return an explicit unknown
+  state rather than guessing that they are fresh.
+- Surface the exact result requiring review, the reason, and the smallest
+  useful inspection through bounded CLI/MCP responses, attention, and the HTML
+  report. Preserve existing response fields and event-log compatibility.
+
+Acceptance for this slice:
+- A relevant new capture or tag correction triggers review for the affected
+  result and names the changed evidence; unrelated trial evidence, unrelated
+  tags, and administrative events do not trigger review.
+- A competing frame run is reported with its run key and affected observation
+  or frame IDs; explicitly excluded runs remain visible as a scope decision.
+- Historical result IDs, artifact bytes, and hashes remain unchanged after
+  freshness checks, including after restarting and replaying the event log.
+- Legacy investigations still load and verify. Missing dependency metadata is
+  distinguishable from a known unchanged input selection.
+- CLI and MCP expose equivalent bounded results; attention and the report link
+  to the affected result and suggested inspection.
+- cargo fmt --check, cargo test --offline, cargo clippy --offline --all-targets
+  -- -D warnings, and cargo build --offline --release pass. Update the schema
+  and analysis/agent-query documentation for any added fields.
+
+After this slice, extend the same dependency model to other persisted
+inferences and claims before moving on to experiment suggestions. Do not
+persist every read-only inference merely to expand freshness coverage.
+
 3. Distinguishing-experiment suggestions
 ----------------------------------------
 Given two or more surviving explanations, propose a controlled change that
@@ -105,3 +147,18 @@ Implementation notes
   docs/capture-step.md, docs/agent-query.md, and docs/interface-design.md.
 - External references: https://www.wireshark.org/docs/man-pages/dumpcap.html
   and https://datatracker.ietf.org/doc/draft-ietf-opsawg-pcapng/ .
+
+Progress (2026-10-24)
+---------------------
+Milestone 1: network-capture / network-capture-start and MCP
+network_capture_start now use the existing capture-run lifecycle. Exact pcapng
+artifacts carry dumpcap conditions and section-scoped IDB/ISB quality metadata.
+Offline fake-backend tests cover retries, stop/watchdog, invalid output,
+permissions, and the hard Unix file bound. See docs/network-capture.md.
+The live experiment in examples/live_dumpcap_smoke.py passed on an isolated
+veth/network-namespace pair using real dumpcap 4.6.9: sequences 255 and 256 each
+yielded a request and reply, zero reported drops, verified artifacts and exact
+source spans, valid ICMP checksums, and stable retries after interface removal.
+The run also exposed and fixed the script's keyed-action response lookup.
+Live capture is not run automatically in CI. Non-Ethernet link types and
+non-Unix hard bounds remain limited.

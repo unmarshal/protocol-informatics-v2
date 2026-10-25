@@ -214,6 +214,8 @@ pub struct NextAction {
 
 #[derive(Debug, Serialize)]
 pub struct TrialReview {
+    pub network_captures: Vec<crate::workflow::Capture>,
+    pub network_captures_omitted: usize,
     pub revision: u64,
     pub method: &'static str,
     pub provisional: bool,
@@ -557,7 +559,21 @@ pub fn review_trials(
             observation_ids: Vec::new(),
         });
     }
+    let network_captures: Vec<_> = state
+        .captures
+        .iter()
+        .filter(|c| {
+            c.conditions.is_some()
+                && (c.trial_id == discovery_trial_id || c.trial_id == validation_trial_id)
+        })
+        .collect();
     Ok(TrialReview {
+        network_captures: network_captures
+            .iter()
+            .take(20)
+            .map(|c| (*c).clone())
+            .collect(),
+        network_captures_omitted: network_captures.len().saturating_sub(20),
         revision: state.revision,
         method: "controlled_trial_evidence_review_v1",
         provisional: true,

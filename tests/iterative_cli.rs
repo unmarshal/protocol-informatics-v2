@@ -1099,7 +1099,7 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
     );
     let event_log = root.join(".pi/events.jsonl");
     let prior_log = fs::read_to_string(&event_log).unwrap();
-    let legacy_log = prior_log.replace("\"schema_version\":19", "\"schema_version\":13");
+    let legacy_log = prior_log.replace("\"schema_version\":20", "\"schema_version\":13");
     assert_ne!(legacy_log, prior_log);
     fs::write(&event_log, legacy_log).unwrap();
     let recorded = cli(&[
@@ -1112,7 +1112,7 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
     ]);
     let saved = &recorded["event"]["analysis"];
     let analysis_id = saved["id"].as_str().unwrap();
-    assert_eq!(recorded["schema_version"], 19);
+    assert_eq!(recorded["schema_version"], 20);
     assert_eq!(saved["scope"]["kind"], "frame_cluster");
     assert_eq!(saved["frame_ids"], alignment["frame_ids"]);
     assert_eq!(saved["scope"]["source_revision"], alignment["revision"]);
@@ -1492,7 +1492,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     assert_eq!(summary["observation_count"], 48);
     assert_eq!(summary["hypotheses"][0]["score"], 0.9);
     let corpus = cli(&["summary", root_text]);
-    assert_eq!(corpus["schema_version"], 19);
+    assert_eq!(corpus["schema_version"], 20);
     assert_eq!(corpus["revision"], 13);
     assert_eq!(corpus["counts"]["captures"], 2);
     assert_eq!(corpus["counts"]["observations"], 48);
@@ -1528,7 +1528,7 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
         serde_json::json!({"trial_id":"trial-000004","direction":direction,"offset":2,"limit":3})
             .to_string();
     let matches = cli(&["search-observations", root_text, &direction_query]);
-    assert_eq!(matches["schema_version"], 19);
+    assert_eq!(matches["schema_version"], 20);
     assert_eq!(matches["total"], 24);
     assert_eq!(matches["observations"].as_array().unwrap().len(), 3);
     assert_eq!(matches["next_offset"], 5);
@@ -3952,7 +3952,7 @@ fn replays_v1_log_and_appends_current_events() {
         "Old investigation"
     );
     let appended = cli(&["hypothesis", path(&root), "A new claim"]);
-    assert_eq!(appended["schema_version"], 19);
+    assert_eq!(appended["schema_version"], 20);
     assert_eq!(appended["revision"], 2);
     assert_eq!(
         cli(&["changes", path(&root), "0"])

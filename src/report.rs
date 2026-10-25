@@ -724,7 +724,16 @@ if(!(state.trial_reviews||[]).length) byId('trialReviews').append(node('div','Cr
 for(const run of state.capture_runs) {
   const row=node('div','', 'row');
   row.append(node('strong',run.id+' · '+run.key),node('div',run.status+(run.stop_requested?' · stop requested':'')+' · '+run.trial_id+' · '+run.format+' · limit '+run.timeout_ms+' ms','small muted'));
-  if(run.capture_id) row.append(node('div','Capture '+run.capture_id,'small'));
+  if(run.capture_id) {
+    row.append(node('div','Capture '+run.capture_id,'small'));
+    const conditions=captureById.get(run.capture_id)?.conditions;
+    if(conditions) {
+      row.append(node('div',conditions.backend+' · '+conditions.version+' · '+conditions.executable,'small'));
+      row.append(node('div','Interface '+conditions.interface+' · filter '+conditions.capture_filter+' · '+conditions.stop_reason+' · UTC ns '+conditions.started_at_ns+'–'+conditions.ended_at_ns,'small'));
+      row.append(node('div',conditions.quality.captured_packet_count+' captured packets · byte limit '+conditions.output_byte_limit,'small'));
+      for(const iface of conditions.quality.interfaces) row.append(node('div','Section '+iface.section_index+' interface '+iface.interface_id+' · link type '+iface.link_type+' · snaplen '+iface.snapshot_length+' · dropped '+(iface.dropped_packets??'unknown')+' · OS dropped '+(iface.os_dropped_packets??'unknown'),'small muted'));
+    }
+  }
   if(run.error) row.append(node('div',run.error,'small'));
   byId('captureRuns').append(row);
 }

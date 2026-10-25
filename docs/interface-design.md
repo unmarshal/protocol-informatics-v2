@@ -75,3 +75,5 @@ Frame alignments can be saved as versioned events with exact frame IDs and sourc
 Chunk framing candidates with a fixed uncounted byte adjustment are visible in the report with held-out counts and proposed spans. Agents can use `infer_chunk_framing`, `probe_framing`, and `commit_framing` through MCP, then navigate the same stable frame IDs as other fixed-width interpretations.
 
 The human report now shows held-out trailing CRC32 candidates over committed frames, including coverage starts, validation counts, and counterexample frame links back to source bytes. Agents can request the same bounded model with `infer_frame_crc32` and explicit discovery and validation run keys.
+
+The structured [dumpcap adapter](network-capture.md) uses the existing capture-run lifecycle. Schema 20 adds optional capture conditions; quality counters remain unknown when the source omitted them. CLI `network-capture-start` and MCP `network_capture_start` accept equivalent interface, filter, duration, byte/packet bounds, format, and executable arguments.

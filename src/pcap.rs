@@ -1093,3 +1093,225 @@ mod tests {
         assert_eq!(messages[24].bytes[0], 8);
     }
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PcapngInterfaceQuality {
+    pub section_index: usize,
+    pub interface_id: usize,
+    pub link_type: u16,
+    pub snapshot_length: u32,
+    pub captured_packet_count: u64,
+    pub received_packets: Option<u64>,
+    pub dropped_packets: Option<u64>,
+    pub os_dropped_packets: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PcapngQuality {
+    pub captured_packet_count: u64,
+    pub interfaces: Vec<PcapngInterfaceQuality>,
+}
+
+/// IDB and latest ISB counters, scoped to their section/interface. Missing is
+/// unknown, including when an ISB omits an option; zero is retained as zero.
+pub fn pcapng_quality(data: &[u8]) -> Result<PcapngQuality, String> {
+    let mut result = PcapngQuality {
+        captured_packet_count: 0,
+        interfaces: Vec::new(),
+    };
+    let mut offset = 0;
+    let mut endian = None;
+    let mut section_count = 0;
+    let mut section_start = 0;
+    while offset < data.len() {
+        if data.len() - offset < 12 {
+            return Err("truncated pcapng block".into());
+        }
+        let section = data[offset..offset + 4] == [10, 13, 13, 10];
+        if section {
+            if data.len() - offset < 28 {
+                return Err("truncated section".into());
+            }
+            endian = Some(match &data[offset + 8..offset + 12] {
+                [0x4d, 0x3c, 0x2b, 0x1a] => Endian::Little,
+                [0x1a, 0x2b, 0x3c, 0x4d] => Endian::Big,
+                _ => return Err("invalid byte order".into()),
+            });
+        }
+        let e = endian.ok_or("missing pcapng section")?;
+        let length = e.u32(&data[offset + 4..offset + 8]) as usize;
+        if length < 12 || !length.is_multiple_of(4) || length > data.len() - offset {
+            return Err("invalid pcapng block size".into());
+        }
+        let end = offset + length;
+        if e.u32(&data[end - 4..end]) as usize != length {
+            return Err("invalid block trailer".into());
+        }
+        let body = &data[offset + 8..end - 4];
+        match e.u32(&data[offset..offset + 4]) {
+            0x0a0d0d0a => {
+                if body.len() < 16 || e.u16(&body[4..6]) != 1 {
+                    return Err("unsupported section".into());
+                }
+                section_start = result.interfaces.len();
+                section_count += 1;
+            }
+            1 => {
+                if body.len() < 8 {
+                    return Err("truncated IDB".into());
+                }
+                result.interfaces.push(PcapngInterfaceQuality {
+                    section_index: section_count - 1,
+                    interface_id: result.interfaces.len() - section_start,
+                    link_type: e.u16(&body[..2]),
+                    snapshot_length: e.u32(&body[4..8]),
+                    captured_packet_count: 0,
+                    received_packets: None,
+                    dropped_packets: None,
+                    os_dropped_packets: None,
+                });
+            }
+            6 | 5 => {
+                let block_type = e.u32(&data[offset..offset + 4]);
+                if body.len() < if block_type == 6 { 20 } else { 12 } {
+                    return Err("truncated EPB/ISB".into());
+                }
+                let index = section_start
+                    .checked_add(e.u32(&body[..4]) as usize)
+                    .ok_or("interface overflow")?;
+                let interface = result
+                    .interfaces
+                    .get_mut(index)
+                    .ok_or("unknown interface")?;
+                if block_type == 6 {
+                    let captured = e.u32(&body[12..16]) as usize;
+                    if captured > body.len() - 20 || captured > e.u32(&body[16..20]) as usize {
+                        return Err("invalid packet length".into());
+                    }
+                    interface.captured_packet_count += 1;
+                    result.captured_packet_count += 1;
+                } else {
+                    let mut options = &body[12..];
+                    interface.received_packets = None;
+                    interface.dropped_packets = None;
+                    interface.os_dropped_packets = None;
+                    while !options.is_empty() {
+                        if options.len() < 4 {
+                            return Err("truncated ISB option".into());
+                        }
+                        let code = e.u16(&options[..2]);
+                        let len = e.u16(&options[2..4]) as usize;
+                        options = &options[4..];
+                        if code == 0 {
+                            if len != 0 {
+                                return Err("invalid option terminator".into());
+                            }
+                            break;
+                        }
+                        let padded = (len + 3) & !3;
+                        if padded > options.len() {
+                            return Err("invalid ISB option length".into());
+                        }
+                        if matches!(code, 4 | 5 | 7) {
+                            if len != 8 {
+                                return Err("invalid ISB counter".into());
+                            }
+                            let bytes: [u8; 8] = options[..8].try_into().unwrap();
+                            let value = match e {
+                                Endian::Little => u64::from_le_bytes(bytes),
+                                Endian::Big => u64::from_be_bytes(bytes),
+                            };
+                            match code {
+                                4 => interface.received_packets = Some(value),
+                                5 => interface.dropped_packets = Some(value),
+                                7 => interface.os_dropped_packets = Some(value),
+                                _ => unreachable!(),
+                            }
+                        }
+                        options = &options[padded..];
+                    }
+                }
+            }
+            2 | 3 => return Err("legacy packet blocks unsupported".into()),
+            _ => {}
+        }
+        offset = end;
+    }
+    if endian.is_none() {
+        return Err("missing pcapng section".into());
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod quality_tests {
+    use super::*;
+    fn block(kind: u32, body: &[u8], big: bool) -> Vec<u8> {
+        let word = |n: u32| {
+            if big {
+                n.to_be_bytes()
+            } else {
+                n.to_le_bytes()
+            }
+        };
+        let len = body.len() as u32 + 12;
+        [
+            word(kind).as_slice(),
+            word(len).as_slice(),
+            body,
+            word(len).as_slice(),
+        ]
+        .concat()
+    }
+    fn section(big: bool) -> Vec<u8> {
+        let body = if big {
+            [
+                0x1a, 0x2b, 0x3c, 0x4d, 0, 1, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255,
+            ]
+        } else {
+            [
+                0x4d, 0x3c, 0x2b, 0x1a, 1, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255,
+            ]
+        };
+        block(0x0a0d0d0a, &body, big)
+    }
+    #[test]
+    fn statistics_preserve_zero_unknown_sections_and_endianness() {
+        let mut raw = Vec::new();
+        for big in [false, true] {
+            raw.extend(section(big));
+            raw.extend(block(
+                1,
+                if big {
+                    &[0, 1, 0, 0, 0, 0, 255, 255]
+                } else {
+                    &[1, 0, 0, 0, 255, 255, 0, 0]
+                },
+                big,
+            ));
+            let mut stats = vec![0; 12];
+            stats.extend(if big { [0, 5, 0, 8] } else { [5, 0, 8, 0] });
+            stats.extend([0; 8]);
+            stats.extend(if big { [0, 7, 0, 8] } else { [7, 0, 8, 0] });
+            stats.extend(if big {
+                9_u64.to_be_bytes()
+            } else {
+                9_u64.to_le_bytes()
+            });
+            raw.extend(block(5, &stats, big));
+        }
+        let quality = pcapng_quality(&raw).unwrap();
+        assert_eq!(quality.interfaces.len(), 2);
+        for (i, iface) in quality.interfaces.iter().enumerate() {
+            assert_eq!(iface.section_index, i);
+            assert_eq!(iface.interface_id, 0);
+            assert_eq!(iface.snapshot_length, 65535);
+            assert_eq!(iface.link_type, 1);
+            assert_eq!(iface.dropped_packets, Some(0));
+            assert_eq!(iface.received_packets, None);
+            assert_eq!(iface.os_dropped_packets, Some(9));
+        }
+        raw.pop();
+        assert!(pcapng_quality(&raw).is_err());
+    }
+}
