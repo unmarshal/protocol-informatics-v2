@@ -663,7 +663,7 @@ for(const review of state.trial_reviews||[]) {
   }
   if(review.grouping.status==='evaluated') row.append(node('div','Grouping: '+review.grouping.assigned_count+' assigned · '+review.grouping.ambiguous_count+' ambiguous · '+review.grouping.unassigned_count+' unassigned','small'));
   else if(review.grouping.error) row.append(node('div','Grouping: '+review.grouping.error,'small muted'));
-  for(const action of review.next_actions) row.append(node('div','Next: '+action.kind+' via '+action.tool_hint+' — '+action.reason+(action.observation_ids.length?' · '+action.observation_ids.join(', '):''),'small muted'));
+  for(const action of review.next_actions) row.append(node('div','Next: '+action.kind+' via '+action.tool_hint+' — '+action.reason+(action.target_trial_ids?.length?' · trials '+action.target_trial_ids.join(', '):'')+(action.observation_ids.length?' · observations '+action.observation_ids.join(', '):''),'small muted'));
   byId('trialReviews').append(row);
 }
 if(!(state.trial_reviews||[]).length) byId('trialReviews').append(node('div','Create discovery and validation trials to review model evidence and next actions.','small muted'));

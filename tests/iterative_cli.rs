@@ -1,5 +1,5 @@
 use protocol_informatics_v2::workflow::{self, CaptureRun, CaptureRunStatus, Event};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -132,15 +132,16 @@ fn png_chunks_need_uncounted_length_bytes_and_survive_holdout() {
         chunk_review["identifiability"]["distinct_boundary_rule_count"],
         2
     );
-    assert!(
-        initial_review["next_actions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|action| {
-                action["kind"] == "cross_length_width_boundary"
-                    && action["reason"].as_str().unwrap().contains("65536")
-            })
+    let boundary_action = initial_review["next_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["kind"] == "cross_length_width_boundary")
+        .unwrap();
+    assert_eq!(boundary_action["minimum_length_value"], 65536);
+    assert_eq!(
+        boundary_action["target_trial_ids"],
+        json!([discovery_id, validation_id])
     );
     let candidates = inferred["candidates"].as_array().unwrap();
     let wide_total = candidates
@@ -287,13 +288,17 @@ fn png_chunks_need_uncounted_length_bytes_and_survive_holdout() {
             .iter()
             .any(|action| action["kind"] == "cross_length_width_boundary")
     );
-    assert!(
-        updated_review["next_actions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|action| action["kind"] == "inspect_equivalent_descriptions")
+    let equivalent_action = updated_review["next_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["kind"] == "inspect_equivalent_descriptions")
+        .unwrap();
+    assert_eq!(
+        equivalent_action["target_trial_ids"],
+        json!([discovery_id, validation_id])
     );
+    assert!(equivalent_action.get("minimum_length_value").is_none());
     assert_eq!(cli(&["verify", root_text])["observations"], 5);
     fs::remove_dir_all(root).unwrap();
 }
@@ -373,15 +378,16 @@ fn riff_chunks_use_little_endian_lengths_and_even_byte_padding() {
         256
     );
     let review = cli(&["review-trials", root_text, discovery_id, validation_id]);
-    assert!(
-        review["next_actions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|action| {
-                action["kind"] == "cross_length_width_boundary"
-                    && action["reason"].as_str().unwrap().contains("256")
-            })
+    let boundary_action = review["next_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["kind"] == "cross_length_width_boundary")
+        .unwrap();
+    assert_eq!(boundary_action["minimum_length_value"], 256);
+    assert_eq!(
+        boundary_action["target_trial_ids"],
+        json!([discovery_id, validation_id])
     );
     assert!(
         inferred["candidates"]
@@ -5405,6 +5411,20 @@ fn trial_review_identifies_missing_independent_evidence() {
         .collect();
     assert!(actions.contains(&"capture_distinct_discovery"));
     assert!(actions.contains(&"capture_held_out_validation"));
+    let needs_discovery = review["next_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["kind"] == "capture_distinct_discovery")
+        .unwrap();
+    assert_eq!(needs_discovery["target_trial_ids"], json!([discovery_id]));
+    let needs_validation = review["next_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["kind"] == "capture_held_out_validation")
+        .unwrap();
+    assert_eq!(needs_validation["target_trial_ids"], json!([validation_id]));
     assert_eq!(cli(&["verify", root_text])["observations"], 1);
     fs::remove_dir_all(root).unwrap();
 }

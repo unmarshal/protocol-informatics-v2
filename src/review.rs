@@ -205,6 +205,9 @@ pub struct NextAction {
     pub kind: &'static str,
     pub tool_hint: &'static str,
     pub reason: String,
+    pub target_trial_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minimum_length_value: Option<u64>,
     pub observation_ids: Vec<String>,
 }
 
@@ -369,6 +372,8 @@ pub fn review_trials(
             kind: "capture_distinct_discovery",
             tool_hint: "capture_step",
             reason: "Structural inference needs at least two different discovery messages in this trial.".into(),
+            target_trial_ids: vec![discovery_trial_id.into()],
+            minimum_length_value: None,
             observation_ids: Vec::new(),
         });
     }
@@ -378,6 +383,8 @@ pub fn review_trials(
             tool_hint: "capture_step",
             reason: "The validation trial has no observations to challenge discovery candidates."
                 .into(),
+            target_trial_ids: vec![validation_trial_id.into()],
+            minimum_length_value: None,
             observation_ids: Vec::new(),
         });
     }
@@ -392,6 +399,8 @@ pub fn review_trials(
             reason:
                 "At least one discovery-fitted structural candidate fails a held-out observation."
                     .into(),
+            target_trial_ids: vec![validation_trial_id.into()],
+            minimum_length_value: None,
             observation_ids: model_counterexamples
                 .into_iter()
                 .take(MAX_EVIDENCE_IDS)
@@ -418,6 +427,8 @@ pub fn review_trials(
                     "The {} review omits candidate or counterexample detail; inspect that method's full result.",
                     method.method
                 ),
+                target_trial_ids: vec![discovery_trial_id.into(), validation_trial_id.into()],
+                minimum_length_value: None,
                 observation_ids: Vec::new(),
             });
         }
@@ -432,6 +443,8 @@ pub fn review_trials(
             kind: "inspect_unmodeled_structure",
             tool_hint: "span",
             reason: "None of the five bounded record models fits this trial pair; inspect raw bytes before changing the capture condition.".into(),
+            target_trial_ids: vec![discovery_trial_id.into(), validation_trial_id.into()],
+            minimum_length_value: None,
             observation_ids: discovery_observations
                 .iter()
                 .chain(validation_observations.iter())
@@ -448,6 +461,8 @@ pub fn review_trials(
             kind: "narrow_trial_for_bounded_inference",
             tool_hint: "search_observations",
             reason: "All structural checks are unavailable for this trial pair; inspect their errors and choose a smaller controlled trial.".into(),
+            target_trial_ids: vec![discovery_trial_id.into(), validation_trial_id.into()],
+            minimum_length_value: None,
             observation_ids: Vec::new(),
         });
     }
@@ -463,6 +478,8 @@ pub fn review_trials(
             kind: "cross_length_width_boundary",
             tool_hint: "capture_step",
             reason: format!("Capture a record with a length value of at least {minimum} in discovery and validation trials to challenge a shorter length-field width."),
+            target_trial_ids: vec![discovery_trial_id.into(), validation_trial_id.into()],
+            minimum_length_value: Some(minimum),
             observation_ids: Vec::new(),
         });
     }
@@ -476,6 +493,8 @@ pub fn review_trials(
             kind: "inspect_equivalent_descriptions",
             tool_hint: "infer_chunk_framing",
             reason: "Multiple validated descriptions compute the same boundary rule; changing only record lengths cannot distinguish them. Inspect the full models before testing field meaning.".into(),
+            target_trial_ids: vec![discovery_trial_id.into(), validation_trial_id.into()],
+            minimum_length_value: None,
             observation_ids: Vec::new(),
         });
     }
@@ -498,6 +517,8 @@ pub fn review_trials(
             reason: format!(
                 "{fully_validated} reported candidates still fit all held-out observations; vary one payload length, type, or terminator condition in a fresh trial."
             ),
+            target_trial_ids: Vec::new(),
+            minimum_length_value: None,
             observation_ids: Vec::new(),
         });
     }
@@ -506,6 +527,8 @@ pub fn review_trials(
             kind: "capture_grouping_support",
             tool_hint: "capture_step",
             reason: format!("Format-group validation needs at least {} discovery members in one group; capture another controlled example before interpreting grouping failures.", clustering::MIN_CHILD_SIZE),
+            target_trial_ids: vec![discovery_trial_id.into()],
+            minimum_length_value: None,
             observation_ids: Vec::new(),
         });
     } else if grouping.unassigned_count + grouping.ambiguous_count > 0 {
@@ -516,6 +539,8 @@ pub fn review_trials(
                 "{} held-out observations are unassigned or ambiguous under discovered format groups.",
                 grouping.unassigned_count + grouping.ambiguous_count
             ),
+            target_trial_ids: vec![validation_trial_id.into()],
+            minimum_length_value: None,
             observation_ids: grouping.counterexample_observation_ids.clone(),
         });
     }
@@ -524,6 +549,8 @@ pub fn review_trials(
             kind: "repeat_with_new_condition",
             tool_hint: "capture_step",
             reason: "No immediate counterexample is reported; repeat with a fresh controlled condition before treating a structural fit as a grammar.".into(),
+            target_trial_ids: Vec::new(),
+            minimum_length_value: None,
             observation_ids: Vec::new(),
         });
     }
