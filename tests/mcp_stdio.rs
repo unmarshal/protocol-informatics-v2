@@ -584,7 +584,7 @@ fn agent_can_infer_framing_and_tlv_from_binary_trials_over_mcp() {
         json!({"discovery_trial_id":delimiter_discovery_id,"validation_trial_id":delimiter_validation_id}),
     );
     assert_eq!(review["validation_observation_count"], 2);
-    assert_eq!(review["methods"].as_array().unwrap().len(), 4);
+    assert_eq!(review["methods"].as_array().unwrap().len(), 5);
     assert_eq!(review["prediction_assessed"], false);
     assert!(
         delimiter_result["candidates"]

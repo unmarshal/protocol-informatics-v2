@@ -35,6 +35,8 @@ pub struct MethodReview {
     pub counterexample_observation_ids: Vec<String>,
     pub reported_counterexample_ids_omitted: usize,
     pub counterexample_ids_partial: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identifiability: Option<Value>,
 }
 
 impl MethodReview {
@@ -54,6 +56,7 @@ impl MethodReview {
             counterexample_observation_ids: Vec::new(),
             reported_counterexample_ids_omitted: 0,
             counterexample_ids_partial: false,
+            identifiability: None,
         }
     }
 
@@ -180,6 +183,7 @@ impl MethodReview {
                 .collect(),
             reported_counterexample_ids_omitted,
             counterexample_ids_partial,
+            identifiability: report.get("identifiability").cloned(),
         }
     }
 }
@@ -283,6 +287,11 @@ pub fn review_trials(
             "length_prefix",
             validation_total,
             framing::infer_length_prefix(state, discovery_trial_id, validation_trial_id),
+        ),
+        MethodReview::from_result(
+            "length_adjusted_chunk",
+            validation_total,
+            framing::infer_chunk_framing(state, discovery_trial_id, validation_trial_id),
         ),
         MethodReview::from_result(
             "typed_length_value",
@@ -396,6 +405,7 @@ pub fn review_trials(
         {
             let tool_hint = match method.method {
                 "length_prefix" => "infer_framing",
+                "length_adjusted_chunk" => "infer_chunk_framing",
                 "typed_length_value" => "infer_tlv",
                 "unsigned_leb128" => "infer_varint",
                 "delimiter" => "infer_delimiter",
@@ -421,7 +431,7 @@ pub fn review_trials(
         next_actions.push(NextAction {
             kind: "inspect_unmodeled_structure",
             tool_hint: "span",
-            reason: "None of the four bounded record models fits this trial pair; inspect raw bytes before changing the capture condition.".into(),
+            reason: "None of the five bounded record models fits this trial pair; inspect raw bytes before changing the capture condition.".into(),
             observation_ids: discovery_observations
                 .iter()
                 .chain(validation_observations.iter())
@@ -441,11 +451,47 @@ pub fn review_trials(
             observation_ids: Vec::new(),
         });
     }
+    let chunk_identifiability = methods
+        .iter()
+        .find(|method| method.method == "length_adjusted_chunk")
+        .and_then(|method| method.identifiability.as_ref());
+    if let Some(next) = chunk_identifiability.and_then(|value| value.get("next_experiment"))
+        && next["kind"] == "cross_length_width_boundary"
+        && let Some(minimum) = next["minimum_length_value"].as_u64()
+    {
+        next_actions.push(NextAction {
+            kind: "cross_length_width_boundary",
+            tool_hint: "capture_step",
+            reason: format!("Capture a record with a length value of at least {minimum} in discovery and validation trials to challenge a shorter length-field width."),
+            observation_ids: Vec::new(),
+        });
+    }
+    if let Some(value) = chunk_identifiability
+        && value["fully_validated_candidate_count"]
+            .as_u64()
+            .is_some_and(|count| count > 1)
+        && value["distinct_boundary_rule_count"] == 1
+    {
+        next_actions.push(NextAction {
+            kind: "inspect_equivalent_descriptions",
+            tool_hint: "infer_chunk_framing",
+            reason: "Multiple validated descriptions compute the same boundary rule; changing only record lengths cannot distinguish them. Inspect the full models before testing field meaning.".into(),
+            observation_ids: Vec::new(),
+        });
+    }
     let fully_validated: usize = methods
         .iter()
+        .filter(|method| method.method != "length_adjusted_chunk")
         .map(|method| method.fully_validated_reported_count)
-        .sum();
-    if fully_validated > 1 {
+        .sum::<usize>()
+        + chunk_identifiability
+            .and_then(|value| value["distinct_boundary_rule_count"].as_u64())
+            .unwrap_or(0) as usize;
+    if fully_validated > 1
+        && !next_actions
+            .iter()
+            .any(|action| action.kind == "cross_length_width_boundary")
+    {
         next_actions.push(NextAction {
             kind: "distinguish_remaining_models",
             tool_hint: "capture_step",

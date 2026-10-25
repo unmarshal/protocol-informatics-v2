@@ -326,7 +326,7 @@ cargo run -- report /tmp/pi-delimiter /tmp/pi-delimiter-report.html
 
 The [framing method](docs/framing-method.md) describes the evidence rule, counterexamples, and model families still to add.
 
-The [trial review](docs/trial-review.md) combines bounded structural and grouping checks for one discovery/validation pair. It names counterexample observation IDs and suggests the next capture or byte inspection while leaving prediction assessment to the agent or analyst.
+The [trial review](docs/trial-review.md) combines bounded structural and grouping checks for one discovery/validation pair. It includes length-adjusted chunks and passes their width-boundary recommendation into the next-action list. It names counterexample observation IDs and suggests the next capture or byte inspection while leaving prediction assessment to the agent or analyst.
 
 The WAV fixture generator makes four tiny PCM files with the same sample data and different sample rates. Python's `wave` reader and the system `file` command independently recognize the outputs.
 

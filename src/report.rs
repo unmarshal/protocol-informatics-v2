@@ -657,7 +657,10 @@ for(const review of state.trial_reviews||[]) {
   const row=node('div','', 'row');
   row.append(node('strong',review.experiment_id+' · '+review.question),node('div',review.discovery_observation_count+' discovery observations · '+review.validation_observation_count+' held-out observations','small muted'));
   row.append(node('div','Prediction: '+review.prediction+' · analyst assessment pending','small muted'));
-  for(const method of review.methods) row.append(node('div',method.method+': '+(method.status==='evaluated'?method.candidate_count+' candidate(s), best reported held-out '+(method.best_reported_validation_matches===null?'none':method.best_reported_validation_matches+'/'+method.validation_total):'unavailable — '+method.error),'small'));
+  for(const method of review.methods) {
+    row.append(node('div',method.method+': '+(method.status==='evaluated'?method.candidate_count+' candidate(s), best reported held-out '+(method.best_reported_validation_matches===null?'none':method.best_reported_validation_matches+'/'+method.validation_total):'unavailable — '+method.error),'small'));
+    if(method.identifiability) row.append(node('div','↳ '+method.identifiability.fully_validated_candidate_count+' fully validated description(s), '+method.identifiability.distinct_boundary_rule_count+' distinct boundary rule(s)','small muted'));
+  }
   if(review.grouping.status==='evaluated') row.append(node('div','Grouping: '+review.grouping.assigned_count+' assigned · '+review.grouping.ambiguous_count+' ambiguous · '+review.grouping.unassigned_count+' unassigned','small'));
   else if(review.grouping.error) row.append(node('div','Grouping: '+review.grouping.error,'small muted'));
   for(const action of review.next_actions) row.append(node('div','Next: '+action.kind+' via '+action.tool_hint+' — '+action.reason+(action.observation_ids.length?' · '+action.observation_ids.join(', '):''),'small muted'));

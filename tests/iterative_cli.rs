@@ -121,6 +121,27 @@ fn png_chunks_need_uncounted_length_bytes_and_survive_holdout() {
         inferred["identifiability"]["next_experiment"]["kind"],
         "cross_length_width_boundary"
     );
+    let initial_review = cli(&["review-trials", root_text, discovery_id, validation_id]);
+    let chunk_review = initial_review["methods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|method| method["method"] == "length_adjusted_chunk")
+        .unwrap();
+    assert_eq!(
+        chunk_review["identifiability"]["distinct_boundary_rule_count"],
+        2
+    );
+    assert!(
+        initial_review["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| {
+                action["kind"] == "cross_length_width_boundary"
+                    && action["reason"].as_str().unwrap().contains("65536")
+            })
+    );
     let candidates = inferred["candidates"].as_array().unwrap();
     let wide_total = candidates
         .iter()
@@ -258,6 +279,21 @@ fn png_chunks_need_uncounted_length_bytes_and_survive_holdout() {
             .iter()
             .all(|candidate| candidate["config"]["prefix_width"] == 4)
     );
+    let updated_review = cli(&["review-trials", root_text, discovery_id, validation_id]);
+    assert!(
+        !updated_review["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["kind"] == "cross_length_width_boundary")
+    );
+    assert!(
+        updated_review["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["kind"] == "inspect_equivalent_descriptions")
+    );
     assert_eq!(cli(&["verify", root_text])["observations"], 5);
     fs::remove_dir_all(root).unwrap();
 }
@@ -335,6 +371,17 @@ fn riff_chunks_use_little_endian_lengths_and_even_byte_padding() {
     assert_eq!(
         inferred["identifiability"]["next_experiment"]["minimum_length_value"],
         256
+    );
+    let review = cli(&["review-trials", root_text, discovery_id, validation_id]);
+    assert!(
+        review["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| {
+                action["kind"] == "cross_length_width_boundary"
+                    && action["reason"].as_str().unwrap().contains("256")
+            })
     );
     assert!(
         inferred["candidates"]
