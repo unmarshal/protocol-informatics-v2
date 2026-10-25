@@ -2109,7 +2109,7 @@ fn run_investigation_command(args: &[String]) -> Result<(), String> {
         "report" => {
             require_len(args, 3)?;
             let state = workflow::load(root)?;
-            let html = protocol_informatics_v2::report::render(&state);
+            let html = protocol_informatics_v2::report::render(root, &state);
             fs::write(&args[2], html).map_err(|error| error.to_string())?;
             print_json(&json!({"path": args[2], "revision": state.revision}))
         }

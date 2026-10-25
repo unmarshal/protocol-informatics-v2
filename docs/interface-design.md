@@ -68,4 +68,4 @@ Stable IDs, versioned events, bounded `summary`, paged `observations` and `searc
 
 Committed frames now also support provisional grouping, held-out group checks, and bounded gap-aware alignment within a group. The report previews short frame alignments with variable columns and frame-to-observation navigation; the CLI and MCP expose complete bounded alignment results for agents.
 
-Frame alignments can be saved as schema 14 events with exact frame IDs and source revisions. Both observation and frame alignments have paged metadata and hash-checked column/row reads through CLI and MCP. The report names saved frame groups in its analysis list.
+Frame alignments can be saved as schema 14 events with exact frame IDs and source revisions. Both observation and frame alignments have paged metadata and hash-checked column/row reads through CLI and MCP. The report lists saved analyses and embeds a verified preview of the eight newest artifacts, with at most 64 columns and eight rows each. Selecting a row opens its parent bytes in the inspector; if an artifact fails verification, the report displays the error. Agents can page beyond the preview with `analysis_result`.

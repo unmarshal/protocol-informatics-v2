@@ -229,6 +229,9 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
     assert!(html.contains("\"frame_cluster_validations\":[{"));
     assert!(html.contains("Frame alignment"));
     assert!(html.contains("\"frame_alignment_previews\":[{"));
+    assert!(html.contains("Saved alignment explorer"));
+    assert!(html.contains("\"saved_analysis_previews\":[{"));
+    assert!(html.contains("\"total_rows\":3"));
     let saved_artifact = root.join(saved["artifact"].as_str().unwrap());
     fs::write(saved_artifact, b"{}").unwrap();
     for command in [
@@ -242,6 +245,10 @@ fn committed_frames_cluster_by_correlated_record_evidence() {
         assert!(!rejected.status.success());
         assert!(String::from_utf8_lossy(&rejected.stderr).contains("mismatch"));
     }
+    cli(&["report", root_text, path(&root.join("corrupt-report.html"))]);
+    let corrupted_html = fs::read_to_string(root.join("corrupt-report.html")).unwrap();
+    assert!(corrupted_html.contains("Artifact could not be verified"));
+    assert!(corrupted_html.contains("artifact hash mismatch"));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -582,6 +589,10 @@ fn agent_can_repeat_a_capture_tag_analyze_decide_cycle() {
     assert!(html.contains("Corpus overview"));
     assert!(html.contains("corpus_summary"));
     assert!(html.contains("repeat-icmp"));
+    assert!(html.contains(&format!(
+        "\"saved_analysis_previews\":[{{\"analysis_id\":\"{raw_analysis_id}\""
+    )));
+    assert!(html.contains("\"coordinate_system\":\"observation_bytes\""));
 
     let invalid = Command::new(env!("CARGO_BIN_EXE_protocol-informatics-v2"))
         .args(["tag", root_text, "missing", "response", "invalid"])

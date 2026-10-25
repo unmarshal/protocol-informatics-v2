@@ -2,8 +2,9 @@
 
 use crate::workflow::State;
 use std::collections::BTreeSet;
+use std::path::Path;
 
-pub fn render(state: &State) -> String {
+pub fn render(root: &Path, state: &State) -> String {
     let variables: BTreeSet<&str> = state
         .known_values
         .iter()
@@ -14,6 +15,20 @@ pub fn render(state: &State) -> String {
         .filter_map(|variable| crate::inference::infer_unsigned_field(state, variable).ok())
         .collect();
     let mut view = serde_json::to_value(state).expect("state is serializable");
+    let saved_analysis_previews: Vec<_> = state
+        .analyses
+        .iter()
+        .rev()
+        .take(8)
+        .map(|analysis| {
+            match crate::query::read_analysis_result(root, state, &analysis.id, 0, 64, 0, 8) {
+                Ok(result) => serde_json::json!({"analysis_id":analysis.id,"result":result}),
+                Err(error) => serde_json::json!({"analysis_id":analysis.id,"error":error}),
+            }
+        })
+        .collect();
+    view["saved_analysis_previews"] = serde_json::Value::Array(saved_analysis_previews);
+    view["saved_analyses_omitted"] = serde_json::json!(state.analyses.len().saturating_sub(8));
     view["corpus_summary"] = serde_json::to_value(crate::query::corpus_summary(state))
         .expect("corpus summary is serializable");
     view["field_inferences"] =
@@ -347,6 +362,11 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
 .byte-nav { display:flex; gap:10px; align-items:center; margin-top:12px }
 .byte-nav button { background:#243448; color:#e9eef5; border:1px solid #4a607a; border-radius:5px; padding:4px 8px; cursor:pointer }
 .byte-nav button:disabled { opacity:.4; cursor:default }
+.alignment-scroll { overflow-x:auto; max-width:100%; margin-top:10px }
+.alignment-line { display:grid; grid-template-columns:12em max-content; gap:8px; align-items:center; margin:3px 0 }
+.alignment-cells { display:grid; gap:3px; width:max-content }
+.alignment-index { font-size:.68rem; text-align:center; color:#9aaec4 }
+.alignment-line button { background:#243448; color:#e9eef5; border:1px solid #4a607a; border-radius:5px; padding:4px; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
 .legend { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px }
 .bar-track { height:5px; background:#0e1622; border-radius:4px; overflow:hidden; margin:3px 0 8px }
 .bar-fill { height:100%; background:#79bce6 }
@@ -383,6 +403,7 @@ pre { overflow:auto; white-space:pre-wrap; word-break:break-all; background:#0e1
   <div class="stack">
     <section class="panel"><h2>Observations</h2><div class="filters"><select id="trialFilter"><option value="">All trials</option></select><select id="clusterFilter"><option value="">All groups</option></select></div><input id="search" class="search" placeholder="ID, tag, direction, or hex bytes"><div id="observations"></div></section>
     <section class="panel"><h2>Byte inspector</h2><div id="detail" class="muted">Select an observation to inspect its bytes and source.</div></section>
+    <section class="panel"><h2>Saved alignment explorer</h2><div id="savedAnalysis" class="muted">Select a saved analysis to inspect its verified bytes.</div></section>
     <section class="panel"><h2>Compare observations</h2><div class="filters"><select id="leftCompare"><option value="">First observation</option></select><select id="rightCompare"><option value="">Second observation</option></select></div><div id="comparison" class="muted">Choose two observations to highlight changed bytes.</div></section>
   </div>
 </main>
@@ -393,6 +414,7 @@ const node = (tag, text, className) => { const el=document.createElement(tag); e
 const captureById = new Map(state.captures.map(x=>[x.id,x]));
 const trialById = new Map(state.trials.map(x=>[x.id,x]));
 const clusterById = new Map((state.cluster_report?.clusters||[]).map(x=>[x.id,x]));
+const savedAnalysisById = new Map((state.saved_analysis_previews||[]).map(x=>[x.analysis_id,x]));
 const framingPreviewById = new Map((state.framing_previews||[]).map(x=>[x.probe.observation_id,x.probe]));
 for(const item of state.varint_previews||[]) if(!framingPreviewById.has(item.probe.observation_id)) framingPreviewById.set(item.probe.observation_id,item.probe);
 const committedRuns = [...(state.framing_runs||[]), ...(state.varint_runs||[]), ...(state.delimiter_runs||[])];
@@ -662,13 +684,57 @@ for(const item of state.frame_alignment_previews||[]) {
   byId('frameAlignments').append(row);
 }
 if(!(state.frame_alignment_previews||[]).length) byId('frameAlignments').append(node('div','Short committed record groups appear here after discovery and validation trials.','small muted'));
-for(const analysis of state.analyses) {
+let selectedAnalysisRow=null;
+function showSavedAnalysis(id, selectedRow=null) {
+  if(selectedAnalysisRow) selectedAnalysisRow.classList.remove('selected');
+  selectedAnalysisRow=selectedRow;
+  if(selectedAnalysisRow) selectedAnalysisRow.classList.add('selected');
+  const target=byId('savedAnalysis'); target.classList.remove('muted'); target.replaceChildren();
+  const preview=savedAnalysisById.get(id);
+  if(!preview) { target.append(node('div','Preview limited to the eight newest analyses. Use analysis-result to page this artifact.','small muted')); return; }
+  if(preview.error) { target.append(node('strong',id),node('div','Artifact could not be verified: '+preview.error,'small')); return; }
+  const result=preview.result;
+  const source=result.scope?.source_revision;
+  target.append(node('strong',id),node('div',result.kind+' alignment · '+result.total_rows+' rows · '+result.total_columns+' columns · '+result.strategy+(source===undefined?'':' · source revision '+source),'small muted'));
+  target.append(node('div','Showing the first '+result.rows.length+' rows and '+result.columns.length+' columns from the verified saved artifact. Variable columns are amber; gaps are dots.','small muted'));
+  const table=node('div','', 'alignment-scroll');
+  const makeGrid=()=>{const grid=node('div','', 'alignment-cells');grid.style.gridTemplateColumns='repeat('+result.columns.length+', 2.1em)';return grid;};
+  const header=node('div','', 'alignment-line');header.append(node('span','Aligned byte column','small muted'));
+  const headerCells=makeGrid();
+  for(const column of result.columns) headerCells.append(node('span',String(column.index),'alignment-index'));
+  header.append(headerCells);table.append(header);
+  for(const row of result.rows) {
+    const line=node('div','', 'alignment-line');
+    const button=node('button',row.entity_id,'small');
+    button.title='Open '+row.entity_id+' source bytes in the inspector';
+    button.onclick=()=>{
+      const observationId=result.kind==='frame'?frameById.get(row.entity_id)?.run.observation_id:row.entity_id;
+      const observation=state.observations.find(item=>item.id===observationId);
+      if(observation) { showDetail(observation);byId('detail').scrollIntoView({behavior:'smooth',block:'nearest'}); }
+    };
+    line.append(button);
+    const cells=makeGrid();
+    for(let index=0;index<row.aligned_bytes.length;index++) {
+      const value=row.aligned_bytes[index], column=result.columns[index];
+      const variable=column.distinct>1;
+      const cell=node('span',value===null?'··':value.toString(16).padStart(2,'0'),'byte'+(variable?' changed':''));
+      cell.title='aligned column '+column.index+' · '+(variable?'variable':'stable')+' · support '+column.support;
+      cells.append(cell);
+    }
+    line.append(cells);table.append(line);
+  }
+  target.append(table);
+  if(result.total_rows>result.rows.length||result.total_columns>result.columns.length) target.append(node('div','Use analysis-result for the remaining rows and columns.','small muted'));
+}
+for(const analysis of state.analyses.slice().reverse()) {
   const row=node('div','', 'row');
   const scope=analysis.scope?.kind==='frame_cluster'?'frame group '+analysis.scope.cluster_id+' at revision '+analysis.scope.source_revision:analysis.scope?.kind==='cluster'?'group '+analysis.scope.cluster_id:analysis.scope?.kind==='trial'?'trial '+analysis.scope.trial_id:analysis.scope?.kind||'legacy selection';
   const isFrame=(analysis.frame_ids||[]).length>0;
-  row.append(node('strong',analysis.id),node('div',scope+' · '+(isFrame?analysis.frame_ids.length+' frames':analysis.observation_ids.length+' observations')+' · '+analysis.aligned_width+' columns','small'));
+  const button=node('button',analysis.id);button.onclick=()=>{showSavedAnalysis(analysis.id,row);byId('savedAnalysis').scrollIntoView({behavior:'smooth',block:'nearest'});};
+  row.append(button,node('div',scope+' · '+(isFrame?analysis.frame_ids.length+' frames':analysis.observation_ids.length+' observations')+' · '+analysis.aligned_width+' columns','small'));
   row.append(node('div',analysis.method_version||'method version not recorded','small muted'));
   byId('analyses').append(row);
+  if(analysis===state.analyses[state.analyses.length-1]) showSavedAnalysis(analysis.id,row);
 }
 if(!state.analyses.length) byId('analyses').append(node('div','No analyses recorded.','small muted'));
 for(const decision of state.decisions) { const row=node('div','', 'row'); row.append(node('strong',decision.id),node('div',decision.text)); byId('decisions').append(row); }
@@ -770,7 +836,7 @@ mod tests {
     fn escapes_untrusted_question_in_embedded_data() {
         let mut state = crate::workflow::create_test_state();
         state.question = "</script><script>alert(1)</script>".into();
-        let html = render(&state);
+        let html = render(Path::new("."), &state);
         assert!(!html.contains("</script><script>alert(1)</script>"));
         assert!(html.contains("\\u003c/script\\u003e"));
     }
